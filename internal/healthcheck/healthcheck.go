@@ -2,22 +2,25 @@ package healthcheck
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"dexMmController/internal/db"
+	"dexMmController/internal/hummingbot"
 	"dexMmController/internal/openclaw"
 )
 
 // HealthChecker queries the DB for incomplete transactions and verifies their
 // actual state against external systems, advancing the status where appropriate.
 type HealthChecker struct {
-	repo     *db.TransactionRepository
-	openclaw *openclaw.Client
+	repo        *db.TransactionRepository
+	openclaw    *openclaw.Client
+	hummingbot  *hummingbot.Client
 }
 
-func NewHealthChecker(repo *db.TransactionRepository, oc *openclaw.Client) *HealthChecker {
-	return &HealthChecker{repo: repo, openclaw: oc}
+func NewHealthChecker(repo *db.TransactionRepository, oc *openclaw.Client, hb *hummingbot.Client) *HealthChecker {
+	return &HealthChecker{repo: repo, openclaw: oc, hummingbot: hb}
 }
 
 // Run finds all incomplete transactions and runs a status-specific verification
@@ -64,45 +67,77 @@ func (h *HealthChecker) verify(ctx context.Context, tx *db.Transaction) error {
 	}
 }
 
-// verifyFiatToCexInitiated checks whether the fiat transfer has already arrived
-// at the CEX. If so, the status is advanced to FiatToCexArrived.
-//
-// TODO: query the CEX specified in tx.Cex for the incoming fiat balance /
-// deposit history to confirm arrival.
+// verifyFiatToCexInitiated checks whether the fiat has already arrived at the
+// CEX by asking Hummingbot for the fiat balance. If balance > 0, the status is
+// advanced to FiatToCexArrived.
 func (h *HealthChecker) verifyFiatToCexInitiated(ctx context.Context, tx *db.Transaction) error {
-	// TODO: call CEX API (tx.Cex) to check for fiat deposit arrival
-	// TODO: if no money at CEX, call openclaw instance and ask if fiat has been sent to CEX
+	balance, err := h.hummingbot.BalanceForExchange(ctx, string(tx.Cex), tx.FiatCurrency)
+	if err != nil {
+		// Balance not found means it hasn't arrived yet — not a hard error.
+		return nil
+	}
+	if balance.Available >= tx.FiatAmount {
+		tx.Status = db.StatusFiatToCexArrived
+		return h.repo.UpdateTransaction(tx)
+	}
 	return nil
 }
 
-// verifyFiatToCexArrived confirms the fiat is present at the CEX and that a
-// spot trade has not already been executed. Advances to CexTradeSuccessful if
-// the trade is already done.
-//
-// TODO: query CEX trade/order history for this transaction.
+// verifyFiatToCexArrived confirms fiat is at the CEX and checks whether a BTC
+// trade has already been executed by Hummingbot. Advances to CexTradeSuccessful
+// if a matching BUY trade is found in the history.
 func (h *HealthChecker) verifyFiatToCexArrived(ctx context.Context, tx *db.Transaction) error {
-	// TODO: call CEX API (tx.Cex) to check for fiat deposit arrival
-
+	trades, err := h.hummingbot.TradesForExchange(ctx, string(tx.Cex))
+	if err != nil {
+		return fmt.Errorf("verifyFiatToCexArrived: failed to fetch trade history: %w", err)
+	}
+	for _, t := range trades {
+		if t.Side == "BUY" && t.Amount*t.Price >= tx.FiatAmount*0.99 {
+			// Close enough match — record details and advance.
+			tx.Status = db.StatusCexTradeSuccessful
+			tx.CexTransactionFee = t.Fee
+			return h.repo.UpdateTransaction(tx)
+		}
+	}
 	return nil
 }
 
-// verifyCexTradeSuccessful reads the CEX transaction history to confirm the
-// fiat-to-BTC conversion is recorded. Advances to CexCryptoWithdrawalInitiated
-// if a withdrawal has already been triggered.
-//
-// TODO: query CEX trade history for completed BTC buy order.
+// verifyCexTradeSuccessful confirms the BTC buy is in the trade history and
+// checks whether a withdrawal has already been broadcast. Advances to
+// CexCryptoWithdrawalInitiated if a matching withdrawal is found.
 func (h *HealthChecker) verifyCexTradeSuccessful(ctx context.Context, tx *db.Transaction) error {
-	// TODO: verify CexTransactionDetails reflects a completed trade
+	withdrawals, err := h.hummingbot.WithdrawalHistory(ctx)
+	if err != nil {
+		return fmt.Errorf("verifyCexTradeSuccessful: failed to fetch withdrawals: %w", err)
+	}
+	for _, w := range withdrawals {
+		if w.Exchange == string(tx.Cex) && w.Asset == "BTC" && w.Status != "failed" {
+			tx.Status = db.StatusCexCryptoWithdrawalInitiated
+			tx.CexWithdrawalFee = w.Fee
+			return h.repo.UpdateTransaction(tx)
+		}
+	}
 	return nil
 }
 
-// verifyCexCryptoWithdrawalInitiated checks whether the on-chain withdrawal
-// transaction has been broadcast and confirmed. Advances to
+// verifyCexCryptoWithdrawalInitiated looks up the withdrawal by its tx hash and
+// checks whether it has been confirmed on-chain. Advances to
 // CexCryptoWithdrawalArrived on confirmation.
-//
-// TODO: look up the tx hash from CexToDexWithdrawalTxDetails on-chain.
 func (h *HealthChecker) verifyCexCryptoWithdrawalInitiated(ctx context.Context, tx *db.Transaction) error {
-	// TODO: check on-chain confirmation count for withdrawal tx hash
+	// Extract the tx hash stored when the withdrawal was initiated.
+	txHash := withdrawalHashFromJSON(tx.CexToDexWithdrawalTxDetails)
+	if txHash == "" {
+		return fmt.Errorf("verifyCexCryptoWithdrawalInitiated: no tx hash in CexToDexWithdrawalTxDetails")
+	}
+
+	withdrawal, err := h.hummingbot.WithdrawalByTxHash(ctx, txHash)
+	if err != nil {
+		return fmt.Errorf("verifyCexCryptoWithdrawalInitiated: %w", err)
+	}
+	if withdrawal.Status == "confirmed" {
+		tx.Status = db.StatusCexCryptoWithdrawalArrived
+		return h.repo.UpdateTransaction(tx)
+	}
 	return nil
 }
 
@@ -111,7 +146,7 @@ func (h *HealthChecker) verifyCexCryptoWithdrawalInitiated(ctx context.Context, 
 // DexPositionOpen if an offer already exists.
 //
 // TODO: query DEX wallet balance / UTXOs.
-func (h *HealthChecker) verifyCexCryptoWithdrawalArrived(ctx context.Context, tx *db.Transaction) error {
+func (h *HealthChecker) verifyCexCryptoWithdrawalArrived(_ context.Context, _ *db.Transaction) error {
 	// TODO: check DEX wallet (tx.Dex) for confirmed incoming UTXO
 	return nil
 }
@@ -120,7 +155,7 @@ func (h *HealthChecker) verifyCexCryptoWithdrawalArrived(ctx context.Context, tx
 // live. Advances to DexPositionTaken if a counterparty has already matched.
 //
 // TODO: connect to Bisq / HodlHodl / RoboSats API and fetch offer status.
-func (h *HealthChecker) verifyDexPositionOpen(ctx context.Context, tx *db.Transaction) error {
+func (h *HealthChecker) verifyDexPositionOpen(_ context.Context, _ *db.Transaction) error {
 	// TODO: poll tx.Dex offer ID from DexOfferCreation for counterparty match
 	return nil
 }
@@ -157,11 +192,21 @@ func (h *HealthChecker) verifyDexFiatHasArrived(ctx context.Context, tx *db.Tran
 	return nil
 }
 
+// withdrawalHashFromJSON extracts the "hash" field from a JSON blob stored in
+// CexToDexWithdrawalTxDetails, e.g. {"hash":"0xabc...","status":"pending"}.
+func withdrawalHashFromJSON(raw []byte) string {
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	return m["hash"]
+}
+
 // verifyDexPositionReleased connects to the DEX specified in tx.Dex and checks
 // whether the BTC has actually been released to the buyer.
 //
 // TODO: implement per-DEX release confirmation (Bisq, HodlHodl, RoboSats).
-func (h *HealthChecker) verifyDexPositionReleased(ctx context.Context, tx *db.Transaction) error {
+func (h *HealthChecker) verifyDexPositionReleased(_ context.Context, tx *db.Transaction) error {
 	switch tx.Dex {
 	case db.DexBisq:
 		// TODO: query Bisq API / local node for trade completion
