@@ -1,0 +1,40 @@
+Coordinator:
+
+Giving Claw the ok to send Fiat to CEX
+Based on Transfered ammount Decide Counter Position size (NOT SURE IF SCRIPT OR HUMMINGBOT)
+Release DEX BTC
+
+
+Lifecycle:
+
+#1: Health Check:
+- Check the DB for open transactions
+- Check if transaktion state is truthful, for example if says DEX Position created, see if position is actually there
+
+#2: If no Position is open create new one:
+- Check if Bank balance > 50€
+- If so, instruct Claw to send all money to CEX and log it into DB
+
+#3: Run prediction algos (maybe better for hummingbot side):
+- Run Prediction for network transfer cost
+- Add CEX and DEX trading Fee estimate on top
+- Add Counter Position Fee on top
+- Add all of the above on top of the orderbook spread
+
+#4: Withdraw from CEX and open dex position (hummingbot side):
+- Withdraw to whitelisted address, in case CEX is restrictive
+
+#5: Open Counter Position (hummingbot side):
+
+#6: Send BTC to DEX:
+- From intermediate address
+- Create offer
+
+#7: Let Claw monitor Bank acc for Transaction settlement:
+- If money has arrived, log into DB
+- Release DEX payment
+
+#8: Close counter Position (hummingbot side):
+
+
+REPEAT
