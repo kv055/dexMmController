@@ -43,7 +43,7 @@ func (l *QueryScenarioLogger) Run() {
 		log.Printf("✓ Retrieved %d transactions\n", len(allTxs))
 		for i, tx := range allTxs {
 			log.Printf("  [%d] ID=%d | Dir=%s | Amount=%.2f | PnL=%.2f | CEX=%s\n",
-				i+1, tx.ID, tx.Direction, tx.FiatAmount, tx.TotalTransactionPnl, tx.TransferDestinationCEX)
+				i+1, tx.ID, tx.Direction, tx.FiatAmount, tx.TotalTransactionPnl, tx.Cex)
 		}
 	}
 
@@ -55,7 +55,7 @@ func (l *QueryScenarioLogger) Run() {
 	} else {
 		log.Printf("✓ Found %d BUY transactions\n", len(buyTxs))
 		for i, tx := range buyTxs {
-			log.Printf("  [%d] ID=%d | Amount=%.2f | CEX=%s\n", i+1, tx.ID, tx.FiatAmount, tx.TransferDestinationCEX)
+			log.Printf("  [%d] ID=%d | Amount=%.2f | CEX=%s\n", i+1, tx.ID, tx.FiatAmount, tx.Cex)
 		}
 	}
 

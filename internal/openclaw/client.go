@@ -182,9 +182,19 @@ func (c *Client) Call(ctx context.Context, method string, params any, out any) e
 	}
 }
 
-// PollBankTxArrived periodically asks the (mock) claw gateway whether the bank
+// BankTxHasBeenSent asks the gateway once whether it has already sent the bank
+// transaction with the given code to the CEX. Returns false (not an error) when it hasn't.
+func (c *Client) BankTxHasBeenSentToCex(ctx context.Context, code string) (bool, error) {
+	var payload BankTxArrivedPayload
+	if err := c.Call(ctx, "bank.tx.arrived", BankTxArrivedParams{Code: code}, &payload); err != nil {
+		return false, err
+	}
+	return payload.Arrived, nil
+}
+
+// PollBankTxArrivedFromDex periodically asks the (mock) claw gateway whether the bank
 // transaction with the given code has arrived yet.
-func (c *Client) PollBankTxArrived(ctx context.Context, code string, interval time.Duration) (bool, error) {
+func (c *Client) PollBankTxArrivedFromDex(ctx context.Context, code string, interval time.Duration) (bool, error) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 
@@ -205,4 +215,3 @@ func (c *Client) PollBankTxArrived(ctx context.Context, code string, interval ti
 		}
 	}
 }
-

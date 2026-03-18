@@ -39,7 +39,7 @@ func main() {
 	pollCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	arrived, err := claw.PollBankTxArrived(pollCtx, "xyz123", 500*time.Millisecond)
+	arrived, err := claw.PollBankTxArrivedFromDex(pollCtx, "xyz123", 500*time.Millisecond)
 	if err != nil {
 		log.Printf("OpenClaw poll error: %v\n", err)
 	} else {
