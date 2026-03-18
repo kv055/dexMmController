@@ -6,27 +6,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 )
 
-// Client is a REST client for the Hummingbot API.
-// It handles token-based auth and re-authenticates automatically when the
-// token expires.
+// Client is a REST client for the Hummingbot Backend API (port 8000).
+// Auth is HTTP Basic on every request — no token exchange required.
 type Client struct {
 	baseURL  string
 	username string
 	password string
-
-	mu       sync.Mutex
-	token    string
-	tokenExp time.Time
-
-	http *http.Client
+	http     *http.Client
 }
 
-// NewClient creates a new Hummingbot REST client.
-// baseURL should be e.g. "http://localhost:1985".
+// NewClient creates a new Hummingbot Backend API client.
+// baseURL should be e.g. "http://localhost:8000".
 func NewClient(baseURL, username, password string) *Client {
 	return &Client{
 		baseURL:  baseURL,
@@ -36,158 +29,115 @@ func NewClient(baseURL, username, password string) *Client {
 	}
 }
 
-// authenticate fetches a fresh token and caches it for 55 minutes
-// (Hummingbot tokens are valid for 1 hour by default).
-func (c *Client) authenticate(ctx context.Context) error {
-	body, err := json.Marshal(AuthRequest{Username: c.username, Password: c.password})
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/auth", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("hummingbot: auth request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("hummingbot: auth returned HTTP %d", resp.StatusCode)
-	}
-
-	var ar AuthResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
-		return fmt.Errorf("hummingbot: failed to decode auth response: %w", err)
-	}
-	if ar.Token == "" {
-		return fmt.Errorf("hummingbot: auth returned empty token")
-	}
-
-	c.token = ar.Token
-	c.tokenExp = time.Now().Add(55 * time.Minute)
-	return nil
-}
-
-// token returns a valid bearer token, re-authenticating if necessary.
-func (c *Client) bearerToken(ctx context.Context) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.token == "" || time.Now().After(c.tokenExp) {
-		if err := c.authenticate(ctx); err != nil {
-			return "", err
-		}
-	}
-	return c.token, nil
-}
-
-// get performs an authenticated GET request and decodes the JSON response into out.
+// get performs an authenticated GET and decodes the JSON response into out.
 func (c *Client) get(ctx context.Context, path string, out any) error {
-	token, err := c.bearerToken(ctx)
-	if err != nil {
-		return err
-	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.SetBasicAuth(c.username, c.password)
+	return c.do(req, path, out)
+}
 
+// post performs an authenticated POST with a JSON body and decodes the response into out.
+func (c *Client) post(ctx context.Context, path string, body any, out any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(c.username, c.password)
+	req.Header.Set("Content-Type", "application/json")
+	return c.do(req, path, out)
+}
+
+func (c *Client) do(req *http.Request, path string, out any) error {
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("hummingbot: GET %s failed: %w", path, err)
+		return fmt.Errorf("hummingbot: %s %s failed: %w", req.Method, path, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("hummingbot: GET %s returned HTTP %d", path, resp.StatusCode)
+		return fmt.Errorf("hummingbot: %s %s returned HTTP %d", req.Method, path, resp.StatusCode)
 	}
-
+	if out == nil {
+		return nil
+	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-// Status returns the current running state of the Hummingbot instance.
+// Status returns the current running state of the Hummingbot API instance.
 func (c *Client) Status(ctx context.Context) (*StatusResponse, error) {
 	var r StatusResponse
-	if err := c.get(ctx, "/api/v1/status", &r); err != nil {
+	if err := c.get(ctx, "/", &r); err != nil {
 		return nil, err
 	}
 	return &r, nil
 }
 
-// Balances returns all asset balances across all connected exchanges.
-func (c *Client) Balances(ctx context.Context) ([]BalanceEntry, error) {
-	var r BalanceResponse
-	if err := c.get(ctx, "/api/v1/balance", &r); err != nil {
+// PortfolioState returns the full portfolio state across all accounts and connectors.
+func (c *Client) PortfolioState(ctx context.Context, req PortfolioStateRequest) (PortfolioState, error) {
+	var state PortfolioState
+	if err := c.post(ctx, "/portfolio/state", req, &state); err != nil {
 		return nil, err
 	}
-	return r.Balances, nil
+	return state, nil
 }
 
-// BalanceForExchange returns the balance of a specific asset on a specific exchange.
-// Returns an error if the asset/exchange combination is not found.
-func (c *Client) BalanceForExchange(ctx context.Context, exchange, asset string) (*BalanceEntry, error) {
-	all, err := c.Balances(ctx)
+// BalanceForExchange returns the balance of a specific token on a specific connector.
+// connector is the Hummingbot connector name (e.g. "kraken", "binance").
+// token is the asset symbol (e.g. "USD", "BTC").
+func (c *Client) BalanceForExchange(ctx context.Context, connector, token string) (*BalanceToken, error) {
+	state, err := c.PortfolioState(ctx, PortfolioStateRequest{
+		ConnectorNames: []string{connector},
+		SkipGateway:    true,
+		Refresh:        true,
+	})
 	if err != nil {
 		return nil, err
 	}
-	for _, b := range all {
-		if b.Exchange == exchange && b.Asset == asset {
-			return &b, nil
+	for _, connectors := range state {
+		for connName, tokens := range connectors {
+			if connName != connector {
+				continue
+			}
+			for _, t := range tokens {
+				if t.Token == token {
+					return &t, nil
+				}
+			}
 		}
 	}
-	return nil, fmt.Errorf("hummingbot: no balance found for %s on %s", asset, exchange)
+	return nil, fmt.Errorf("hummingbot: no balance found for %s on %s", token, connector)
 }
 
-// TradeHistory returns all trades recorded by Hummingbot.
-func (c *Client) TradeHistory(ctx context.Context) ([]TradeRecord, error) {
-	var r TradeHistoryResponse
-	if err := c.get(ctx, "/api/v1/history", &r); err != nil {
+// Trades returns a paginated list of trades, optionally filtered.
+func (c *Client) Trades(ctx context.Context, req TradeFilterRequest) ([]TradeRecord, error) {
+	var resp PaginatedResponse
+	if err := c.post(ctx, "/trading/trades", req, &resp); err != nil {
 		return nil, err
 	}
-	return r.Trades, nil
-}
-
-// TradesForExchange returns only the trades that belong to a given exchange.
-func (c *Client) TradesForExchange(ctx context.Context, exchange string) ([]TradeRecord, error) {
-	all, err := c.TradeHistory(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var filtered []TradeRecord
-	for _, t := range all {
-		if t.Exchange == exchange {
-			filtered = append(filtered, t)
+	records := make([]TradeRecord, 0, len(resp.Data))
+	for _, raw := range resp.Data {
+		var r TradeRecord
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return nil, fmt.Errorf("hummingbot: failed to decode trade record: %w", err)
 		}
+		r.Raw = raw
+		records = append(records, r)
 	}
-	return filtered, nil
+	return records, nil
 }
 
-// WithdrawalHistory returns all withdrawals recorded by Hummingbot.
-func (c *Client) WithdrawalHistory(ctx context.Context) ([]WithdrawalRecord, error) {
-	var r WithdrawalHistoryResponse
-	if err := c.get(ctx, "/api/v1/withdrawals", &r); err != nil {
-		return nil, err
-	}
-	return r.Withdrawals, nil
-}
-
-// WithdrawalByTxHash looks up a withdrawal by its on-chain transaction hash.
-func (c *Client) WithdrawalByTxHash(ctx context.Context, txHash string) (*WithdrawalRecord, error) {
-	all, err := c.WithdrawalHistory(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, w := range all {
-		if w.TxHash == txHash {
-			return &w, nil
-		}
-	}
-	return nil, fmt.Errorf("hummingbot: no withdrawal found with tx hash %q", txHash)
+// TradesForExchange returns all trades for a specific connector/exchange.
+// connector is the Hummingbot connector name (e.g. "kraken").
+func (c *Client) TradesForExchange(ctx context.Context, connector string) ([]TradeRecord, error) {
+	return c.Trades(ctx, TradeFilterRequest{
+		ConnectorNames: []string{connector},
+		Limit:          1000,
+	})
 }

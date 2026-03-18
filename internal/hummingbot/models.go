@@ -1,67 +1,62 @@
 package hummingbot
 
-// AuthRequest is sent to POST /api/v1/auth
-type AuthRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+import "encoding/json"
+
+// PortfolioStateRequest is the body for POST /portfolio/state.
+type PortfolioStateRequest struct {
+	AccountNames   []string `json:"account_names,omitempty"`
+	ConnectorNames []string `json:"connector_names,omitempty"`
+	SkipGateway    bool     `json:"skip_gateway"`
+	Refresh        bool     `json:"refresh"`
 }
 
-// AuthResponse is returned by POST /api/v1/auth
-type AuthResponse struct {
-	Token string `json:"token"`
-}
-
-// BalanceEntry holds the balance for a single asset on a single exchange.
-type BalanceEntry struct {
-	Exchange  string  `json:"exchange"`
-	Asset     string  `json:"asset"`
-	Total     float64 `json:"total"`
+// BalanceToken is a single token entry within a connector's balance list.
+// The Backend API returns: account_name -> connector_name -> []BalanceToken
+// Field names are inferred from the Hummingbot Backend API source; they will
+// be validated against live data once exchange credentials are configured.
+type BalanceToken struct {
+	Token     string  `json:"token"`
 	Available float64 `json:"available"`
+	Total     float64 `json:"total"`
+	USDValue  float64 `json:"usd_value"`
 }
 
-// BalanceResponse is returned by GET /api/v1/balance
-type BalanceResponse struct {
-	Balances []BalanceEntry `json:"balances"`
+// PortfolioState is the decoded form of the POST /portfolio/state response.
+// Structure: account_name -> connector_name -> []BalanceToken
+type PortfolioState map[string]map[string][]BalanceToken
+
+// TradeFilterRequest is the body for POST /trading/trades.
+type TradeFilterRequest struct {
+	Limit          int      `json:"limit,omitempty"`
+	AccountNames   []string `json:"account_names,omitempty"`
+	ConnectorNames []string `json:"connector_names,omitempty"`
+	TradingPairs   []string `json:"trading_pairs,omitempty"`
+	TradeTypes     []string `json:"trade_types,omitempty"`    // "BUY" / "SELL"
 }
 
-// TradeRecord represents a single executed trade in the hummingbot history.
+// TradeRecord is a single trade entry from the paginated trades response.
 type TradeRecord struct {
-	TradeID    string  `json:"trade_id"`
-	Exchange   string  `json:"exchange"`
-	Symbol     string  `json:"symbol"`
-	Side       string  `json:"side"` // "BUY" or "SELL"
-	Price      float64 `json:"price"`
-	Amount     float64 `json:"amount"`
-	Fee        float64 `json:"fee"`
-	FeeCurrency string `json:"fee_currency"`
-	Timestamp  int64   `json:"timestamp"` // unix ms
+	TradeID     string          `json:"trade_id"`
+	Connector   string          `json:"connector_name"`
+	TradingPair string          `json:"trading_pair"`
+	TradeType   string          `json:"trade_type"` // "BUY" or "SELL"
+	Price       float64         `json:"price"`
+	Amount      float64         `json:"amount"`
+	Fee         float64         `json:"trade_fee"`
+	FeeCurrency string          `json:"fee_asset"`
+	Timestamp   int64           `json:"timestamp"` // unix ms
+	Raw         json.RawMessage `json:"-"`          // full response for inspection
 }
 
-// TradeHistoryResponse is returned by GET /api/v1/history
-type TradeHistoryResponse struct {
-	Trades []TradeRecord `json:"trades"`
+// PaginatedResponse is the envelope returned by paginated endpoints.
+type PaginatedResponse struct {
+	Data       []json.RawMessage      `json:"data"`
+	Pagination map[string]interface{} `json:"pagination"`
 }
 
-// WithdrawalRecord represents a single withdrawal entry.
-type WithdrawalRecord struct {
-	WithdrawalID string  `json:"id"`
-	Exchange     string  `json:"exchange"`
-	Asset        string  `json:"asset"`
-	Amount       float64 `json:"amount"`
-	Fee          float64 `json:"fee"`
-	TxHash       string  `json:"tx_hash"`
-	Status       string  `json:"status"` // "pending", "confirmed", "failed"
-	Timestamp    int64   `json:"timestamp"` // unix ms
-}
-
-// WithdrawalHistoryResponse is returned by GET /api/v1/withdrawals
-type WithdrawalHistoryResponse struct {
-	Withdrawals []WithdrawalRecord `json:"withdrawals"`
-}
-
-// StatusResponse is returned by GET /api/v1/status
+// StatusResponse is returned by GET /
 type StatusResponse struct {
-	Running    bool   `json:"running"`
-	Strategy   string `json:"strategy"`
-	Message    string `json:"message"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Status  string `json:"status"`
 }
