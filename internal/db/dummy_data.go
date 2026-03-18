@@ -20,7 +20,7 @@ func (d *DummyDataGenerator) GenerateSingleTransaction(direction string, amount 
 		FiatAmount:                   amount,
 		FiatCurrency:                 "USD",
 		Cex:                          cex,
-		CexHedgingPosition:           HedgingShort,
+		CexHedgingPosition:           CexKraken,
 		Dex:                          DexBisq,
 		Status:                       StatusDexPositionReleased,
 		TransferFiatToCexStartTime:   time.Now(),
