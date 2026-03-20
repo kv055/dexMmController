@@ -26,7 +26,7 @@ func TestPollBankTxArrived(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	arrived, err := c.PollBankTxArrived(ctx, "xyz123", 25*time.Millisecond)
+	arrived, err := c.PollBankTxArrivedFromDex(ctx, "xyz123", 25*time.Millisecond)
 	if err != nil {
 		t.Fatalf("poll: %v", err)
 	}
