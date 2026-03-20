@@ -2,7 +2,6 @@ package healthcheck
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -67,37 +66,6 @@ func (h *HealthChecker) verify(ctx context.Context, tx *db.Transaction) error {
 	default:
 		return fmt.Errorf("unknown status %q", tx.Status)
 	}
-}
-
-// verifyFiatToCexInitiated asks openclaw (the bank gateway) whether the fiat
-// wire to the CEX has been sent. The transaction ID is used as the openclaw
-// reference code, matching the pattern used for DEX fiat checks.
-func (h *HealthChecker) verifyFiatToCexInitiated(ctx context.Context, tx *db.Transaction) error {
-	arrived, err := h.openclaw.BankTxHasBeenSentToCex(ctx, fmt.Sprintf("tx-%d", tx.ID))
-	if err != nil {
-		return fmt.Errorf("verifyFiatToCexInitiated: openclaw check failed: %w", err)
-	}
-	if arrived {
-		tx.Status = db.StatusFiatToCexArrived
-		return h.repo.UpdateTransaction(tx)
-	}
-	return nil
-}
-
-// verifyFiatToCexArrived confirms the fiat balance on the CEX is at least the
-// expected amount. Uses tx.FiatCurrency and tx.Cex from the DB to identify
-// which asset and exchange to query via Hummingbot.
-func (h *HealthChecker) verifyFiatToCexArrived(ctx context.Context, tx *db.Transaction) error {
-	balance, err := h.hummingbot.BalanceForExchange(ctx, string(tx.Cex), tx.FiatCurrency)
-	if err != nil {
-		// Balance endpoint returned nothing for this asset — fiat not visible yet.
-		return nil
-	}
-	if balance.Available >= tx.FiatAmount {
-		tx.Status = db.StatusFiatToCexArrived
-		return h.repo.UpdateTransaction(tx)
-	}
-	return nil
 }
 
 // verifyCexTradeSuccessful confirms that a BTC buy trade occurred on the CEX
@@ -226,16 +194,6 @@ func (h *HealthChecker) verifyDexFiatHasArrived(ctx context.Context, tx *db.Tran
 	return nil
 }
 
-// withdrawalHashFromJSON extracts the "hash" field from a JSON blob stored in
-// CexToDexWithdrawalTxDetails, e.g. {"hash":"0xabc...","status":"pending"}.
-func withdrawalHashFromJSON(raw []byte) string {
-	var m map[string]string
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return ""
-	}
-	return m["hash"]
-}
-
 // verifyDexPositionReleased connects to the DEX specified in tx.Dex and checks
 // whether the BTC has actually been released to the buyer.
 //
@@ -250,6 +208,37 @@ func (h *HealthChecker) verifyDexPositionReleased(_ context.Context, tx *db.Tran
 		// TODO: query RoboSats API for order completion
 	default:
 		return fmt.Errorf("verifyDexPositionReleased: unknown DEX %q", tx.Dex)
+	}
+	return nil
+}
+
+// verifyFiatToCexInitiated asks openclaw (the bank gateway) whether the fiat
+// wire to the CEX has been sent. The transaction ID is used as the openclaw
+// reference code, matching the pattern used for DEX fiat checks.
+func (h *HealthChecker) verifyFiatToCexInitiated(ctx context.Context, tx *db.Transaction) error {
+	arrived, err := h.openclaw.BankTxHasBeenSentToCex(ctx, fmt.Sprintf("tx-%d", tx.ID))
+	if err != nil {
+		return fmt.Errorf("verifyFiatToCexInitiated: openclaw check failed: %w", err)
+	}
+	if arrived {
+		tx.Status = db.StatusFiatToCexArrived
+		return h.repo.UpdateTransaction(tx)
+	}
+	return nil
+}
+
+// verifyFiatToCexArrived confirms the fiat balance on the CEX is at least the
+// expected amount. Uses tx.FiatCurrency and tx.Cex from the DB to identify
+// which asset and exchange to query via Hummingbot.
+func (h *HealthChecker) verifyFiatToCexArrived(ctx context.Context, tx *db.Transaction) error {
+	balance, err := h.hummingbot.BalanceForExchange(ctx, string(tx.Cex), tx.FiatCurrency)
+	if err != nil {
+		// Balance endpoint returned nothing for this asset — fiat not visible yet.
+		return nil
+	}
+	if balance.Available >= tx.FiatAmount {
+		tx.Status = db.StatusFiatToCexArrived
+		return h.repo.UpdateTransaction(tx)
 	}
 	return nil
 }

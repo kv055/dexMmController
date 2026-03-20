@@ -67,10 +67,6 @@ type Transaction struct {
 	Dex                DexPlatform       `gorm:"index" json:"dex"`
 	Status             TransactionStatus `gorm:"index" json:"status"`
 
-	// Fiat to CEX transfer
-	TransferFiatToCexStartTime   time.Time `json:"transfer_time_fiat_to_cex"`
-	TransferFiatToCexArrivalTime time.Time `json:"fiat_at_cex_arrival"`
-
 	// CEX transaction details
 	CexTransactionDetails   datatypes.JSON `json:"cex_transaction_details" gorm:"type:json"`
 	CexBitcoinAmount        float64        `json:"cex_bitcoin_amount"`
@@ -94,6 +90,14 @@ type Transaction struct {
 	DexFiatArrival   datatypes.JSON `json:"dex_fiat_arrival" gorm:"type:json"`
 	DexBtcRelease    time.Time      `json:"dex_btc_release"`
 	DexFees          float64        `json:"dex_fees"`
+
+	// Fiat to CEX transfer
+	TransferFiatToCexStartTime   time.Time `json:"transfer_time_fiat_to_cex"`
+	TransferFiatToCexArrivalTime time.Time `json:"fiat_at_cex_arrival"`
+
+	// True if everything completed successfully (
+	// trade executed, crypto withdrawn, DEX position opened and taken, fiat arrived from DEX, position released and fiat arrived back at CEX)
+	TransactionComplete bool `json:"transaction_complete"`
 
 	// Operational costs
 	OpenClawLlmInferenceCost float64 `json:"open_claw_llm_inference_cost"`
