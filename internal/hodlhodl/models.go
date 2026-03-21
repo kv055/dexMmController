@@ -1,5 +1,7 @@
 package hodlhodl
 
+import "encoding/json"
+
 // ContractStatus represents the lifecycle state of a HodlHodl contract.
 type ContractStatus string
 
@@ -30,6 +32,11 @@ type Offer struct {
 	Price         string `json:"price"`
 	FeePercentage string `json:"fee_percentage"`
 	Trader        Trader `json:"trader"`
+
+	// PaymentMethodInstructions is populated for "sell" offers (seller's payment details).
+	PaymentMethodInstructions []PaymentMethodInstruction `json:"payment_method_instructions"`
+	// PaymentMethods is populated for "buy" offers (accepted payment methods).
+	PaymentMethods []json.RawMessage `json:"payment_methods"`
 }
 
 // Trader is the nested trader info inside an Offer.
@@ -80,6 +87,46 @@ type Contract struct {
 	} `json:"counterparty"`
 
 	CreatedAt string `json:"created_at"`
+}
+
+// OfferSearchFilters configures the GET /api/v1/offers query.
+type OfferSearchFilters struct {
+	Side         string // "buy" or "sell"
+	CurrencyCode string // e.g. "EUR", "USD"
+	AssetCode    string // e.g. "BTC" (default)
+	Country      string // ISO country code
+	Amount       string // fiat amount to match against offer min/max
+	Limit        int    // pagination limit (max 100)
+	Offset       int    // pagination offset
+}
+
+// CreateContractParams are the required fields for POST /api/v1/contracts.
+type CreateContractParams struct {
+	OfferID                       string `json:"offer_id"`
+	OfferVersion                  string `json:"offer_version"`
+	PaymentMethodInstructionID    string `json:"payment_method_instruction_id"`
+	PaymentMethodInstructionVer   string `json:"payment_method_instruction_version"`
+	Value                         string `json:"value,omitempty"`  // fiat amount (mutually exclusive with Volume)
+	Volume                        string `json:"volume,omitempty"` // BTC amount (mutually exclusive with Value)
+	Comment                       string `json:"comment,omitempty"`
+}
+
+// PaymentMethodInstruction represents a saved payment method on the user's
+// account (GET /api/v1/payment_method_instructions) and also appears nested
+// inside offers.
+type PaymentMethodInstruction struct {
+	ID              string `json:"id"`
+	Version         string `json:"version"`
+	PaymentMethodID string `json:"payment_method_id"`
+	Type            string `json:"type"`
+	Name            string `json:"name"`
+	Details         string `json:"details"`
+}
+
+// paymentMethodInstructionsResponse wraps the list returned by
+// GET /api/v1/payment_method_instructions.
+type paymentMethodInstructionsResponse struct {
+	PaymentMethodInstructions []PaymentMethodInstruction `json:"payment_method_instructions"`
 }
 
 // offerResponse wraps a single offer.

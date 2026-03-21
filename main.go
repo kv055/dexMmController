@@ -4,9 +4,6 @@ import (
 	"context"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/db"
@@ -23,12 +20,6 @@ func main() {
 	hbURL := envOr("HUMMINGBOT_URL", "http://localhost:8000")
 	hbUser := envOr("HUMMINGBOT_USERNAME", "admin")
 	hbPass := mustEnv("HUMMINGBOT_PASSWORD")
-	intervalStr := envOr("HEALTHCHECK_INTERVAL", "30s")
-
-	interval, err := time.ParseDuration(intervalStr)
-	if err != nil {
-		log.Fatalf("invalid HEALTHCHECK_INTERVAL %q: %v", intervalStr, err)
-	}
 
 	// ── Database ──────────────────────────────────────────────────────────────
 	database, err := db.InitDB(dbPath)
@@ -60,33 +51,12 @@ func main() {
 	// ── HealthChecker ─────────────────────────────────────────────────────────
 	hc := healthcheck.NewHealthChecker(repo, claw, hb, btc, hh)
 
-	// ── Run loop ──────────────────────────────────────────────────────────────
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	log.Printf("healthcheck started (interval: %s)", interval)
-
-	// Run once immediately so we don't wait a full interval on startup.
-	runHealthcheck(ctx, hc)
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			runHealthcheck(ctx, hc)
-		case <-ctx.Done():
-			log.Println("shutting down")
-			return
-		}
+	// ── Run once ──────────────────────────────────────────────────────────────
+	log.Println("running healthcheck")
+	if err := hc.Run(context.Background()); err != nil {
+		log.Fatalf("healthcheck failed: %v", err)
 	}
-}
-
-func runHealthcheck(ctx context.Context, hc *healthcheck.HealthChecker) {
-	if err := hc.Run(ctx); err != nil {
-		log.Printf("healthcheck error: %v", err)
-	}
+	log.Println("healthcheck complete")
 }
 
 // envOr returns the value of the environment variable key, or fallback if unset.

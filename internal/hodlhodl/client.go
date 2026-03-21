@@ -1,10 +1,12 @@
 package hodlhodl
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -83,6 +85,25 @@ func (c *Client) do(req *http.Request, path string, out any) error {
 	return json.Unmarshal(raw, out)
 }
 
+// post performs an authenticated POST with a JSON body and decodes the response into out.
+func (c *Client) post(ctx context.Context, path string, body any, out any) error {
+	var buf bytes.Buffer
+	if body != nil {
+		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+			return fmt.Errorf("hodlhodl: encode body: %w", err)
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	return c.do(req, path, out)
+}
+
 // ---------- Offers ----------
 
 // GetOffer fetches a single offer by ID. Does not require authentication.
@@ -98,6 +119,37 @@ func (c *Client) GetOffer(ctx context.Context, offerID string) (*Offer, error) {
 func (c *Client) GetMyOffers(ctx context.Context) ([]Offer, error) {
 	var resp offersResponse
 	if err := c.get(ctx, "/api/v1/offers/my", &resp); err != nil {
+		return nil, err
+	}
+	return resp.Offers, nil
+}
+
+// SearchOffers searches the public offer book with the given filters.
+func (c *Client) SearchOffers(ctx context.Context, f OfferSearchFilters) ([]Offer, error) {
+	path := "/api/v1/offers?"
+	q := ""
+	add := func(k, v string) {
+		if v == "" {
+			return
+		}
+		if q != "" {
+			q += "&"
+		}
+		q += k + "=" + v
+	}
+	add("filters[side]", f.Side)
+	add("filters[currency_code]", f.CurrencyCode)
+	add("filters[asset_code]", f.AssetCode)
+	add("filters[country]", f.Country)
+	add("filters[amount]", f.Amount)
+	if f.Limit > 0 {
+		add("pagination[limit]", strconv.Itoa(f.Limit))
+	}
+	if f.Offset > 0 {
+		add("pagination[offset]", strconv.Itoa(f.Offset))
+	}
+	var resp offersResponse
+	if err := c.get(ctx, path+q, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Offers, nil
@@ -125,6 +177,91 @@ func (c *Client) GetMyContracts(ctx context.Context, status ContractStatus) ([]C
 		return nil, err
 	}
 	return resp.Contracts, nil
+}
+
+// CreateContract accepts an offer by creating a new contract.
+// Returns the newly created contract.
+func (c *Client) CreateContract(ctx context.Context, p CreateContractParams) (*Contract, error) {
+	body := map[string]any{
+		"contract": map[string]any{
+			"offer_id":                        p.OfferID,
+			"offer_version":                   p.OfferVersion,
+			"payment_method_instruction_id":   p.PaymentMethodInstructionID,
+			"payment_method_instruction_version": p.PaymentMethodInstructionVer,
+			"value":  p.Value,
+			"volume": p.Volume,
+		},
+	}
+	if p.Comment != "" {
+		body["contract"].(map[string]any)["comment"] = p.Comment
+	}
+	var resp contractResponse
+	if err := c.post(ctx, "/api/v1/contracts", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp.Contract, nil
+}
+
+// ---------- Payment method instructions ----------
+
+// GetMyPaymentMethodInstructions lists the authenticated user's saved payment
+// methods (bank accounts, etc.) that can be used when accepting offers.
+func (c *Client) GetMyPaymentMethodInstructions(ctx context.Context) ([]PaymentMethodInstruction, error) {
+	var resp paymentMethodInstructionsResponse
+	if err := c.get(ctx, "/api/v1/payment_method_instructions", &resp); err != nil {
+		return nil, err
+	}
+	return resp.PaymentMethodInstructions, nil
+}
+
+// ---------- Position taking ----------
+
+// TakeOffer accepts an offer by ID with a fiat amount and returns the escrow
+// bitcoin address to deposit BTC into. It fetches the offer version, looks up
+// the first payment method instruction from your account, creates the contract,
+// and polls until HodlHodl provisions the escrow address.
+func (c *Client) TakeOffer(ctx context.Context, offerID string, fiatAmount string) (escrowAddress string, contract *Contract, err error) {
+	offer, err := c.GetOffer(ctx, offerID)
+	if err != nil {
+		return "", nil, fmt.Errorf("TakeOffer: fetch offer: %w", err)
+	}
+
+	pmis, err := c.GetMyPaymentMethodInstructions(ctx)
+	if err != nil {
+		return "", nil, fmt.Errorf("TakeOffer: fetch payment methods: %w", err)
+	}
+	if len(pmis) == 0 {
+		return "", nil, fmt.Errorf("TakeOffer: no payment method instructions configured on your HodlHodl account")
+	}
+	pmi := pmis[0]
+
+	contract, err = c.CreateContract(ctx, CreateContractParams{
+		OfferID:                     offer.ID,
+		OfferVersion:                offer.Version,
+		PaymentMethodInstructionID:  pmi.ID,
+		PaymentMethodInstructionVer: pmi.Version,
+		Value:                       fiatAmount,
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("TakeOffer: create contract: %w", err)
+	}
+
+	// Poll until the escrow address is provisioned by HodlHodl.
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for contract.Escrow.Address == "" {
+		select {
+		case <-ctx.Done():
+			return "", contract, fmt.Errorf("TakeOffer: context cancelled waiting for escrow address: %w", ctx.Err())
+		case <-ticker.C:
+			contract, err = c.GetContract(ctx, contract.ID)
+			if err != nil {
+				return "", nil, fmt.Errorf("TakeOffer: poll contract: %w", err)
+			}
+		}
+	}
+
+	return contract.Escrow.Address, contract, nil
 }
 
 // ---------- Healthcheck helpers ----------
