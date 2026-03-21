@@ -2,11 +2,13 @@ package healthcheck
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/db"
+	"dexMmController/internal/hodlhodl"
 	"dexMmController/internal/hummingbot"
 	"dexMmController/internal/openclaw"
 )
@@ -18,10 +20,11 @@ type HealthChecker struct {
 	openclaw   *openclaw.Client
 	hummingbot *hummingbot.Client
 	btc        *bitcoin.NetworkDataFetcher
+	hodlhodl   *hodlhodl.Client
 }
 
-func NewHealthChecker(repo *db.TransactionRepository, oc *openclaw.Client, hb *hummingbot.Client, btc *bitcoin.NetworkDataFetcher) *HealthChecker {
-	return &HealthChecker{repo: repo, openclaw: oc, hummingbot: hb, btc: btc}
+func NewHealthChecker(repo *db.TransactionRepository, oc *openclaw.Client, hb *hummingbot.Client, btc *bitcoin.NetworkDataFetcher, hh *hodlhodl.Client) *HealthChecker {
+	return &HealthChecker{repo: repo, openclaw: oc, hummingbot: hb, btc: btc, hodlhodl: hh}
 }
 
 // Run finds all incomplete transactions and runs a status-specific verification
@@ -124,6 +127,8 @@ func (h *HealthChecker) verifyCexTradeSuccessful(ctx context.Context, tx *db.Tra
 //
 // TODO: the Hummingbot Backend API (v1.0.1) has no withdrawal endpoint.
 // Implement once the API exposes withdrawal history.
+// Only use in worst case scenario when verifyCexCryptoWithdrawalArrived fails
+// to detect the transaction on chain (confirmed or unconfirmed).
 func (h *HealthChecker) verifyCexCryptoWithdrawalInitiated(_ context.Context, _ *db.Transaction) error {
 	return nil
 }
@@ -153,28 +158,82 @@ func (h *HealthChecker) verifyCexCryptoWithdrawalArrived(ctx context.Context, tx
 	return h.repo.UpdateTransaction(tx)
 }
 
+// dexOfferID extracts the offer_id from the DexOfferCreation JSON blob.
+func dexOfferID(tx *db.Transaction) (string, error) {
+	var info struct {
+		OfferID    string `json:"offer_id"`
+		ContractID string `json:"contract_id"`
+	}
+	if err := json.Unmarshal(tx.DexOfferCreation, &info); err != nil {
+		return "", fmt.Errorf("failed to parse DexOfferCreation: %w", err)
+	}
+	if info.OfferID == "" {
+		return "", fmt.Errorf("DexOfferCreation has no offer_id for tx %d", tx.ID)
+	}
+	return info.OfferID, nil
+}
+
+// dexContractID extracts the contract_id from the DexOfferCreation JSON blob.
+func dexContractID(tx *db.Transaction) (string, error) {
+	var info struct {
+		ContractID string `json:"contract_id"`
+	}
+	if err := json.Unmarshal(tx.DexOfferCreation, &info); err != nil {
+		return "", fmt.Errorf("failed to parse DexOfferCreation: %w", err)
+	}
+	if info.ContractID == "" {
+		return "", fmt.Errorf("DexOfferCreation has no contract_id for tx %d", tx.ID)
+	}
+	return info.ContractID, nil
+}
+
 // verifyDexPositionOpen checks the DEX (tx.Dex) to confirm the offer is still
 // live. Advances to DexPositionTaken if a counterparty has already matched.
-//
-// TODO: connect to Bisq / HodlHodl / RoboSats API and fetch offer status.
-func (h *HealthChecker) verifyDexPositionOpen(_ context.Context, _ *db.Transaction) error {
-	// TODO: poll tx.Dex offer ID from DexOfferCreation for counterparty match
+func (h *HealthChecker) verifyDexPositionOpen(ctx context.Context, tx *db.Transaction) error {
+	switch tx.Dex {
+	case db.DexHodlHodl:
+		offerID, err := dexOfferID(tx)
+		if err != nil {
+			return fmt.Errorf("verifyDexPositionOpen: %w", err)
+		}
+		live, err := h.hodlhodl.IsOfferLive(ctx, offerID)
+		if err != nil {
+			return fmt.Errorf("verifyDexPositionOpen: %w", err)
+		}
+		if !live {
+			// Offer no longer active — likely taken by a counterparty.
+			tx.Status = db.StatusDexPositionTaken
+			return h.repo.UpdateTransaction(tx)
+		}
+	case db.DexBisq, db.DexRoboSats:
+		// TODO: implement Bisq / RoboSats offer polling
+	default:
+		return fmt.Errorf("verifyDexPositionOpen: unknown DEX %q", tx.Dex)
+	}
 	return nil
 }
 
-// verifyDexPositionTaken confirms the trade is in progress on the DEX and that
-// the fiat leg has not already settled. Advances to DexFiatHasArrived if
-// openclaw reports the payment already received.
+// verifyDexPositionTaken confirms the trade is in progress on the DEX.
+// For HodlHodl, checks whether the buyer has marked the contract as paid (fiat sent).
 func (h *HealthChecker) verifyDexPositionTaken(ctx context.Context, tx *db.Transaction) error {
-	// Ask openclaw whether the fiat payment has already landed in the bank
-	// account while we weren't looking.
-	arrived, err := h.openclaw.PollBankTxArrivedFromDex(ctx, fmt.Sprintf("tx-%d", tx.ID), 5*time.Second)
-	if err != nil {
-		return fmt.Errorf("verifyDexPositionTaken: openclaw poll failed: %w", err)
-	}
-	if arrived {
-		tx.Status = db.StatusDexFiatHasArrived
-		return h.repo.UpdateTransaction(tx)
+	switch tx.Dex {
+	case db.DexHodlHodl:
+		contractID, err := dexContractID(tx)
+		if err != nil {
+			return fmt.Errorf("verifyDexPositionTaken: %w", err)
+		}
+		paid, err := h.hodlhodl.ContractIsPaid(ctx, contractID)
+		if err != nil {
+			return fmt.Errorf("verifyDexPositionTaken: %w", err)
+		}
+		if paid {
+			tx.Status = db.StatusDexFiatHasArrived
+			return h.repo.UpdateTransaction(tx)
+		}
+	case db.DexBisq, db.DexRoboSats:
+		// TODO: implement Bisq / RoboSats contract status check
+	default:
+		return fmt.Errorf("verifyDexPositionTaken: unknown DEX %q", tx.Dex)
 	}
 	return nil
 }
@@ -196,16 +255,24 @@ func (h *HealthChecker) verifyDexFiatHasArrived(ctx context.Context, tx *db.Tran
 
 // verifyDexPositionReleased connects to the DEX specified in tx.Dex and checks
 // whether the BTC has actually been released to the buyer.
-//
-// TODO: implement per-DEX release confirmation (Bisq, HodlHodl, RoboSats).
-func (h *HealthChecker) verifyDexPositionReleased(_ context.Context, tx *db.Transaction) error {
+func (h *HealthChecker) verifyDexPositionReleased(ctx context.Context, tx *db.Transaction) error {
 	switch tx.Dex {
-	case db.DexBisq:
-		// TODO: query Bisq API / local node for trade completion
 	case db.DexHodlHodl:
-		// TODO: query HodlHodl API for contract release status
-	case db.DexRoboSats:
-		// TODO: query RoboSats API for order completion
+		contractID, err := dexContractID(tx)
+		if err != nil {
+			return fmt.Errorf("verifyDexPositionReleased: %w", err)
+		}
+		completed, err := h.hodlhodl.IsContractCompleted(ctx, contractID)
+		if err != nil {
+			return fmt.Errorf("verifyDexPositionReleased: %w", err)
+		}
+		if completed {
+			tx.Status = db.StatusDexPositionReleased
+			tx.TransactionComplete = true
+			return h.repo.UpdateTransaction(tx)
+		}
+	case db.DexBisq, db.DexRoboSats:
+		// TODO: implement Bisq / RoboSats release confirmation
 	default:
 		return fmt.Errorf("verifyDexPositionReleased: unknown DEX %q", tx.Dex)
 	}

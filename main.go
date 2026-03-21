@@ -11,6 +11,7 @@ import (
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/db"
 	"dexMmController/internal/healthcheck"
+	"dexMmController/internal/hodlhodl"
 	"dexMmController/internal/hummingbot"
 	"dexMmController/internal/openclaw"
 )
@@ -51,8 +52,13 @@ func main() {
 	// ── Bitcoin ───────────────────────────────────────────────────────────────
 	btc := bitcoin.NewNetworkDataFetcher()
 
+	// ── HodlHodl ─────────────────────────────────────────────────────────────
+	hhAPIKey := envOr("HODLHODL_API_KEY", "")
+	hhBaseURL := envOr("HODLHODL_URL", "")
+	hh := hodlhodl.NewClient(hhBaseURL, hhAPIKey)
+
 	// ── HealthChecker ─────────────────────────────────────────────────────────
-	hc := healthcheck.NewHealthChecker(repo, claw, hb, btc)
+	hc := healthcheck.NewHealthChecker(repo, claw, hb, btc, hh)
 
 	// ── Run loop ──────────────────────────────────────────────────────────────
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
