@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/bisq"
 	"dexMmController/internal/db"
-	"dexMmController/internal/hodlhodl"
-	"dexMmController/internal/robosats"
+	"dexMmController/internal/exchanges/dex/bisq"
+	"dexMmController/internal/exchanges/dex/hodlhodl"
+	"dexMmController/internal/exchanges/dex/robosats"
 
 	"gorm.io/datatypes"
 	"nhooyr.io/websocket"

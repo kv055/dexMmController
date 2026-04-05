@@ -7,15 +7,15 @@ import (
 	"os/signal"
 	"syscall"
 
-	"dexMmController/internal/bisq"
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/db"
+	"dexMmController/internal/exchanges/dex/bisq"
+	"dexMmController/internal/exchanges/dex/hodlhodl"
+	"dexMmController/internal/exchanges/dex/robosats"
 	"dexMmController/internal/healthcheck"
-	"dexMmController/internal/hodlhodl"
 	"dexMmController/internal/hummingbot"
 	"dexMmController/internal/openclaw"
 	"dexMmController/internal/premiumoffers"
-	"dexMmController/internal/robosats"
 	lnd "dexMmController/internal/wallethub"
 )
 
