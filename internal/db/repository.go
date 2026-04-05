@@ -5,7 +5,10 @@ import (
 	"fmt"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
+
+var ErrWalletAddressNotFound = errors.New("wallet address not found")
 
 // TransactionRepository provides database operations for transactions
 type TransactionRepository struct {
@@ -19,6 +22,9 @@ func NewTransactionRepository(db *gorm.DB) *TransactionRepository {
 
 // CreateTransaction creates a new transaction record
 func (r *TransactionRepository) CreateTransaction(tx *Transaction) error {
+	if err := r.assignPrimaryWalletAddress(tx); err != nil {
+		return err
+	}
 	if err := r.db.Create(tx).Error; err != nil {
 		return fmt.Errorf("failed to create transaction: %w", err)
 	}
@@ -113,11 +119,11 @@ func (r *TransactionRepository) GetTransactionCount() (int64, error) {
 // GetPnlStats returns PnL statistics
 func (r *TransactionRepository) GetPnlStats() (map[string]interface{}, error) {
 	var stats struct {
-		TotalPnl    float64
-		AvgPnl      float64
-		MaxPnl      float64
-		MinPnl      float64
-		TxCount     int64
+		TotalPnl float64
+		AvgPnl   float64
+		MaxPnl   float64
+		MinPnl   float64
+		TxCount  int64
 	}
 
 	if err := r.db.Model(&Transaction{}).
@@ -139,4 +145,56 @@ func (r *TransactionRepository) GetPnlStats() (map[string]interface{}, error) {
 		"min_pnl":   stats.MinPnl,
 		"tx_count":  stats.TxCount,
 	}, nil
+}
+
+func (r *TransactionRepository) GetWalletAddressByLabel(label string) (*WalletAddress, error) {
+	var wallet WalletAddress
+	if err := r.db.Where("label = ?", label).First(&wallet).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("%w for label %q", ErrWalletAddressNotFound, label)
+		}
+		return nil, fmt.Errorf("failed to get wallet address by label %q: %w", label, err)
+	}
+	return &wallet, nil
+}
+
+func (r *TransactionRepository) SaveWalletAddress(wallet *WalletAddress) error {
+	if wallet == nil {
+		return errors.New("wallet address is required")
+	}
+	if wallet.Label == "" {
+		return errors.New("wallet label is required")
+	}
+	if wallet.Address == "" {
+		return errors.New("wallet address value is required")
+	}
+
+	if err := r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "label"}},
+		DoUpdates: clause.AssignmentColumns([]string{"address", "updated_at"}),
+	}).Create(wallet).Error; err != nil {
+		return fmt.Errorf("failed to save wallet address %q: %w", wallet.Label, err)
+	}
+	return nil
+}
+
+func (r *TransactionRepository) GetPrimaryWalletAddress() (*WalletAddress, error) {
+	return r.GetWalletAddressByLabel("Primary")
+}
+
+func (r *TransactionRepository) assignPrimaryWalletAddress(tx *Transaction) error {
+	if tx == nil || tx.DexBtcAddress != "" {
+		return nil
+	}
+
+	primary, err := r.GetPrimaryWalletAddress()
+	if err != nil {
+		if errors.Is(err, ErrWalletAddressNotFound) || primary == nil {
+			return nil
+		}
+		return fmt.Errorf("failed to assign primary wallet address: %w", err)
+	}
+
+	tx.DexBtcAddress = primary.Address
+	return nil
 }

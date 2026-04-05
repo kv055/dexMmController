@@ -36,7 +36,7 @@ func InitDB(dbPath string) (*gorm.DB, error) {
 	}
 
 	// Auto-migrate GORM models (creates tables if they don't exist)
-	if err := db.AutoMigrate(&Transaction{}); err != nil {
+	if err := db.AutoMigrate(&Transaction{}, &WalletAddress{}); err != nil {
 		return nil, fmt.Errorf("failed to auto-migrate models: %w", err)
 	}
 
