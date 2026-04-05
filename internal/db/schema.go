@@ -167,7 +167,8 @@ func (sm *SchemaManager) PrintAllSchemas() error {
 	// Get all table names
 	tables, _ := sm.db.Migrator().GetTables()
 
-	fmt.Println("=== Database Schema ===\n")
+	fmt.Println("=== Database Schema ===")
+	fmt.Println()
 
 	for _, table := range tables {
 		desc, err := sm.DescribeTable(table)

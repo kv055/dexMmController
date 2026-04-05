@@ -101,6 +101,7 @@ Important variables:
 - `ROBOSATS_URL`
 - `ROBOSATS_AUTH_TOKEN`
 - `OFFER_PREMIUM_WSS_URL`
+- `API_ADDR`
 - `LND_HOST`
 - `LND_TLS_CERT_PATH`
 - `LND_MACAROON_PATH`
@@ -115,6 +116,17 @@ cd /home/kili/Dokumente/Demo_Projects/dexArbTrading/dexMmController
 go mod download
 go run main.go
 ```
+
+## HTTP API
+
+The controller now exposes a small REST API for `dexMonitor` or any frontend proxy.
+
+- `GET /health`
+- `GET /api/transactions?limit=100&offset=0&status=DexPositionTaken&cex=Kraken&dex=Bisq&direction=BUY&incomplete_only=true`
+- `GET /api/transactions/{id}`
+- `GET /api/stats`
+
+By default the API listens on `:5001`.
 
 ## Build
 

@@ -3,6 +3,7 @@ package db
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -13,6 +14,16 @@ var ErrWalletAddressNotFound = errors.New("wallet address not found")
 // TransactionRepository provides database operations for transactions
 type TransactionRepository struct {
 	db *gorm.DB
+}
+
+type TransactionFilters struct {
+	Limit          int
+	Offset         int
+	Status         string
+	Direction      string
+	CEX            string
+	Dex            string
+	IncompleteOnly bool
 }
 
 // NewTransactionRepository creates a new repository instance
@@ -61,6 +72,32 @@ func (r *TransactionRepository) GetAllTransactions(limit int, offset int) ([]Tra
 	return transactions, nil
 }
 
+func (r *TransactionRepository) ListTransactions(filters TransactionFilters) ([]Transaction, int64, error) {
+	var (
+		transactions []Transaction
+		total        int64
+	)
+
+	query := r.applyTransactionFilters(r.db.Model(&Transaction{}), filters)
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("failed to count transactions: %w", err)
+	}
+
+	query = query.Order("created_at DESC")
+	if filters.Limit > 0 {
+		query = query.Limit(filters.Limit)
+	}
+	if filters.Offset > 0 {
+		query = query.Offset(filters.Offset)
+	}
+
+	if err := query.Find(&transactions).Error; err != nil {
+		return nil, 0, fmt.Errorf("failed to list transactions: %w", err)
+	}
+
+	return transactions, total, nil
+}
+
 // GetTransactionsByDirection retrieves transactions filtered by direction (BUY/SELL)
 func (r *TransactionRepository) GetTransactionsByDirection(direction string) ([]Transaction, error) {
 	var transactions []Transaction
@@ -68,6 +105,25 @@ func (r *TransactionRepository) GetTransactionsByDirection(direction string) ([]
 		return nil, fmt.Errorf("failed to get transactions by direction: %w", err)
 	}
 	return transactions, nil
+}
+
+func (r *TransactionRepository) applyTransactionFilters(query *gorm.DB, filters TransactionFilters) *gorm.DB {
+	if filters.IncompleteOnly {
+		query = query.Where("status != ?", StatusDexPositionReleased)
+	}
+	if status := strings.TrimSpace(filters.Status); status != "" {
+		query = query.Where("status = ?", status)
+	}
+	if direction := strings.TrimSpace(filters.Direction); direction != "" {
+		query = query.Where("direction = ?", strings.ToUpper(direction))
+	}
+	if cex := strings.TrimSpace(filters.CEX); cex != "" {
+		query = query.Where("cex = ?", cex)
+	}
+	if dex := strings.TrimSpace(filters.Dex); dex != "" {
+		query = query.Where("dex = ?", dex)
+	}
+	return query
 }
 
 // GetTransactionsByCEX retrieves transactions filtered by CEX name

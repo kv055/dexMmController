@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"dexMmController/internal/api"
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/db"
 	"dexMmController/internal/exchanges/dex/bisq"
@@ -33,6 +34,7 @@ func main() {
 	robosatsURL := envOr("ROBOSATS_URL", "")
 	robosatsAuthToken := envOr("ROBOSATS_AUTH_TOKEN", "")
 	offerPremiumWSSURL := envOr("OFFER_PREMIUM_WSS_URL", "")
+	apiAddr := envOr("API_ADDR", ":5001")
 	lndHost := envOr("LND_HOST", "")
 	lndTLSCertPath := envOr("LND_TLS_CERT_PATH", "")
 	lndMacaroonPath := envOr("LND_MACAROON_PATH", "")
@@ -93,6 +95,7 @@ func main() {
 
 	// ── HealthChecker ─────────────────────────────────────────────────────────
 	hc := healthcheck.NewHealthChecker(repo, claw, hb, btc, hh)
+	apiServer := api.NewServer(apiAddr, repo)
 
 	// ── Run healthcheck once ──────────────────────────────────────────────────
 	log.Println("running healthcheck")
@@ -101,9 +104,17 @@ func main() {
 	}
 	log.Println("healthcheck complete")
 
+	go func() {
+		if err := apiServer.Run(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("api server failed: %v", err)
+			stop()
+		}
+	}()
+
 	// ── Offer Premium WSS Stream ──────────────────────────────────────────────
 	if offerPremiumWSSURL == "" {
-		log.Println("OFFER_PREMIUM_WSS_URL is not set; skipping premium stream")
+		log.Println("OFFER_PREMIUM_WSS_URL is not set; API server will stay up without premium stream")
+		<-ctx.Done()
 		return
 	}
 
