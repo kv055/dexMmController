@@ -1,46 +1,32 @@
 package db
 
 import (
-	"database/sql"
 	"fmt"
 	"log"
 
-	"github.com/glebarez/sqlite"
-	"github.com/pressly/goose/v3"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
-// InitDB initializes the database connection, runs migrations, and auto-migrates models
-func InitDB(dbPath string) (*gorm.DB, error) {
-	// Open SQLite database
-	sqlDB, err := sql.Open("sqlite", dbPath)
+// InitDB connects to the shared Postgres database owned by dexUnifiedApi.
+// Schema creation and migrations are intentionally handled by the unified API.
+func InitDB(databaseURL string) (*gorm.DB, error) {
+	db, err := gorm.Open(postgres.Open(databaseURL), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Run Goose migrations
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		return nil, fmt.Errorf("failed to set goose dialect: %w", err)
-	}
-
-	if err := goose.Up(sqlDB, "./migrations"); err != nil {
-		return nil, fmt.Errorf("failed to run migrations: %w", err)
-	}
-
-	log.Println("✓ Migrations applied successfully")
-
-	// Connect GORM to the database
-	db, err := gorm.Open(sqlite.Dialector{Conn: sqlDB}, &gorm.Config{})
+	sqlDB, err := db.DB()
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database with GORM: %w", err)
+		return nil, fmt.Errorf("failed to unwrap sql.DB: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetMaxIdleConns(5)
+	if err := sqlDB.Ping(); err != nil {
+		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	// Auto-migrate GORM models (creates tables if they don't exist)
-	if err := db.AutoMigrate(&Transaction{}, &WalletAddress{}); err != nil {
-		return nil, fmt.Errorf("failed to auto-migrate models: %w", err)
-	}
-
-	log.Println("✓ Database initialized successfully")
+	log.Println("✓ Connected to shared Postgres database")
 	return db, nil
 }
 

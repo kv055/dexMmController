@@ -2,17 +2,18 @@
 
 Trading controller for the `dexArbTrading` stack.
 
-It watches premium-offer websocket updates, stores trade candidates in SQLite, boots and reuses a primary wallet address for CEX withdrawals, and can immediately take the best qualifying DEX offer on HodlHodl, Bisq, or RoboSats.
+It watches premium-offer websocket updates, stores trade candidates in the shared Postgres database owned by `dexUnifiedApi`, boots and reuses a primary wallet address for CEX withdrawals, and can immediately take the best qualifying DEX offer on HodlHodl, Bisq, or RoboSats.
 
 ## Current Flow
 
 On startup the controller:
 
-1. Opens SQLite and runs migrations.
-2. Ensures a reusable primary BTC address exists in `wallet_addresses`.
-3. Builds external clients for LND, Hummingbot, OpenClaw, HodlHodl, Bisq, and RoboSats.
-4. Runs the healthcheck pass for incomplete transactions.
-5. Connects to the premium-offer websocket stream and enters a reconnecting loop.
+1. Connects to the shared Postgres database.
+2. Uses the unified `transactions` and `wallet_addresses` tables managed by `dexUnifiedApi`.
+3. Ensures a reusable primary BTC address exists in `wallet_addresses`.
+4. Builds external clients for LND, Hummingbot, OpenClaw, HodlHodl, Bisq, and RoboSats.
+5. Runs the healthcheck pass for incomplete transactions.
+6. Connects to the premium-offer websocket stream and enters a reconnecting loop.
 
 Inside the premium watcher:
 
@@ -89,7 +90,7 @@ Important transaction fields:
 
 Important variables:
 
-- `DB_PATH`
+- `DATABASE_URL`
 - `OPENCLAW_URL`
 - `HUMMINGBOT_URL`
 - `HUMMINGBOT_USERNAME`

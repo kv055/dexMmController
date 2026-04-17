@@ -22,7 +22,7 @@ import (
 
 func main() {
 	// ── Config ────────────────────────────────────────────────────────────────
-	dbPath := envOr("DB_PATH", "./sqlite.db")
+	databaseURL := envOr("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/dexarb?sslmode=disable")
 	openclawURL := envOr("OPENCLAW_URL", "")
 	hbURL := envOr("HUMMINGBOT_URL", "http://localhost:8000")
 	hbUser := envOr("HUMMINGBOT_USERNAME", "admin")
@@ -45,7 +45,7 @@ func main() {
 	defer stop()
 
 	// ── Database ──────────────────────────────────────────────────────────────
-	database, err := db.InitDB(dbPath)
+	database, err := db.InitDB(databaseURL)
 	if err != nil {
 		log.Fatalf("failed to initialize database: %v", err)
 	}

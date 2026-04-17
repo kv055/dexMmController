@@ -18,7 +18,6 @@ import (
 	"dexMmController/internal/exchanges/dex/hodlhodl"
 	"dexMmController/internal/exchanges/dex/robosats"
 
-	"gorm.io/datatypes"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 )
@@ -255,7 +254,7 @@ func buildTransaction(streamURL string, offers []Offer) (*db.Transaction, error)
 		Cex:                                      inferCexFromStreamURL(streamURL),
 		Dex:                                      inferDexPlatform(selected.Exchange),
 		Status:                                   db.StatusFiatToCexInitiated,
-		DexOfferCreation:                         datatypes.JSON(payload),
+		DexOfferCreation:                         payload,
 		TotalTransactionPnl:                      netPremium(selected),
 		PremiumOverCexPriceToBreakEvenPrediction: netPremium(selected),
 	}
@@ -446,7 +445,7 @@ func (w *Watcher) updateExecutionPayload(tx *db.Transaction, selected Offer, res
 		return fmt.Errorf("encoding DexOfferCreation payload: %w", err)
 	}
 
-	tx.DexOfferCreation = datatypes.JSON(updated)
+	tx.DexOfferCreation = updated
 	if executionErr == nil {
 		tx.Status = db.StatusDexPositionTaken
 	}

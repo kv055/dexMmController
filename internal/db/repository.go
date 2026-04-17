@@ -129,7 +129,7 @@ func (r *TransactionRepository) applyTransactionFilters(query *gorm.DB, filters 
 // GetTransactionsByCEX retrieves transactions filtered by CEX name
 func (r *TransactionRepository) GetTransactionsByCEX(cexName string) ([]Transaction, error) {
 	var transactions []Transaction
-	if err := r.db.Where("transfer_destination_cex = ?", cexName).Order("created_at DESC").Find(&transactions).Error; err != nil {
+	if err := r.db.Where("cex = ?", cexName).Order("created_at DESC").Find(&transactions).Error; err != nil {
 		return nil, fmt.Errorf("failed to get transactions by CEX: %w", err)
 	}
 	return transactions, nil

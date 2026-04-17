@@ -1,9 +1,9 @@
 package db
 
 import (
+	"encoding/json"
 	"time"
 
-	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -68,28 +68,28 @@ type Transaction struct {
 	Status             TransactionStatus `gorm:"index" json:"status"`
 
 	// CEX transaction details
-	CexTransactionDetails   datatypes.JSON `json:"cex_transaction_details" gorm:"type:json"`
-	CexBitcoinAmount        float64        `json:"cex_bitcoin_amount"`
-	CexTransactionTimestamp time.Time      `json:"cex_transaction_timestamp"`
-	CexTransactionFee       float64        `json:"cex_transaction_fee"`
+	CexTransactionDetails   json.RawMessage `json:"cex_transaction_details" gorm:"type:jsonb"`
+	CexBitcoinAmount        float64         `json:"cex_bitcoin_amount"`
+	CexTransactionTimestamp time.Time       `json:"cex_transaction_timestamp"`
+	CexTransactionFee       float64         `json:"cex_transaction_fee"`
 
 	// CEX withdrawal details
-	CexToDexWithdrawalTxDetails datatypes.JSON `json:"cex_to_dex_withdrawal_tx_details" gorm:"type:json"`
-	CexWithdrawalFee            float64        `json:"cex_withdrawal_fee"`
-	DexBtcAddress               string         `json:"dex_btc_address"` // on-chain address the CEX withdrawal is sent to
+	CexToDexWithdrawalTxDetails json.RawMessage `json:"cex_to_dex_withdrawal_tx_details" gorm:"type:jsonb"`
+	CexWithdrawalFee            float64         `json:"cex_withdrawal_fee"`
+	DexBtcAddress               string          `json:"dex_btc_address"` // on-chain address the CEX withdrawal is sent to
 
 	// CEX counter position details
-	CexCounterPositionOpenDetails  datatypes.JSON `json:"cex_counter_position_open_details" gorm:"type:json"`
-	CexCounterPositionCloseDetails datatypes.JSON `json:"cex_counter_position_close_details" gorm:"type:json"`
-	CexCounterPositionFee          float64        `json:"cex_counter_position_fee"`
+	CexCounterPositionOpenDetails  json.RawMessage `json:"cex_counter_position_open_details" gorm:"type:jsonb"`
+	CexCounterPositionCloseDetails json.RawMessage `json:"cex_counter_position_close_details" gorm:"type:jsonb"`
+	CexCounterPositionFee          float64         `json:"cex_counter_position_fee"`
 	// CexHedgingPosition             CexHedgingPositionType `json:"cex_hedging_position"`
 
 	// DEX details
-	DexOfferCreation datatypes.JSON `json:"dex_offer_creation" gorm:"type:json"`
-	DexOfferTaken    time.Time      `json:"dex_offer_taken"`
-	DexFiatArrival   datatypes.JSON `json:"dex_fiat_arrival" gorm:"type:json"`
-	DexBtcRelease    time.Time      `json:"dex_btc_release"`
-	DexFees          float64        `json:"dex_fees"`
+	DexOfferCreation json.RawMessage `json:"dex_offer_creation" gorm:"type:jsonb"`
+	DexOfferTaken    time.Time       `json:"dex_offer_taken"`
+	DexFiatArrival   json.RawMessage `json:"dex_fiat_arrival" gorm:"type:jsonb"`
+	DexBtcRelease    time.Time       `json:"dex_btc_release"`
+	DexFees          float64         `json:"dex_fees"`
 
 	// Fiat to CEX transfer
 	TransferFiatToCexStartTime   time.Time `json:"transfer_time_fiat_to_cex"`
