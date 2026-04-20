@@ -37,6 +37,8 @@ Thumbs.db
 
 # Logs
 *.log
+__pycache__/
+*.pyc
 
 # Environment / secrets
 .env
