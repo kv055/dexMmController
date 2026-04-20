@@ -33,12 +33,21 @@ type unlockRequest struct {
 }
 
 type initWalletRequest struct {
-	WalletPassword string `json:"wallet_password"` // base64
-	StatelessInit  bool   `json:"stateless_init"`
+	WalletPassword                     string   `json:"wallet_password"` // base64
+	StatelessInit                      bool     `json:"stateless_init"`
+	CipherSeedMnemonic                 []string `json:"cipher_seed_mnemonic,omitempty"`
+	AEZEEDPassphrase                   string   `json:"aezeed_passphrase,omitempty"` // base64
+	RecoveryWindow                     int32    `json:"recovery_window,omitempty"`
+	ExtendedMasterKey                  string   `json:"extended_master_key,omitempty"`
+	ExtendedMasterKeyBirthdayTimestamp uint64   `json:"extended_master_key_birthday_timestamp,omitempty"`
 }
 
-type initWalletResponse struct {
-	CipherSeedMnemonic []string `json:"cipher_seed_mnemonic"`
+type InitConfig struct {
+	CipherSeedMnemonic                 []string
+	AEZEEDPassphrase                   string
+	RecoveryWindow                     int32
+	ExtendedMasterKey                  string
+	ExtendedMasterKeyBirthdayTimestamp uint64
 }
 
 // New initialises the LND client, waits for LND to be reachable,
@@ -52,6 +61,7 @@ type initWalletResponse struct {
 func New(
 	ctx context.Context,
 	host, tlsCertPath, macaroonPath, password string,
+	initCfg InitConfig,
 ) (*Client, error) {
 	httpClient, err := buildHTTPClient(tlsCertPath)
 	if err != nil {
@@ -71,7 +81,7 @@ func New(
 	}
 
 	// 2. Handle wallet state.
-	if err := c.handleWalletState(ctx, macaroonPath, password); err != nil {
+	if err := c.handleWalletState(ctx, macaroonPath, password, initCfg); err != nil {
 		return nil, err
 	}
 
@@ -90,6 +100,7 @@ func New(
 func (c *Client) handleWalletState(
 	ctx context.Context,
 	macaroonPath, password string,
+	initCfg InitConfig,
 ) error {
 	for {
 		state, err := c.getState(ctx)
@@ -99,19 +110,12 @@ func (c *Client) handleWalletState(
 
 		switch state {
 		case "NON_EXISTING":
-			fmt.Println("lnd: no wallet found, creating...")
-			mnemonic, err := c.initWallet(ctx, password)
-			if err != nil {
-				return fmt.Errorf("initialising wallet: %w", err)
+			fmt.Println("lnd: no wallet found, restoring from supplied wallet secret...")
+			if err := initCfg.Validate(); err != nil {
+				return err
 			}
-			fmt.Println("lnd: wallet created, writing seed to seed.txt")
-			seedData := fmt.Sprintf("LND WALLET SEED - SAVE AND DELETE THIS FILE\n\n%s\n",
-				strings.Join(mnemonic, " "))
-			if writeErr := os.WriteFile("seed.txt", []byte(seedData), 0600); writeErr != nil {
-				fmt.Printf("WARNING: could not write seed.txt: %v\n", writeErr)
-				fmt.Printf("SEED: %v\n", mnemonic)
-			} else {
-				fmt.Println("lnd: seed written to /seed.txt - back it up and delete it")
+			if err := c.initWallet(ctx, password, initCfg); err != nil {
+				return fmt.Errorf("initialising wallet: %w", err)
 			}
 			if err := c.loadMacaroon(macaroonPath); err != nil {
 				return fmt.Errorf("loading macaroon after init: %w", err)
@@ -146,6 +150,41 @@ func (c *Client) handleWalletState(
 			return fmt.Errorf("unexpected LND state: %s", state)
 		}
 	}
+}
+
+func (cfg InitConfig) Validate() error {
+	hasMnemonic := len(cfg.CipherSeedMnemonic) > 0
+	hasMasterKey := strings.TrimSpace(cfg.ExtendedMasterKey) != ""
+	if hasMnemonic == hasMasterKey {
+		return errors.New("exactly one of cipher seed mnemonic or extended master key must be configured")
+	}
+	if hasMnemonic && len(cfg.CipherSeedMnemonic) != 24 {
+		return fmt.Errorf("cipher seed mnemonic must contain 24 words, got %d", len(cfg.CipherSeedMnemonic))
+	}
+	return nil
+}
+
+func (c *Client) initWallet(ctx context.Context, password string, cfg InitConfig) error {
+	req := initWalletRequest{
+		WalletPassword: base64.StdEncoding.EncodeToString([]byte(password)),
+		StatelessInit:  false,
+	}
+	if len(cfg.CipherSeedMnemonic) > 0 {
+		req.CipherSeedMnemonic = append([]string(nil), cfg.CipherSeedMnemonic...)
+		if cfg.AEZEEDPassphrase != "" {
+			req.AEZEEDPassphrase = base64.StdEncoding.EncodeToString([]byte(cfg.AEZEEDPassphrase))
+		}
+		if cfg.RecoveryWindow > 0 {
+			req.RecoveryWindow = cfg.RecoveryWindow
+		}
+	}
+	if cfg.ExtendedMasterKey != "" {
+		req.ExtendedMasterKey = cfg.ExtendedMasterKey
+		if cfg.ExtendedMasterKeyBirthdayTimestamp > 0 {
+			req.ExtendedMasterKeyBirthdayTimestamp = cfg.ExtendedMasterKeyBirthdayTimestamp
+		}
+	}
+	return c.post(ctx, "/v1/initwallet", req, nil)
 }
 
 func (c *Client) waitReachable(ctx context.Context) error {
@@ -187,18 +226,6 @@ func (c *Client) getState(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return resp.State, nil
-}
-
-func (c *Client) initWallet(ctx context.Context, password string) ([]string, error) {
-	req := initWalletRequest{
-		WalletPassword: base64.StdEncoding.EncodeToString([]byte(password)),
-		StatelessInit:  false,
-	}
-	var resp initWalletResponse
-	if err := c.post(ctx, "/v1/initwallet", req, &resp); err != nil {
-		return nil, err
-	}
-	return resp.CipherSeedMnemonic, nil
 }
 
 func (c *Client) unlockWallet(ctx context.Context, password string) error {

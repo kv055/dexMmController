@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"dexMmController/internal/api"
@@ -39,6 +42,22 @@ func main() {
 	lndTLSCertPath := envOr("LND_TLS_CERT_PATH", "")
 	lndMacaroonPath := envOr("LND_MACAROON_PATH", "")
 	lndWalletPassword := os.Getenv("LND_WALLET_PASSWORD")
+	lndSeedMnemonicFile := envOr("LND_SEED_MNEMONIC_FILE", "")
+	lndAEZEEDPassphraseFile := envOr("LND_AEZEED_PASSPHRASE_FILE", "")
+	lndExtendedMasterKeyFile := envOr("LND_EXTENDED_MASTER_KEY_FILE", "")
+	lndRecoveryWindow := envOr("LND_RECOVERY_WINDOW", "")
+	lndExtendedMasterKeyBirthdayTimestamp := envOr("LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP", "")
+
+	lndInitCfg, err := loadLNDInitConfig(
+		lndSeedMnemonicFile,
+		lndAEZEEDPassphraseFile,
+		lndExtendedMasterKeyFile,
+		lndRecoveryWindow,
+		lndExtendedMasterKeyBirthdayTimestamp,
+	)
+	if err != nil {
+		log.Fatalf("invalid LND wallet secret configuration: %v", err)
+	}
 
 	// Graceful shutdown context for long-running stream.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -60,6 +79,7 @@ func main() {
 		lndTLSCertPath,
 		lndMacaroonPath,
 		lndWalletPassword,
+		lndInitCfg,
 	)
 	if err != nil {
 		log.Fatalf("failed to initialize primary wallet address: %v", err)
@@ -145,21 +165,27 @@ func ensurePrimaryDepositAddress(
 	ctx context.Context,
 	repo *db.TransactionRepository,
 	lndHost, tlsCertPath, macaroonPath, password string,
+	initCfg lnd.InitConfig,
 ) (string, error) {
-	if existing, err := repo.GetPrimaryWalletAddress(); err == nil && existing.Address != "" {
-		log.Printf("reusing stored primary wallet address %s", existing.Address)
-		return existing.Address, nil
-	}
-
 	if lndHost == "" || tlsCertPath == "" || macaroonPath == "" || password == "" {
 		log.Println("LND startup configuration incomplete; skipping primary wallet bootstrap")
+		if existing, err := repo.GetPrimaryWalletAddress(); err == nil && existing.Address != "" {
+			return existing.Address, nil
+		}
 		return "", nil
 	}
 
 	log.Println("initializing LND wallet hub")
-	client, err := lnd.New(ctx, lndHost, tlsCertPath, macaroonPath, password)
+	if err := initCfg.Validate(); err != nil {
+		return "", fmt.Errorf("LND wallet restore secret is required: %w", err)
+	}
+	client, err := lnd.New(ctx, lndHost, tlsCertPath, macaroonPath, password, initCfg)
 	if err != nil {
 		return "", err
+	}
+	if existing, err := repo.GetPrimaryWalletAddress(); err == nil && existing.Address != "" {
+		log.Printf("reusing stored primary wallet address %s", existing.Address)
+		return existing.Address, nil
 	}
 
 	address, err := client.NewAddress(ctx)
@@ -177,4 +203,56 @@ func ensurePrimaryDepositAddress(
 
 	log.Printf("generated new primary wallet address %s", address)
 	return address, nil
+}
+
+func loadLNDInitConfig(
+	seedMnemonicFile, aezeedPassphraseFile, extendedMasterKeyFile, recoveryWindowRaw, birthdayTimestampRaw string,
+) (lnd.InitConfig, error) {
+	cfg := lnd.InitConfig{}
+
+	if path := strings.TrimSpace(seedMnemonicFile); path != "" {
+		value, err := readSecretFile(path)
+		if err != nil {
+			return cfg, fmt.Errorf("read LND_SEED_MNEMONIC_FILE: %w", err)
+		}
+		cfg.CipherSeedMnemonic = strings.Fields(value)
+	}
+	if path := strings.TrimSpace(aezeedPassphraseFile); path != "" {
+		value, err := readSecretFile(path)
+		if err != nil {
+			return cfg, fmt.Errorf("read LND_AEZEED_PASSPHRASE_FILE: %w", err)
+		}
+		cfg.AEZEEDPassphrase = value
+	}
+	if path := strings.TrimSpace(extendedMasterKeyFile); path != "" {
+		value, err := readSecretFile(path)
+		if err != nil {
+			return cfg, fmt.Errorf("read LND_EXTENDED_MASTER_KEY_FILE: %w", err)
+		}
+		cfg.ExtendedMasterKey = value
+	}
+	if value := strings.TrimSpace(recoveryWindowRaw); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 32)
+		if err != nil {
+			return cfg, fmt.Errorf("parse LND_RECOVERY_WINDOW: %w", err)
+		}
+		cfg.RecoveryWindow = int32(parsed)
+	}
+	if value := strings.TrimSpace(birthdayTimestampRaw); value != "" {
+		parsed, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			return cfg, fmt.Errorf("parse LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP: %w", err)
+		}
+		cfg.ExtendedMasterKeyBirthdayTimestamp = parsed
+	}
+
+	return cfg, nil
+}
+
+func readSecretFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
 }

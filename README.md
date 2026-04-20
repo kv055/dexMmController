@@ -35,7 +35,11 @@ If the offer take fails, the transaction row is kept and the failure is stored i
 The controller stores reusable wallet addresses in cleartext in the `wallet_addresses` table.
 
 - Label `Primary` is reserved for the main CEX withdrawal destination.
-- On first startup with LND configured, a new address is generated and stored as `Primary`.
+- On first startup with LND configured, the controller restores the wallet from a supplied secret file instead of generating a new seed.
+- Supported restore inputs are a 24-word aezeed mnemonic or an extended master key (`xprv`/`tprv`).
+- A single raw private key is not enough to initialize LND's full wallet.
+- If no supported LND secret is configured, startup fails instead of auto-generating one.
+- Once the wallet is available, a new address is generated and stored as `Primary`.
 - On later startups, the stored `Primary` address is reused.
 - New transactions created through the repository automatically inherit this address when `DexBtcAddress` is empty.
 
@@ -107,8 +111,14 @@ Important variables:
 - `LND_TLS_CERT_PATH`
 - `LND_MACAROON_PATH`
 - `LND_WALLET_PASSWORD`
+- `LND_SEED_MNEMONIC_FILE`
+- `LND_AEZEED_PASSPHRASE_FILE`
+- `LND_RECOVERY_WINDOW`
+- `LND_EXTENDED_MASTER_KEY_FILE`
+- `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP`
 
 See [.env.example](/home/kili/Dokumente/Demo_Projects/dexArbTrading/dexMmController/.env.example) for a starter file.
+For the LND restore-secret workflow, see [LND_WALLET_SECRETS.md](/home/kili/Dokumente/Demo_Projects/dexArbTrading/dexMmController/LND_WALLET_SECRETS.md).
 
 ## Run
 
