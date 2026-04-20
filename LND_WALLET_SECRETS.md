@@ -29,6 +29,7 @@ Use aezeed if you are restoring an existing LND wallet.
 Use an extended master key only if you already manage one intentionally and know its birthday. This is more portable across wallet ecosystems, but it is usually less convenient than aezeed for an existing LND node.
 
 A single raw private key is not enough to initialize LND's full wallet. LND expects a wallet root secret, not one standalone key.
+An extended master key is also not "the one private key used for every transaction". It is the wallet root from which LND derives many child keys and addresses.
 
 ## Are These Standard?
 
@@ -68,6 +69,32 @@ Important:
 - Many wallets do not expose the root `xprv` at all.
 - Exporting a master private key is highly sensitive.
 - If you use a non-LND xprv, LND will still use its own default derivation paths. Funds on unusual/custom derivation paths may not appear automatically.
+
+### Option 3: Generate A Fresh Extended Master Key Locally
+
+If you intentionally want a brand-new wallet root and do not need aezeed compatibility, this repo now includes a local generator script:
+
+```bash
+cd /home/kili/Dokumente/Demo_Projects/dexArbTrading/dexMmController
+python3 scripts/generate_lnd_extended_master_key.py
+```
+
+By default it writes:
+
+- `/home/kili/Dokumente/Demo_Projects/dexArbTrading/secrets/lnd_extended_master_key`
+- `/home/kili/Dokumente/Demo_Projects/dexArbTrading/secrets/lnd_extended_master_key_birthday_timestamp`
+
+Those defaults are intentionally aligned with the example bind mounts in the repo-root `docker-compose.yml`, so the files can be mounted into `mm-controller` immediately.
+
+Useful options:
+
+```bash
+python3 scripts/generate_lnd_extended_master_key.py --network mainnet
+python3 scripts/generate_lnd_extended_master_key.py --network testnet
+python3 scripts/generate_lnd_extended_master_key.py --output /secure/path/lnd_xprv --birthday-output /secure/path/lnd_xprv_birthday
+```
+
+The script does not print the key by default. Add `--show` only if you explicitly want it echoed to your terminal.
 
 ## How To Mount The Files
 
