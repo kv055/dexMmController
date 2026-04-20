@@ -18,7 +18,7 @@ func TestLoadLNDInitConfigFromMnemonicFiles(t *testing.T) {
 		t.Fatalf("write passphrase: %v", err)
 	}
 
-	cfg, err := loadLNDInitConfig(mnemonicPath, passphrasePath, "", "250", "")
+	cfg, err := loadLNDInitConfig(mnemonicPath, passphrasePath, "", "", "250", "")
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -43,11 +43,15 @@ func TestLoadLNDInitConfigFromMnemonicFiles(t *testing.T) {
 func TestLoadLNDInitConfigFromExtendedMasterKeyFile(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "xprv.txt")
+	birthdayPath := filepath.Join(dir, "birthday.txt")
 	if err := os.WriteFile(keyPath, []byte("xprv-example-key\n"), 0600); err != nil {
 		t.Fatalf("write xprv: %v", err)
 	}
+	if err := os.WriteFile(birthdayPath, []byte("1710000000\n"), 0600); err != nil {
+		t.Fatalf("write birthday timestamp: %v", err)
+	}
 
-	cfg, err := loadLNDInitConfig("", "", keyPath, "", "1710000000")
+	cfg, err := loadLNDInitConfig("", "", keyPath, birthdayPath, "", "")
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}

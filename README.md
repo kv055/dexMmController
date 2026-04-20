@@ -115,6 +115,7 @@ Important variables:
 - `LND_AEZEED_PASSPHRASE_FILE`
 - `LND_RECOVERY_WINDOW`
 - `LND_EXTENDED_MASTER_KEY_FILE`
+- `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP_FILE`
 - `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP`
 
 See [.env.example](/home/kili/Dokumente/Demo_Projects/dexArbTrading/dexMmController/.env.example) for a starter file.

@@ -19,8 +19,10 @@ Optional companion settings:
   Optional aezeed passphrase file if your aezeed was created with one.
 - `LND_RECOVERY_WINDOW`
   Optional address lookahead for aezeed restores.
+- `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP_FILE`
+  Preferred file-based birthday timestamp input for xprv/tprv restores.
 - `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP`
-  Optional unix timestamp for xprv/tprv restores.
+  Optional plain env var fallback for xprv/tprv restores.
 
 ## Which Format Should I Use?
 
@@ -62,7 +64,7 @@ If you already control a wallet that can export the master private key, create a
 xprv...
 ```
 
-You should also set `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP` to the approximate unix timestamp when that wallet root key was created.
+You should also provide the approximate unix timestamp when that wallet root key was created, ideally in `./secrets/lnd_extended_master_key_birthday_timestamp`.
 
 Important:
 
@@ -81,10 +83,10 @@ python3 scripts/generate_lnd_extended_master_key.py
 
 By default it writes:
 
-- `/home/kili/Dokumente/Demo_Projects/dexArbTrading/secrets/lnd_extended_master_key`
-- `/home/kili/Dokumente/Demo_Projects/dexArbTrading/secrets/lnd_extended_master_key_birthday_timestamp`
+- `/home/kili/Dokumente/Demo_Projects/dexArbTrading/dexMmController/secrets/lnd_extended_master_key`
+- `/home/kili/Dokumente/Demo_Projects/dexArbTrading/dexMmController/secrets/lnd_extended_master_key_birthday_timestamp`
 
-Those defaults are intentionally aligned with the example bind mounts in the repo-root `docker-compose.yml`, so the files can be mounted into `mm-controller` immediately.
+Those defaults are intentionally aligned with the `mm-controller` bind mounts in the repo-root `docker-compose.yml`, so the files can be mounted immediately.
 
 Useful options:
 
@@ -104,34 +106,42 @@ Example bind mounts in `docker-compose.yml`:
 
 ```yaml
 # mm-controller:
+#   env_file:
+#     - ./dexMmController/.env
 #   environment:
 #     - LND_SEED_MNEMONIC_FILE=/run/secrets/lnd_seed_mnemonic
 #     - LND_AEZEED_PASSPHRASE_FILE=/run/secrets/lnd_aezeed_passphrase
 #     - LND_RECOVERY_WINDOW=250
 #   volumes:
 #     - lnd-data:/lnd:ro
-#     - ./secrets/lnd_seed_mnemonic:/run/secrets/lnd_seed_mnemonic:ro
-#     - ./secrets/lnd_aezeed_passphrase:/run/secrets/lnd_aezeed_passphrase:ro
+#     - ./dexMmController/secrets/lnd_seed_mnemonic:/run/secrets/lnd_seed_mnemonic:ro
+#     - ./dexMmController/secrets/lnd_aezeed_passphrase:/run/secrets/lnd_aezeed_passphrase:ro
 ```
 
 Alternative extended master key setup:
 
 ```yaml
 # mm-controller:
+#   env_file:
+#     - ./dexMmController/.env
 #   environment:
 #     - LND_EXTENDED_MASTER_KEY_FILE=/run/secrets/lnd_extended_master_key
-#     - LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP=1710000000
+#     - LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP_FILE=/run/secrets/lnd_extended_master_key_birthday_timestamp
 #   volumes:
 #     - lnd-data:/lnd:ro
-#     - ./secrets/lnd_extended_master_key:/run/secrets/lnd_extended_master_key:ro
+#     - ./dexMmController/secrets/lnd_extended_master_key:/run/secrets/lnd_extended_master_key:ro
+#     - ./dexMmController/secrets/lnd_extended_master_key_birthday_timestamp:/run/secrets/lnd_extended_master_key_birthday_timestamp:ro
 ```
+
+If you really want to avoid the extra file, `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP` still works as a plain env var fallback.
 
 ## File Handling Advice
 
 - Keep these files outside version control.
 - Use permissions like `chmod 600`.
 - Mount them read-only.
-- Prefer file mounts over `.env` for wallet secrets.
+- Keep `LND_WALLET_PASSWORD` in `dexMmController/.env`.
+- Prefer file mounts over `.env` for wallet secrets themselves.
 - Back up the original secret separately from the machine that runs Docker.
 
 ## Notes

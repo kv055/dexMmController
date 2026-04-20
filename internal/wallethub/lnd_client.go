@@ -90,6 +90,9 @@ func New(
 	if err := c.waitState(ctx, "SERVER_ACTIVE"); err != nil {
 		return nil, fmt.Errorf("waiting for SERVER_ACTIVE: %w", err)
 	}
+	if err := c.waitMacaroon(ctx, macaroonPath); err != nil {
+		return nil, fmt.Errorf("loading macaroon after SERVER_ACTIVE: %w", err)
+	}
 
 	fmt.Println("lnd: ready")
 	return c, nil
@@ -102,6 +105,7 @@ func (c *Client) handleWalletState(
 	macaroonPath, password string,
 	initCfg InitConfig,
 ) error {
+	_ = macaroonPath
 	for {
 		state, err := c.getState(ctx)
 		if err != nil {
@@ -117,9 +121,6 @@ func (c *Client) handleWalletState(
 			if err := c.initWallet(ctx, password, initCfg); err != nil {
 				return fmt.Errorf("initialising wallet: %w", err)
 			}
-			if err := c.loadMacaroon(macaroonPath); err != nil {
-				return fmt.Errorf("loading macaroon after init: %w", err)
-			}
 			return nil
 
 		case "LOCKED":
@@ -127,12 +128,9 @@ func (c *Client) handleWalletState(
 			if err := c.unlockWallet(ctx, password); err != nil {
 				return fmt.Errorf("unlocking wallet: %w", err)
 			}
-			if err := c.loadMacaroon(macaroonPath); err != nil {
-				return fmt.Errorf("loading macaroon after unlock: %w", err)
-			}
 			return nil
 
-		case "WAITING_TO_START":
+		case "WAITING_TO_START", "UNLOCKED":
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -141,9 +139,6 @@ func (c *Client) handleWalletState(
 			}
 
 		case "SERVER_ACTIVE", "RPC_ACTIVE":
-			if err := c.loadMacaroon(macaroonPath); err != nil {
-				return fmt.Errorf("loading macaroon: %w", err)
-			}
 			return nil
 
 		default:
@@ -242,6 +237,23 @@ func (c *Client) loadMacaroon(path string) error {
 	}
 	c.macaroon = hex.EncodeToString(data)
 	return nil
+}
+
+func (c *Client) waitMacaroon(ctx context.Context, path string) error {
+	for {
+		err := c.loadMacaroon(path)
+		if err == nil {
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+	}
 }
 
 // ── on-chain ──────────────────────────────────────────────────────────────────

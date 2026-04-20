@@ -12,8 +12,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-w -s" \
     -o controller main.go
 
-# Stage 2: Runtime - scratch (completely empty, only ~20MB binary)
-FROM scratch
+# Stage 2: Runtime
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates wget
 
 COPY --from=builder /build/controller /controller
 

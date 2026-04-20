@@ -33,8 +33,9 @@ MAINNET_XPRV_VERSION = bytes.fromhex("0488ADE4")
 TESTNET_TPRV_VERSION = bytes.fromhex("04358394")
 BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_OUTPUT_PATH = REPO_ROOT / "secrets" / "lnd_extended_master_key"
-DEFAULT_BIRTHDAY_OUTPUT_PATH = REPO_ROOT / "secrets" / "lnd_extended_master_key_birthday_timestamp"
+CONTROLLER_ROOT = REPO_ROOT / "dexMmController"
+DEFAULT_OUTPUT_PATH = CONTROLLER_ROOT / "secrets" / "lnd_extended_master_key"
+DEFAULT_BIRTHDAY_OUTPUT_PATH = CONTROLLER_ROOT / "secrets" / "lnd_extended_master_key_birthday_timestamp"
 
 
 def sha256(data: bytes) -> bytes:
@@ -101,12 +102,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         default=str(DEFAULT_OUTPUT_PATH),
-        help="Output path for the xprv/tprv file. Defaults to the repo-root secrets directory.",
+        help="Output path for the xprv/tprv file. Defaults to the dexMmController secrets directory.",
     )
     parser.add_argument(
         "--birthday-output",
         default=str(DEFAULT_BIRTHDAY_OUTPUT_PATH),
-        help="Output path for the unix timestamp birthday file. Defaults to the repo-root secrets directory.",
+        help="Output path for the unix timestamp birthday file. Defaults to the dexMmController secrets directory.",
     )
     parser.add_argument(
         "--force",

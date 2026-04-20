@@ -45,6 +45,7 @@ func main() {
 	lndSeedMnemonicFile := envOr("LND_SEED_MNEMONIC_FILE", "")
 	lndAEZEEDPassphraseFile := envOr("LND_AEZEED_PASSPHRASE_FILE", "")
 	lndExtendedMasterKeyFile := envOr("LND_EXTENDED_MASTER_KEY_FILE", "")
+	lndExtendedMasterKeyBirthdayTimestampFile := envOr("LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP_FILE", "")
 	lndRecoveryWindow := envOr("LND_RECOVERY_WINDOW", "")
 	lndExtendedMasterKeyBirthdayTimestamp := envOr("LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP", "")
 
@@ -52,6 +53,7 @@ func main() {
 		lndSeedMnemonicFile,
 		lndAEZEEDPassphraseFile,
 		lndExtendedMasterKeyFile,
+		lndExtendedMasterKeyBirthdayTimestampFile,
 		lndRecoveryWindow,
 		lndExtendedMasterKeyBirthdayTimestamp,
 	)
@@ -206,7 +208,7 @@ func ensurePrimaryDepositAddress(
 }
 
 func loadLNDInitConfig(
-	seedMnemonicFile, aezeedPassphraseFile, extendedMasterKeyFile, recoveryWindowRaw, birthdayTimestampRaw string,
+	seedMnemonicFile, aezeedPassphraseFile, extendedMasterKeyFile, birthdayTimestampFile, recoveryWindowRaw, birthdayTimestampRaw string,
 ) (lnd.InitConfig, error) {
 	cfg := lnd.InitConfig{}
 
@@ -230,6 +232,13 @@ func loadLNDInitConfig(
 			return cfg, fmt.Errorf("read LND_EXTENDED_MASTER_KEY_FILE: %w", err)
 		}
 		cfg.ExtendedMasterKey = value
+	}
+	if path := strings.TrimSpace(birthdayTimestampFile); path != "" {
+		value, err := readSecretFile(path)
+		if err != nil {
+			return cfg, fmt.Errorf("read LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP_FILE: %w", err)
+		}
+		birthdayTimestampRaw = value
 	}
 	if value := strings.TrimSpace(recoveryWindowRaw); value != "" {
 		parsed, err := strconv.ParseInt(value, 10, 32)
