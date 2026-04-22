@@ -98,6 +98,8 @@ python3 scripts/generate_lnd_extended_master_key.py --output /secure/path/lnd_xp
 
 The script does not print the key by default. Add `--show` only if you explicitly want it echoed to your terminal.
 
+When `LND_EXTENDED_MASTER_KEY_FILE` is configured, `dexMmController` records a SHA-256 hash of the exact mounted file bytes in the shared database on every startup. The raw key is never stored in the database.
+
 ## How To Mount The Files
 
 The secret file only needs to be mounted into `mm-controller`, because `mm-controller` is the service that calls LND's `InitWallet` API.

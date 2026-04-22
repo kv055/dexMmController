@@ -296,6 +296,16 @@ func (c *Client) OnChainBalance(ctx context.Context) (*OnChainBalanceResponse, e
 	return &resp, nil
 }
 
+func (c *Client) HealthCheck(ctx context.Context) error {
+	if c == nil {
+		return errors.New("LND client is not initialized")
+	}
+	if _, err := c.OnChainBalance(ctx); err != nil {
+		return fmt.Errorf("LND wallet health check failed: %w", err)
+	}
+	return nil
+}
+
 // SendOnChain sends BTC on-chain.
 func (c *Client) SendOnChain(
 	ctx context.Context,

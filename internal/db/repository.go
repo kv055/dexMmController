@@ -1,6 +1,8 @@
 package db
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,6 +12,8 @@ import (
 )
 
 var ErrWalletAddressNotFound = errors.New("wallet address not found")
+
+const LNDAccountProvider = "LND wallet"
 
 // TransactionRepository provides database operations for transactions
 type TransactionRepository struct {
@@ -236,6 +240,60 @@ func (r *TransactionRepository) SaveWalletAddress(wallet *WalletAddress) error {
 
 func (r *TransactionRepository) GetPrimaryWalletAddress() (*WalletAddress, error) {
 	return r.GetWalletAddressByLabel("Primary")
+}
+
+func (r *TransactionRepository) RecordLNDMasterKeyHash(masterKeyHash, sourcePath string, fileSizeBytes int64) error {
+	masterKeyHash = strings.TrimSpace(masterKeyHash)
+	if masterKeyHash == "" {
+		return errors.New("LND master key hash is required")
+	}
+
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var accountID int64
+		err := tx.Raw(`
+			SELECT id
+			FROM accounts
+			WHERE provider = ?
+		`, LNDAccountProvider).Row().Scan(&accountID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("LND account row %q is missing", LNDAccountProvider)
+			}
+			return fmt.Errorf("load LND account row: %w", err)
+		}
+
+		if err := tx.Exec(`
+			INSERT INTO lnd_master_key_hashes (
+				account_id,
+				hash_algorithm,
+				master_key_hash,
+				source_path,
+				file_size_bytes
+			)
+			VALUES (?, 'sha256', ?, NULLIF(?, ''), ?)
+		`, accountID, masterKeyHash, strings.TrimSpace(sourcePath), fileSizeBytes).Error; err != nil {
+			return fmt.Errorf("insert LND master key hash: %w", err)
+		}
+
+		return nil
+	})
+}
+
+func (r *TransactionRepository) UpdateAccountHealth(ctx context.Context, provider string, healthy bool) error {
+	result := r.db.WithContext(ctx).Exec(`
+		UPDATE accounts
+		SET last_health_check = CURRENT_TIMESTAMP,
+		    is_healthy = ?,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE provider = ?
+	`, healthy, provider)
+	if result.Error != nil {
+		return fmt.Errorf("update account health for %s: %w", provider, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (r *TransactionRepository) assignPrimaryWalletAddress(tx *Transaction) error {

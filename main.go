@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"dexMmController/internal/api"
 	"dexMmController/internal/bitcoin"
@@ -48,6 +51,7 @@ func main() {
 	lndExtendedMasterKeyBirthdayTimestampFile := envOr("LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP_FILE", "")
 	lndRecoveryWindow := envOr("LND_RECOVERY_WINDOW", "")
 	lndExtendedMasterKeyBirthdayTimestamp := envOr("LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP", "")
+	accountHealthInterval := parseAccountHealthInterval(envOr("ACCOUNT_HEALTH_INTERVAL", ""))
 
 	lndInitCfg, err := loadLNDInitConfig(
 		lndSeedMnemonicFile,
@@ -74,7 +78,11 @@ func main() {
 
 	repo := db.NewTransactionRepository(database)
 
-	primaryAddress, err := ensurePrimaryDepositAddress(
+	if err := recordLNDMasterKeyHash(repo, lndExtendedMasterKeyFile); err != nil {
+		log.Fatalf("failed to record LND master key hash: %v", err)
+	}
+
+	primaryAddress, lndClient, err := ensurePrimaryDepositAddress(
 		ctx,
 		repo,
 		lndHost,
@@ -84,7 +92,7 @@ func main() {
 		lndInitCfg,
 	)
 	if err != nil {
-		log.Fatalf("failed to initialize primary wallet address: %v", err)
+		log.Printf("warning: failed to initialize primary wallet address: %v", err)
 	}
 	if primaryAddress != "" {
 		log.Printf("primary CEX deposit address ready: %s", primaryAddress)
@@ -125,6 +133,9 @@ func main() {
 		log.Fatalf("healthcheck failed: %v", err)
 	}
 	log.Println("healthcheck complete")
+
+	runLNDAccountHealthCheck(ctx, repo, lndClient)
+	go runPeriodicLNDAccountHealthCheck(ctx, accountHealthInterval, repo, lndClient)
 
 	go func() {
 		if err := apiServer.Run(ctx); err != nil && ctx.Err() == nil {
@@ -168,31 +179,31 @@ func ensurePrimaryDepositAddress(
 	repo *db.TransactionRepository,
 	lndHost, tlsCertPath, macaroonPath, password string,
 	initCfg lnd.InitConfig,
-) (string, error) {
+) (string, *lnd.Client, error) {
 	if lndHost == "" || tlsCertPath == "" || macaroonPath == "" || password == "" {
 		log.Println("LND startup configuration incomplete; skipping primary wallet bootstrap")
 		if existing, err := repo.GetPrimaryWalletAddress(); err == nil && existing.Address != "" {
-			return existing.Address, nil
+			return existing.Address, nil, nil
 		}
-		return "", nil
+		return "", nil, nil
 	}
 
 	log.Println("initializing LND wallet hub")
 	if err := initCfg.Validate(); err != nil {
-		return "", fmt.Errorf("LND wallet restore secret is required: %w", err)
+		return "", nil, fmt.Errorf("LND wallet restore secret is required: %w", err)
 	}
 	client, err := lnd.New(ctx, lndHost, tlsCertPath, macaroonPath, password, initCfg)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if existing, err := repo.GetPrimaryWalletAddress(); err == nil && existing.Address != "" {
 		log.Printf("reusing stored primary wallet address %s", existing.Address)
-		return existing.Address, nil
+		return existing.Address, client, nil
 	}
 
 	address, err := client.NewAddress(ctx)
 	if err != nil {
-		return "", err
+		return "", client, err
 	}
 
 	record := &db.WalletAddress{
@@ -200,11 +211,77 @@ func ensurePrimaryDepositAddress(
 		Address: address,
 	}
 	if err := repo.SaveWalletAddress(record); err != nil {
-		return "", err
+		return "", client, err
 	}
 
 	log.Printf("generated new primary wallet address %s", address)
-	return address, nil
+	return address, client, nil
+}
+
+type lndHealthClient interface {
+	HealthCheck(ctx context.Context) error
+}
+
+type lndAccountHealthRepository interface {
+	GetPrimaryWalletAddress() (*db.WalletAddress, error)
+	UpdateAccountHealth(ctx context.Context, provider string, healthy bool) error
+}
+
+func checkLNDAccountHealth(ctx context.Context, repo lndAccountHealthRepository, client lndHealthClient) error {
+	if client == nil {
+		return fmt.Errorf("LND client is not initialized")
+	}
+	if err := client.HealthCheck(ctx); err != nil {
+		return err
+	}
+	wallet, err := repo.GetPrimaryWalletAddress()
+	if err != nil {
+		return fmt.Errorf("primary wallet address missing: %w", err)
+	}
+	if wallet == nil || strings.TrimSpace(wallet.Address) == "" {
+		return fmt.Errorf("primary wallet address missing")
+	}
+	return nil
+}
+
+func runLNDAccountHealthCheck(ctx context.Context, repo lndAccountHealthRepository, client lndHealthClient) {
+	err := checkLNDAccountHealth(ctx, repo, client)
+	healthy := err == nil
+	if updateErr := repo.UpdateAccountHealth(ctx, db.LNDAccountProvider, healthy); updateErr != nil {
+		log.Printf("[AccountHealth] %s: failed to persist health=%t: %v", db.LNDAccountProvider, healthy, updateErr)
+	}
+	if err != nil {
+		log.Printf("[AccountHealth] %s unhealthy: %v", db.LNDAccountProvider, err)
+		return
+	}
+	log.Printf("[AccountHealth] %s healthy", db.LNDAccountProvider)
+}
+
+func runPeriodicLNDAccountHealthCheck(ctx context.Context, interval time.Duration, repo lndAccountHealthRepository, client lndHealthClient) {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runLNDAccountHealthCheck(ctx, repo, client)
+		}
+	}
+}
+
+func parseAccountHealthInterval(raw string) time.Duration {
+	if raw == "" {
+		return time.Minute
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval <= 0 {
+		return time.Minute
+	}
+	return interval
 }
 
 func loadLNDInitConfig(
@@ -264,4 +341,30 @@ func readSecretFile(path string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+func recordLNDMasterKeyHash(repo *db.TransactionRepository, path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+
+	hash, size, err := hashFileSHA256(path)
+	if err != nil {
+		return err
+	}
+	if err := repo.RecordLNDMasterKeyHash(hash, path, size); err != nil {
+		return err
+	}
+	log.Printf("recorded LND master key file hash for %s", path)
+	return nil
+}
+
+func hashFileSHA256(path string) (string, int64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", 0, fmt.Errorf("read LND extended master key file: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), int64(len(data)), nil
 }
