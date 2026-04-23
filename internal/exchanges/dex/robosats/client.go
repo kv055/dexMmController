@@ -20,6 +20,7 @@ type Config struct {
 	OpenPositionsPath string
 	PositionPath      string
 	CreateOrderPath   string
+	RobotPath         string
 }
 
 type Client struct {
@@ -29,8 +30,11 @@ type Client struct {
 	openPositionsPath string
 	positionPath      string
 	createOrderPath   string
+	robotPath         string
 	http              *http.Client
 }
+
+type Robot map[string]any
 
 type Position struct {
 	ID            string          `json:"id"`
@@ -65,8 +69,23 @@ func NewClient(cfg Config) *Client {
 		openPositionsPath: defaultPath(cfg.OpenPositionsPath, "/api/orders/"),
 		positionPath:      defaultPath(cfg.PositionPath, "/api/orders/%s/"),
 		createOrderPath:   defaultPath(cfg.CreateOrderPath, "/api/orders/"),
+		robotPath:         defaultPath(cfg.RobotPath, "/api/robot/"),
 		http:              &http.Client{Timeout: defaultTimeout},
 	}
+}
+
+func (c *Client) WithAuthToken(authToken string) *Client {
+	clone := *c
+	clone.authToken = authToken
+	return &clone
+}
+
+func (c *Client) GetRobot(ctx context.Context) (Robot, error) {
+	var robot Robot
+	if err := c.request(ctx, http.MethodGet, c.robotPath, nil, &robot); err != nil {
+		return nil, err
+	}
+	return robot, nil
 }
 
 func (c *Client) TakeOffer(ctx context.Context, offerID string) (*Position, error) {

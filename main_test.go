@@ -194,3 +194,50 @@ func TestParseAccountHealthInterval(t *testing.T) {
 		}
 	}
 }
+
+type fakeRobosatsTokenRepo struct {
+	keys []db.APIKey
+	err  error
+}
+
+func (f fakeRobosatsTokenRepo) GetActiveAPIKeysForProvider(_ context.Context, provider string) ([]db.APIKey, error) {
+	if provider != "Robosats" {
+		return nil, errors.New("unexpected provider")
+	}
+	return f.keys, f.err
+}
+
+func TestRobosatsAuthTokenFromDBPrefersNewestActiveDBToken(t *testing.T) {
+	got, err := robosatsAuthTokenFromDB(context.Background(), fakeRobosatsTokenRepo{
+		keys: []db.APIKey{
+			{ID: 2, APIKey: " db-token "},
+			{ID: 1, APIKey: "older-token"},
+		},
+	}, "env-token")
+	if err != nil {
+		t.Fatalf("robosatsAuthTokenFromDB: %v", err)
+	}
+	if got != "db-token" {
+		t.Fatalf("token = %q, want db-token", got)
+	}
+}
+
+func TestRobosatsAuthTokenFromDBFallsBack(t *testing.T) {
+	got, err := robosatsAuthTokenFromDB(context.Background(), fakeRobosatsTokenRepo{}, "env-token")
+	if err != nil {
+		t.Fatalf("robosatsAuthTokenFromDB: %v", err)
+	}
+	if got != "env-token" {
+		t.Fatalf("token = %q, want env-token", got)
+	}
+
+	got, err = robosatsAuthTokenFromDB(context.Background(), fakeRobosatsTokenRepo{
+		err: errors.New("db down"),
+	}, "env-token")
+	if err == nil {
+		t.Fatal("err = nil, want db error")
+	}
+	if got != "env-token" {
+		t.Fatalf("token = %q, want env-token after db error", got)
+	}
+}

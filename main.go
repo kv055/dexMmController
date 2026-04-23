@@ -122,9 +122,13 @@ func main() {
 
 	// ── Bisq / RoboSats ──────────────────────────────────────────────────────
 	bq := bisq.NewClient(bisqGRPCHost, bisqAPIPassword)
+	dbRobosatsAuthToken, err := robosatsAuthTokenFromDB(ctx, repo, robosatsAuthToken)
+	if err != nil {
+		log.Printf("warning: failed to load Robosats token from database; using environment fallback: %v", err)
+	}
 	rs := robosats.NewClient(robosats.Config{
 		BaseURL:   robosatsURL,
-		AuthToken: robosatsAuthToken,
+		AuthToken: dbRobosatsAuthToken,
 	})
 
 	// ── HealthChecker ─────────────────────────────────────────────────────────
@@ -134,6 +138,7 @@ func main() {
 		BinanceBaseURL:  binanceBaseURL,
 		KrakenBaseURL:   krakenBaseURL,
 		CoinbaseBaseURL: coinbaseBaseURL,
+		RobosatsBaseURL: robosatsURL,
 	})
 	apiServer := api.NewServer(apiAddr, repo).WithAccountHealth(exchangeAccountHealth)
 
@@ -174,6 +179,23 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+type robosatsTokenRepo interface {
+	GetActiveAPIKeysForProvider(ctx context.Context, provider string) ([]db.APIKey, error)
+}
+
+func robosatsAuthTokenFromDB(ctx context.Context, repo robosatsTokenRepo, fallback string) (string, error) {
+	keys, err := repo.GetActiveAPIKeysForProvider(ctx, "Robosats")
+	if err != nil {
+		return fallback, err
+	}
+	for _, key := range keys {
+		if token := strings.TrimSpace(key.APIKey); token != "" {
+			return token, nil
+		}
+	}
+	return fallback, nil
 }
 
 // mustEnv returns the value of the environment variable key or exits if unset.

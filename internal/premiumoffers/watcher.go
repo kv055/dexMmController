@@ -408,7 +408,14 @@ func (w *Watcher) takeRoboSatsOffer(ctx context.Context, offer Offer) (map[strin
 		return nil, "", fmt.Errorf("robosats client is not configured")
 	}
 
-	position, err := w.robosats.TakeOffer(ctx, *offer.OfferID)
+	client := w.robosats
+	if token, err := w.latestRoboSatsToken(ctx); err != nil {
+		log.Printf("failed to load latest Robosats token from database; using configured client token: %v", err)
+	} else if token != "" {
+		client = w.robosats.WithAuthToken(token)
+	}
+
+	position, err := client.TakeOffer(ctx, *offer.OfferID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -419,6 +426,19 @@ func (w *Watcher) takeRoboSatsOffer(ctx context.Context, offer Offer) (map[strin
 		"position_id": position.ID,
 		"position":    position,
 	}, "", nil
+}
+
+func (w *Watcher) latestRoboSatsToken(ctx context.Context) (string, error) {
+	keys, err := w.repo.GetActiveAPIKeysForProvider(ctx, "Robosats")
+	if err != nil {
+		return "", err
+	}
+	for _, key := range keys {
+		if token := strings.TrimSpace(key.APIKey); token != "" {
+			return token, nil
+		}
+	}
+	return "", nil
 }
 
 func (w *Watcher) updateExecutionPayload(tx *db.Transaction, selected Offer, result map[string]any, executionErr error) error {

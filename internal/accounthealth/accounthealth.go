@@ -13,6 +13,7 @@ import (
 	"dexMmController/internal/exchanges/cex/coinbase"
 	"dexMmController/internal/exchanges/cex/kraken"
 	"dexMmController/internal/exchanges/dex/hodlhodl"
+	"dexMmController/internal/exchanges/dex/robosats"
 )
 
 var ErrUnsupportedProvider = errors.New("unsupported account health provider")
@@ -28,6 +29,7 @@ type Config struct {
 	BinanceBaseURL  string
 	KrakenBaseURL   string
 	CoinbaseBaseURL string
+	RobosatsBaseURL string
 }
 
 type Checker struct {
@@ -48,13 +50,15 @@ func NewChecker(repo Repository, cfg Config) *Checker {
 }
 
 func SupportedProviders() []string {
-	return []string{"HodlHodl", "Binance", "Kraken", "Coinbase"}
+	return []string{"HodlHodl", "Robosats", "Binance", "Kraken", "Coinbase"}
 }
 
 func CanonicalProvider(raw string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "hodlhodl", "hodl hodl":
 		return "HodlHodl", nil
+	case "robosats", "robo sats":
+		return "Robosats", nil
 	case "binance":
 		return "Binance", nil
 	case "kraken":
@@ -151,6 +155,14 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 	apiSecret := strings.TrimSpace(key.APISecret)
 	if apiKey == "" {
 		return errors.New("api_key is required")
+	}
+	if provider == "Robosats" {
+		client := robosats.NewClient(robosats.Config{
+			BaseURL:   c.cfg.RobosatsBaseURL,
+			AuthToken: apiKey,
+		})
+		_, err := client.GetRobot(ctx)
+		return err
 	}
 	if apiSecret == "" {
 		return errors.New("api_secret is required")
