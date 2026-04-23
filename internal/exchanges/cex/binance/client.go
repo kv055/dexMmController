@@ -99,6 +99,12 @@ type WithdrawRecord struct {
 	TxID            string `json:"txId"`
 }
 
+type AccountInfo struct {
+	CanTrade    bool `json:"canTrade"`
+	CanWithdraw bool `json:"canWithdraw"`
+	CanDeposit  bool `json:"canDeposit"`
+}
+
 func NewClient(baseURL, apiKey, secretKey string) *Client {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
@@ -113,6 +119,14 @@ func NewClient(baseURL, apiKey, secretKey string) *Client {
 
 func (c *Client) Name() string {
 	return "binance"
+}
+
+func (c *Client) AccountInfo(ctx context.Context) (*AccountInfo, error) {
+	var resp AccountInfo
+	if err := c.signedRequest(ctx, http.MethodGet, "/api/v3/account", nil, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 func (c *Client) GetDepositAddress(ctx context.Context, coin, network string) (*DepositAddressResponse, error) {

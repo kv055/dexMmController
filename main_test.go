@@ -182,10 +182,10 @@ func TestParseAccountHealthInterval(t *testing.T) {
 		raw  string
 		want time.Duration
 	}{
-		{raw: "", want: time.Minute},
+		{raw: "", want: 10 * time.Minute},
 		{raw: "15s", want: 15 * time.Second},
-		{raw: "0s", want: time.Minute},
-		{raw: "nope", want: time.Minute},
+		{raw: "0s", want: 10 * time.Minute},
+		{raw: "nope", want: 10 * time.Minute},
 	}
 
 	for _, tc := range tests {

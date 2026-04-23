@@ -100,6 +100,8 @@ type WithdrawStatusRecord struct {
 	Status string `json:"status"`
 }
 
+type Balance map[string]string
+
 type apiEnvelope[T any] struct {
 	Error  []string `json:"error"`
 	Result T        `json:"result"`
@@ -119,6 +121,14 @@ func NewClient(baseURL, apiKey, secretKey string) *Client {
 
 func (c *Client) Name() string {
 	return "kraken"
+}
+
+func (c *Client) Balance(ctx context.Context) (Balance, error) {
+	var resp apiEnvelope[Balance]
+	if err := c.privateRequest(ctx, "/0/private/Balance", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
 }
 
 func (c *Client) GetDepositMethods(ctx context.Context, asset string) ([]DepositMethod, error) {
@@ -290,6 +300,10 @@ func (c *Client) privateRequest(ctx context.Context, path string, form url.Value
 			return fmt.Errorf("kraken: %s: %s", path, strings.Join(envelope.Error, ", "))
 		}
 	case *apiEnvelope[[]WithdrawStatusRecord]:
+		if len(envelope.Error) > 0 {
+			return fmt.Errorf("kraken: %s: %s", path, strings.Join(envelope.Error, ", "))
+		}
+	case *apiEnvelope[Balance]:
 		if len(envelope.Error) > 0 {
 			return fmt.Errorf("kraken: %s: %s", path, strings.Join(envelope.Error, ", "))
 		}

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"dexMmController/internal/accounthealth"
 	"dexMmController/internal/api"
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/db"
@@ -35,6 +36,9 @@ func main() {
 	hbPass := mustEnv("HUMMINGBOT_PASSWORD")
 	hhAPIKey := envOr("HODLHODL_API_KEY", "")
 	hhBaseURL := envOr("HODLHODL_URL", "")
+	binanceBaseURL := envOr("BINANCE_API_BASE_URL", "")
+	krakenBaseURL := envOr("KRAKEN_API_BASE_URL", "")
+	coinbaseBaseURL := envOr("COINBASE_API_BASE_URL", "")
 	bisqGRPCHost := envOr("BISQ_GRPC_HOST", "localhost:9998")
 	bisqAPIPassword := envOr("BISQ_API_PASSWORD", "")
 	robosatsURL := envOr("ROBOSATS_URL", "")
@@ -125,7 +129,13 @@ func main() {
 
 	// ── HealthChecker ─────────────────────────────────────────────────────────
 	hc := healthcheck.NewHealthChecker(repo, claw, hb, btc, hh)
-	apiServer := api.NewServer(apiAddr, repo)
+	exchangeAccountHealth := accounthealth.NewChecker(repo, accounthealth.Config{
+		HodlHodlBaseURL: hhBaseURL,
+		BinanceBaseURL:  binanceBaseURL,
+		KrakenBaseURL:   krakenBaseURL,
+		CoinbaseBaseURL: coinbaseBaseURL,
+	})
+	apiServer := api.NewServer(apiAddr, repo).WithAccountHealth(exchangeAccountHealth)
 
 	// ── Run healthcheck once ──────────────────────────────────────────────────
 	log.Println("running healthcheck")
@@ -136,6 +146,7 @@ func main() {
 
 	runLNDAccountHealthCheck(ctx, repo, lndClient)
 	go runPeriodicLNDAccountHealthCheck(ctx, accountHealthInterval, repo, lndClient)
+	go exchangeAccountHealth.RunPeriodic(ctx, accountHealthInterval)
 
 	go func() {
 		if err := apiServer.Run(ctx); err != nil && ctx.Err() == nil {
@@ -275,11 +286,11 @@ func runPeriodicLNDAccountHealthCheck(ctx context.Context, interval time.Duratio
 
 func parseAccountHealthInterval(raw string) time.Duration {
 	if raw == "" {
-		return time.Minute
+		return 10 * time.Minute
 	}
 	interval, err := time.ParseDuration(raw)
 	if err != nil || interval <= 0 {
-		return time.Minute
+		return 10 * time.Minute
 	}
 	return interval
 }

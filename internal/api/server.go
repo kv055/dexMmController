@@ -11,12 +11,18 @@ import (
 	"strings"
 	"time"
 
+	"dexMmController/internal/accounthealth"
 	"dexMmController/internal/db"
 )
 
 type Server struct {
-	addr string
-	repo *db.TransactionRepository
+	addr          string
+	repo          *db.TransactionRepository
+	accountHealth accountHealthChecker
+}
+
+type accountHealthChecker interface {
+	CheckProvider(ctx context.Context, provider string) (accounthealth.Result, error)
 }
 
 type transactionListResponse struct {
@@ -40,12 +46,18 @@ func NewServer(addr string, repo *db.TransactionRepository) *Server {
 	}
 }
 
+func (s *Server) WithAccountHealth(checker accountHealthChecker) *Server {
+	s.accountHealth = checker
+	return s
+}
+
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /api/transactions", s.handleTransactions)
 	mux.HandleFunc("GET /api/transactions/{id}", s.handleTransactionByID)
 	mux.HandleFunc("GET /api/stats", s.handleStats)
+	mux.HandleFunc("POST /api/accounts/health_check", s.handleAccountHealthCheck)
 
 	server := &http.Server{
 		Addr:              s.addr,
@@ -74,6 +86,42 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		return nil
 	}
+}
+
+type accountHealthResponse struct {
+	Provider  string `json:"provider"`
+	Status    string `json:"status"`
+	Healthy   bool   `json:"healthy"`
+	Message   string `json:"message"`
+	CheckedAt string `json:"checked_at"`
+}
+
+func (s *Server) handleAccountHealthCheck(w http.ResponseWriter, r *http.Request) {
+	if s.accountHealth == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("account health checker is not configured"))
+		return
+	}
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
+	if provider == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("provider query parameter is required"))
+		return
+	}
+	if _, err := accounthealth.CanonicalProvider(provider); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(accounthealth.SupportedProviders(), ", ")))
+		return
+	}
+	result, err := s.accountHealth.CheckProvider(r.Context(), provider)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, accountHealthResponse{
+		Provider:  result.Provider,
+		Status:    result.Status,
+		Healthy:   result.Healthy,
+		Message:   result.Message,
+		CheckedAt: result.CheckedAt.UTC().Format(time.RFC3339),
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -171,7 +219,7 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

@@ -3,8 +3,10 @@ package hodlhodl
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -34,10 +36,10 @@ func TestGetOffer(t *testing.T) {
 		"/api/v1/offers/offer123": map[string]any{
 			"status": "success",
 			"offer": map[string]any{
-				"id":     "offer123",
-				"status": "active",
+				"id":        "offer123",
+				"status":    "active",
 				"your_role": "seller",
-				"title":  "Sell BTC for EUR",
+				"title":     "Sell BTC for EUR",
 			},
 		},
 	})
@@ -56,9 +58,9 @@ func TestGetOffer(t *testing.T) {
 
 func TestIsOfferLive(t *testing.T) {
 	tests := []struct {
-		name       string
-		status     string
-		wantLive   bool
+		name     string
+		status   string
+		wantLive bool
 	}{
 		{"active offer", "active", true},
 		{"paused offer", "paused", false},
@@ -88,10 +90,10 @@ func TestGetContract(t *testing.T) {
 		"/api/v1/contracts/c1": map[string]any{
 			"status": "success",
 			"contract": map[string]any{
-				"id":     "c1",
-				"status": "in_progress",
+				"id":        "c1",
+				"status":    "in_progress",
 				"your_role": "seller",
-				"volume": "0.05", "value": "3000",
+				"volume":    "0.05", "value": "3000",
 			},
 		},
 	})
@@ -234,6 +236,29 @@ func TestSearchOffers(t *testing.T) {
 	}
 	if offers[0].Price != "95000" {
 		t.Errorf("first offer price=%q, want 95000", offers[0].Price)
+	}
+}
+
+func TestVerifySignatureKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/contracts/verify_signature_key" {
+			t.Fatalf("path = %s, want verify_signature_key", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-api-key" {
+			t.Fatalf("missing authorization header")
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"nonce"`) || !strings.Contains(string(body), `"hmac"`) {
+			t.Fatalf("missing signed request fields: %s", string(body))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "success"})
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "test-api-key")
+	if err := client.VerifySignatureKey(context.Background(), "signature-key"); err != nil {
+		t.Fatalf("VerifySignatureKey: %v", err)
 	}
 }
 

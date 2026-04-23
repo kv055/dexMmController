@@ -3,6 +3,9 @@ package hodlhodl
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -18,6 +21,10 @@ type Client struct {
 	baseURL string
 	apiKey  string
 	http    *http.Client
+}
+
+type MeResponse struct {
+	User json.RawMessage `json:"user"`
 }
 
 // NewClient creates a new HodlHodl API client.
@@ -124,6 +131,26 @@ func (c *Client) GetMyOffers(ctx context.Context) ([]Offer, error) {
 	return resp.Offers, nil
 }
 
+func (c *Client) GetMe(ctx context.Context) (*MeResponse, error) {
+	var resp MeResponse
+	if err := c.get(ctx, "/api/v1/users/me", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) VerifySignatureKey(ctx context.Context, signatureKey string) error {
+	nonce := strconv.FormatInt(time.Now().Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(signatureKey))
+	_, _ = mac.Write([]byte(c.apiKey + ":" + nonce))
+	body := map[string]string{
+		"nonce": nonce,
+		"hmac":  hex.EncodeToString(mac.Sum(nil)),
+	}
+	var resp map[string]any
+	return c.post(ctx, "/api/v1/contracts/verify_signature_key", body, &resp)
+}
+
 // SearchOffers searches the public offer book with the given filters.
 func (c *Client) SearchOffers(ctx context.Context, f OfferSearchFilters) ([]Offer, error) {
 	path := "/api/v1/offers?"
@@ -184,12 +211,12 @@ func (c *Client) GetMyContracts(ctx context.Context, status ContractStatus) ([]C
 func (c *Client) CreateContract(ctx context.Context, p CreateContractParams) (*Contract, error) {
 	body := map[string]any{
 		"contract": map[string]any{
-			"offer_id":                        p.OfferID,
-			"offer_version":                   p.OfferVersion,
-			"payment_method_instruction_id":   p.PaymentMethodInstructionID,
+			"offer_id":                           p.OfferID,
+			"offer_version":                      p.OfferVersion,
+			"payment_method_instruction_id":      p.PaymentMethodInstructionID,
 			"payment_method_instruction_version": p.PaymentMethodInstructionVer,
-			"value":  p.Value,
-			"volume": p.Volume,
+			"value":                              p.Value,
+			"volume":                             p.Volume,
 		},
 	}
 	if p.Comment != "" {

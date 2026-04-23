@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -18,6 +19,50 @@ const LNDAccountProvider = "LND wallet"
 // TransactionRepository provides database operations for transactions
 type TransactionRepository struct {
 	db *gorm.DB
+}
+
+func (r *TransactionRepository) GetAccountByProvider(ctx context.Context, provider string) (*Account, error) {
+	var account Account
+	if err := r.db.WithContext(ctx).Where("provider = ?", strings.TrimSpace(provider)).First(&account).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("load account %s: %w", provider, err)
+	}
+	return &account, nil
+}
+
+func (r *TransactionRepository) GetActiveAPIKeysForProvider(ctx context.Context, provider string) ([]APIKey, error) {
+	var keys []APIKey
+	if err := r.db.WithContext(ctx).
+		Table("api_keys").
+		Select("api_keys.*").
+		Joins("JOIN accounts ON accounts.id = api_keys.account_id").
+		Where("accounts.provider = ? AND api_keys.is_active = TRUE", strings.TrimSpace(provider)).
+		Order("api_keys.updated_at DESC, api_keys.id DESC").
+		Find(&keys).Error; err != nil {
+		return nil, fmt.Errorf("load active API keys for %s: %w", provider, err)
+	}
+	return keys, nil
+}
+
+func (r *TransactionRepository) UpdateAccountHealthCheckedAt(ctx context.Context, provider string, healthy bool) (time.Time, error) {
+	var checkedAt time.Time
+	err := r.db.WithContext(ctx).Raw(`
+		UPDATE accounts
+		SET last_health_check = CURRENT_TIMESTAMP,
+		    is_healthy = ?,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE provider = ?
+		RETURNING last_health_check
+	`, healthy, strings.TrimSpace(provider)).Scan(&checkedAt).Error
+	if err != nil {
+		return time.Time{}, fmt.Errorf("update account health for %s: %w", provider, err)
+	}
+	if checkedAt.IsZero() {
+		return time.Time{}, gorm.ErrRecordNotFound
+	}
+	return checkedAt, nil
 }
 
 type TransactionFilters struct {
@@ -280,20 +325,8 @@ func (r *TransactionRepository) RecordLNDMasterKeyHash(masterKeyHash, sourcePath
 }
 
 func (r *TransactionRepository) UpdateAccountHealth(ctx context.Context, provider string, healthy bool) error {
-	result := r.db.WithContext(ctx).Exec(`
-		UPDATE accounts
-		SET last_health_check = CURRENT_TIMESTAMP,
-		    is_healthy = ?,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE provider = ?
-	`, healthy, provider)
-	if result.Error != nil {
-		return fmt.Errorf("update account health for %s: %w", provider, result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+	_, err := r.UpdateAccountHealthCheckedAt(ctx, provider, healthy)
+	return err
 }
 
 func (r *TransactionRepository) assignPrimaryWalletAddress(tx *Transaction) error {

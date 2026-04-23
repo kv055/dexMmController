@@ -7,6 +7,40 @@ import (
 	"gorm.io/gorm"
 )
 
+// Account is a shared provider/account row owned by dexUnifiedApi migrations.
+type Account struct {
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	Provider        string    `json:"provider"`
+	Email           string    `json:"email"`
+	Password        string    `json:"password"`
+	Phone           string    `json:"phone"`
+	LastHealthCheck time.Time `json:"last_health_check"`
+	IsHealthy       bool      `json:"is_healthy"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+func (Account) TableName() string {
+	return "accounts"
+}
+
+// APIKey is a shared account API-key row owned by dexUnifiedApi migrations.
+type APIKey struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	AccountID  uint      `json:"account_id"`
+	Name       string    `json:"name"`
+	APIKey     string    `gorm:"column:api_key" json:"api_key"`
+	APISecret  string    `gorm:"column:api_secret" json:"api_secret"`
+	Passphrase string    `json:"passphrase"`
+	IsActive   bool      `json:"is_active"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+func (APIKey) TableName() string {
+	return "api_keys"
+}
+
 // CexExchange represents a supported centralized exchange
 type CexExchange string
 
