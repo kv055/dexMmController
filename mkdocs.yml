@@ -1,0 +1,66 @@
+site_name: dexMmController
+docs_dir: docs
+
+nav:
+  - Overview: README.md
+  - main.go: main.md
+  - internal:
+      - accounthealth:
+          - Overview: internal/accounthealth/README.md
+          - accounthealth.go: internal/accounthealth/accounthealth.md
+      - api:
+          - Overview: internal/api/README.md
+          - server.go: internal/api/server.md
+      - bitcoin:
+          - Overview: internal/bitcoin/README.md
+          - network_fetcher.go: internal/bitcoin/network_fetcher.md
+      - db:
+          - Overview: internal/db/README.md
+          - database.go: internal/db/database.md
+          - models.go: internal/db/models.md
+          - repository.go: internal/db/repository.md
+          - wallet_addresses.go: internal/db/wallet_addresses.md
+      - exchanges:
+          - cex:
+              - binance:
+                  - Overview: internal/exchanges/cex/binance/README.md
+                  - client.go: internal/exchanges/cex/binance/client.md
+              - coinbase:
+                  - Overview: internal/exchanges/cex/coinbase/README.md
+                  - client.go: internal/exchanges/cex/coinbase/client.md
+              - kraken:
+                  - Overview: internal/exchanges/cex/kraken/README.md
+                  - client.go: internal/exchanges/cex/kraken/client.md
+          - dex:
+              - bisq:
+                  - Overview: internal/exchanges/dex/bisq/README.md
+                  - client.go: internal/exchanges/dex/bisq/client.md
+              - hodlhodl:
+                  - Overview: internal/exchanges/dex/hodlhodl/README.md
+                  - client.go: internal/exchanges/dex/hodlhodl/client.md
+                  - models.go: internal/exchanges/dex/hodlhodl/models.md
+              - robosats:
+                  - Overview: internal/exchanges/dex/robosats/README.md
+                  - client.go: internal/exchanges/dex/robosats/client.md
+      - healthcheck:
+          - Overview: internal/healthcheck/README.md
+          - healthcheck.go: internal/healthcheck/healthcheck.md
+      - hummingbot:
+          - Overview: internal/hummingbot/README.md
+          - client.go: internal/hummingbot/client.md
+          - models.go: internal/hummingbot/models.md
+      - openclaw:
+          - Overview: internal/openclaw/README.md
+          - client.go: internal/openclaw/client.md
+          - mock_server.go: internal/openclaw/mock_server.md
+          - protocol.go: internal/openclaw/protocol.md
+      - premiumoffers:
+          - Overview: internal/premiumoffers/README.md
+          - watcher.go: internal/premiumoffers/watcher.md
+      - wallethub:
+          - Overview: internal/wallethub/README.md
+          - binance_bridge.go: internal/wallethub/binance_bridge.md
+          - exchange_bridge.go: internal/wallethub/exchange_bridge.md
+          - kraken_bridge.go: internal/wallethub/kraken_bridge.md
+          - lnd_client.go: internal/wallethub/lnd_client.md
+          - lnd_lightning.go: internal/wallethub/lnd_lightning.md
