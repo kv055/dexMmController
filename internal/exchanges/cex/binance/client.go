@@ -17,6 +17,7 @@ import (
 
 const defaultBaseURL = "https://api.binance.com"
 
+// Client represents a client.
 type Client struct {
 	baseURL    string
 	apiKey     string
@@ -24,87 +25,153 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// DepositAddressResponse represents a deposit address response.
 type DepositAddressResponse struct {
-	Address   string `json:"address"`
-	Coin      string `json:"coin"`
-	Tag       string `json:"tag"`
-	URL       string `json:"url"`
-	IsDefault int    `json:"isDefault"`
+	// Address is the wallet or peer address used by the deposit address response.
+	Address string `json:"address"`
+	// Coin names the asset or network for the deposit address response.
+	Coin string `json:"coin"`
+	// Tag is the tag value for the deposit address response.
+	Tag string `json:"tag"`
+	// URL is the endpoint URL.
+	URL string `json:"url"`
+	// IsDefault reports whether the deposit address response condition is true.
+	IsDefault int `json:"isDefault"`
 }
 
+// WithdrawRequest represents a withdraw request.
 type WithdrawRequest struct {
-	Coin               string
-	Address            string
-	Amount             string
-	Network            string
-	AddressTag         string
-	WithdrawOrderID    string
+	// Coin names the asset or network for the withdraw request.
+	Coin string
+	// Address is the wallet or peer address used by the withdraw request.
+	Address string
+	// Amount is the amount value for the withdraw request.
+	Amount string
+	// Network names the asset or network for the withdraw request.
+	Network string
+	// AddressTag is the wallet or peer address used by the withdraw request.
+	AddressTag string
+	// WithdrawOrderID preserves additional source data for the withdraw request.
+	WithdrawOrderID string
+	// TransactionFeeFlag is the fee value reported for the withdraw request.
 	TransactionFeeFlag *bool
-	Name               string
-	WalletType         *int
-	RecvWindow         int64
-}
-
-type WithdrawResponse struct {
-	ID string `json:"id"`
-}
-
-type DepositHistoryParams struct {
-	Coin       string
-	Status     *int
-	StartTime  *time.Time
-	EndTime    *time.Time
-	Offset     *int
-	Limit      *int
+	// Name is the name value for the withdraw request.
+	Name string
+	// WalletType is the wallet type value for the withdraw request.
+	WalletType *int
+	// RecvWindow is the recv window value for the withdraw request.
 	RecvWindow int64
 }
 
+// WithdrawResponse represents a withdraw response.
+type WithdrawResponse struct {
+	// ID identifies the withdraw response.
+	ID string `json:"id"`
+}
+
+// DepositHistoryParams represents a deposit history params.
+type DepositHistoryParams struct {
+	// Coin names the asset or network for the deposit history params.
+	Coin string
+	// Status is the current status of the deposit history params.
+	Status *int
+	// StartTime records the relevant time for the deposit history params.
+	StartTime *time.Time
+	// EndTime records the relevant time for the deposit history params.
+	EndTime *time.Time
+	// Offset is the offset value for the deposit history params.
+	Offset *int
+	// Limit is the limit value for the deposit history params.
+	Limit *int
+	// RecvWindow is the recv window value for the deposit history params.
+	RecvWindow int64
+}
+
+// DepositRecord represents a deposit record.
 type DepositRecord struct {
-	ID            string `json:"id"`
-	Amount        string `json:"amount"`
-	Coin          string `json:"coin"`
-	Network       string `json:"network"`
-	Status        int    `json:"status"`
-	Address       string `json:"address"`
-	AddressTag    string `json:"addressTag"`
-	TxID          string `json:"txId"`
-	InsertTime    int64  `json:"insertTime"`
-	TransferType  int    `json:"transferType"`
-	ConfirmTimes  string `json:"confirmTimes"`
+	// ID identifies the deposit record.
+	ID string `json:"id"`
+	// Amount is the amount value for the deposit record.
+	Amount string `json:"amount"`
+	// Coin names the asset or network for the deposit record.
+	Coin string `json:"coin"`
+	// Network names the asset or network for the deposit record.
+	Network string `json:"network"`
+	// Status is the current status of the deposit record.
+	Status int `json:"status"`
+	// Address is the wallet or peer address used by the deposit record.
+	Address string `json:"address"`
+	// AddressTag is the wallet or peer address used by the deposit record.
+	AddressTag string `json:"addressTag"`
+	// TxID is the tx id value for the deposit record.
+	TxID string `json:"txId"`
+	// InsertTime records the relevant time for the deposit record.
+	InsertTime int64 `json:"insertTime"`
+	// TransferType is the transfer type value for the deposit record.
+	TransferType int `json:"transferType"`
+	// ConfirmTimes records the relevant time for the deposit record.
+	ConfirmTimes string `json:"confirmTimes"`
+	// UnlockConfirm is the unlock confirm value for the deposit record.
 	UnlockConfirm string `json:"unlockConfirm"`
 }
 
+// WithdrawHistoryParams represents a withdraw history params.
 type WithdrawHistoryParams struct {
-	Coin            string
+	// Coin names the asset or network for the withdraw history params.
+	Coin string
+	// WithdrawOrderID preserves additional source data for the withdraw history params.
 	WithdrawOrderID string
-	Status          *int
-	StartTime       *time.Time
-	EndTime         *time.Time
-	Offset          *int
-	Limit           *int
-	RecvWindow      int64
+	// Status is the current status of the withdraw history params.
+	Status *int
+	// StartTime records the relevant time for the withdraw history params.
+	StartTime *time.Time
+	// EndTime records the relevant time for the withdraw history params.
+	EndTime *time.Time
+	// Offset is the offset value for the withdraw history params.
+	Offset *int
+	// Limit is the limit value for the withdraw history params.
+	Limit *int
+	// RecvWindow is the recv window value for the withdraw history params.
+	RecvWindow int64
 }
 
+// WithdrawRecord represents a withdraw record.
 type WithdrawRecord struct {
-	ID              string `json:"id"`
-	Amount          string `json:"amount"`
-	TransactionFee  string `json:"transactionFee"`
-	Coin            string `json:"coin"`
-	Status          int    `json:"status"`
-	Address         string `json:"address"`
-	ApplyTime       string `json:"applyTime"`
-	Network         string `json:"network"`
-	TransferType    int    `json:"transferType"`
+	// ID identifies the withdraw record.
+	ID string `json:"id"`
+	// Amount is the amount value for the withdraw record.
+	Amount string `json:"amount"`
+	// TransactionFee is the fee value reported for the withdraw record.
+	TransactionFee string `json:"transactionFee"`
+	// Coin names the asset or network for the withdraw record.
+	Coin string `json:"coin"`
+	// Status is the current status of the withdraw record.
+	Status int `json:"status"`
+	// Address is the wallet or peer address used by the withdraw record.
+	Address string `json:"address"`
+	// ApplyTime records the relevant time for the withdraw record.
+	ApplyTime string `json:"applyTime"`
+	// Network names the asset or network for the withdraw record.
+	Network string `json:"network"`
+	// TransferType is the transfer type value for the withdraw record.
+	TransferType int `json:"transferType"`
+	// WithdrawOrderID preserves additional source data for the withdraw record.
 	WithdrawOrderID string `json:"withdrawOrderId"`
-	TxID            string `json:"txId"`
+	// TxID is the tx id value for the withdraw record.
+	TxID string `json:"txId"`
 }
 
+// AccountInfo reports Binance account permissions and balances.
 type AccountInfo struct {
-	CanTrade    bool `json:"canTrade"`
+	// CanTrade is the can trade value for the account info.
+	CanTrade bool `json:"canTrade"`
+	// CanWithdraw preserves additional source data for the account info.
 	CanWithdraw bool `json:"canWithdraw"`
-	CanDeposit  bool `json:"canDeposit"`
+	// CanDeposit is the can deposit value for the account info.
+	CanDeposit bool `json:"canDeposit"`
 }
 
+// NewClient creates a client.
 func NewClient(baseURL, apiKey, secretKey string) *Client {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
@@ -117,10 +184,12 @@ func NewClient(baseURL, apiKey, secretKey string) *Client {
 	}
 }
 
+// Name returns the exchange or bridge name.
 func (c *Client) Name() string {
 	return "binance"
 }
 
+// AccountInfo retrieves account capability and permission details.
 func (c *Client) AccountInfo(ctx context.Context) (*AccountInfo, error) {
 	var resp AccountInfo
 	if err := c.signedRequest(ctx, http.MethodGet, "/api/v3/account", nil, nil, &resp); err != nil {
@@ -129,6 +198,7 @@ func (c *Client) AccountInfo(ctx context.Context) (*AccountInfo, error) {
 	return &resp, nil
 }
 
+// GetDepositAddress retrieves a deposit address.
 func (c *Client) GetDepositAddress(ctx context.Context, coin, network string) (*DepositAddressResponse, error) {
 	query := url.Values{}
 	query.Set("coin", coin)
@@ -143,6 +213,7 @@ func (c *Client) GetDepositAddress(ctx context.Context, coin, network string) (*
 	return &resp, nil
 }
 
+// ApplyWithdraw submits a withdrawal request to Binance.
 func (c *Client) ApplyWithdraw(ctx context.Context, req WithdrawRequest) (*WithdrawResponse, error) {
 	body := url.Values{}
 	body.Set("coin", req.Coin)
@@ -177,6 +248,7 @@ func (c *Client) ApplyWithdraw(ctx context.Context, req WithdrawRequest) (*Withd
 	return &resp, nil
 }
 
+// GetDepositHistory retrieves a deposit history.
 func (c *Client) GetDepositHistory(ctx context.Context, params DepositHistoryParams) ([]DepositRecord, error) {
 	query := url.Values{}
 	if params.Coin != "" {
@@ -208,6 +280,7 @@ func (c *Client) GetDepositHistory(ctx context.Context, params DepositHistoryPar
 	return resp, nil
 }
 
+// GetWithdrawHistory retrieves a withdraw history.
 func (c *Client) GetWithdrawHistory(ctx context.Context, params WithdrawHistoryParams) ([]WithdrawRecord, error) {
 	query := url.Values{}
 	if params.Coin != "" {

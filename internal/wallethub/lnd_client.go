@@ -42,11 +42,17 @@ type initWalletRequest struct {
 	ExtendedMasterKeyBirthdayTimestamp uint64   `json:"extended_master_key_birthday_timestamp,omitempty"`
 }
 
+// InitConfig contains optional wallet initialization material for LND.
 type InitConfig struct {
-	CipherSeedMnemonic                 []string
-	AEZEEDPassphrase                   string
-	RecoveryWindow                     int32
-	ExtendedMasterKey                  string
+	// CipherSeedMnemonic is the cipher seed mnemonic value for the init config.
+	CipherSeedMnemonic []string
+	// AEZEEDPassphrase is the aezeedpassphrase value for the init config.
+	AEZEEDPassphrase string
+	// RecoveryWindow is the recovery window value for the init config.
+	RecoveryWindow int32
+	// ExtendedMasterKey is the extended master key value for the init config.
+	ExtendedMasterKey string
+	// ExtendedMasterKeyBirthdayTimestamp records the relevant time for the init config.
 	ExtendedMasterKeyBirthdayTimestamp uint64
 }
 
@@ -147,6 +153,7 @@ func (c *Client) handleWalletState(
 	}
 }
 
+// Validate validates the provided value.
 func (cfg InitConfig) Validate() error {
 	hasMnemonic := len(cfg.CipherSeedMnemonic) > 0
 	hasMasterKey := strings.TrimSpace(cfg.ExtendedMasterKey) != ""
@@ -258,23 +265,35 @@ func (c *Client) waitMacaroon(ctx context.Context, path string) error {
 
 // ── on-chain ──────────────────────────────────────────────────────────────────
 
+// NewAddressResponse represents a new address response.
 type NewAddressResponse struct {
+	// Address is the wallet or peer address used by the new address response.
 	Address string `json:"address"`
 }
 
+// OnChainBalanceResponse contains LND wallet balance totals.
 type OnChainBalanceResponse struct {
-	TotalBalance       string `json:"total_balance"`
-	ConfirmedBalance   string `json:"confirmed_balance"`
+	// TotalBalance is the total balance value for the on chain balance response.
+	TotalBalance string `json:"total_balance"`
+	// ConfirmedBalance is the confirmed balance value for the on chain balance response.
+	ConfirmedBalance string `json:"confirmed_balance"`
+	// UnconfirmedBalance is the unconfirmed balance value for the on chain balance response.
 	UnconfirmedBalance string `json:"unconfirmed_balance"`
 }
 
+// SendOnChainRequest represents a send on chain request.
 type SendOnChainRequest struct {
-	Addr        string `json:"addr"`
-	Amount      int64  `json:"amount"`
-	SatPerVbyte int64  `json:"sat_per_vbyte"`
+	// Addr is the wallet or peer address used by the send on chain request.
+	Addr string `json:"addr"`
+	// Amount is the amount value for the send on chain request.
+	Amount int64 `json:"amount"`
+	// SatPerVbyte is the sat per vbyte value for the send on chain request.
+	SatPerVbyte int64 `json:"sat_per_vbyte"`
 }
 
+// SendOnChainResponse represents a send on chain response.
 type SendOnChainResponse struct {
+	// Txid is the txid value for the send on chain response.
 	Txid string `json:"txid"`
 }
 
@@ -296,6 +315,7 @@ func (c *Client) OnChainBalance(ctx context.Context) (*OnChainBalanceResponse, e
 	return &resp, nil
 }
 
+// HealthCheck verifies that the wallet client can reach LND.
 func (c *Client) HealthCheck(ctx context.Context) error {
 	if c == nil {
 		return errors.New("LND client is not initialized")
@@ -326,34 +346,53 @@ func (c *Client) SendOnChain(
 
 // ── lightning ─────────────────────────────────────────────────────────────────
 
+// CreateInvoiceRequest represents a create invoice request.
 type CreateInvoiceRequest struct {
-	ValueMsat int64  `json:"value_msat"`
-	Memo      string `json:"memo"`
-	Expiry    int64  `json:"expiry"`
+	// ValueMsat is the amount in millisatoshis.
+	ValueMsat int64 `json:"value_msat"`
+	// Memo carries a human-readable message for the create invoice request.
+	Memo string `json:"memo"`
+	// Expiry is the expiry value for the create invoice request.
+	Expiry int64 `json:"expiry"`
 }
 
+// CreateInvoiceResponse represents a create invoice response.
 type CreateInvoiceResponse struct {
+	// PaymentRequest is the payment request value for the create invoice response.
 	PaymentRequest string `json:"payment_request"`
-	RHash          string `json:"r_hash"`
+	// RHash is the rhash value for the create invoice response.
+	RHash string `json:"r_hash"`
 }
 
+// PayInvoiceRequest represents a pay invoice request.
 type PayInvoiceRequest struct {
+	// PaymentRequest is the payment request value for the pay invoice request.
 	PaymentRequest string `json:"payment_request"`
-	FeeLimitSat    int64  `json:"fee_limit_sat"`
+	// FeeLimitSat records the relevant time for the pay invoice request.
+	FeeLimitSat int64 `json:"fee_limit_sat"`
 }
 
+// PayInvoiceResponse represents a pay invoice response.
 type PayInvoiceResponse struct {
-	PaymentError    string `json:"payment_error"`
+	// PaymentError is the payment error value for the pay invoice response.
+	PaymentError string `json:"payment_error"`
+	// PaymentPreimage is the payment preimage value for the pay invoice response.
 	PaymentPreimage string `json:"payment_preimage"`
 }
 
+// ChannelBalanceResponse represents a channel balance response.
 type ChannelBalanceResponse struct {
-	LocalBalance  BalanceAmount `json:"local_balance"`
+	// LocalBalance is the local balance value for the channel balance response.
+	LocalBalance BalanceAmount `json:"local_balance"`
+	// RemoteBalance is the remote balance value for the channel balance response.
 	RemoteBalance BalanceAmount `json:"remote_balance"`
 }
 
+// BalanceAmount represents a balance amount.
 type BalanceAmount struct {
-	Sat  string `json:"sat"`
+	// Sat records the relevant time for the balance amount.
+	Sat string `json:"sat"`
+	// Msat is the amount in millisatoshis.
 	Msat string `json:"msat"`
 }
 

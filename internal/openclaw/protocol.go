@@ -27,11 +27,14 @@ type errMsg struct {
 
 // Method: "bank.tx.arrived"
 
+// BankTxArrivedParams represents a bank tx arrived params.
 type BankTxArrivedParams struct {
+	// Code is the code value for the bank tx arrived params.
 	Code string `json:"code"`
 }
 
+// BankTxArrivedPayload represents a bank tx arrived payload.
 type BankTxArrivedPayload struct {
+	// Arrived is the arrived value for the bank tx arrived payload.
 	Arrived bool `json:"arrived"`
 }
-

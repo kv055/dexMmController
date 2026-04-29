@@ -13,16 +13,25 @@ import (
 
 const defaultTimeout = 20 * time.Second
 
+// Config represents a config.
 type Config struct {
-	BaseURL           string
-	AuthToken         string
-	TakeOfferPath     string
+	// BaseURL is the base url value for the config.
+	BaseURL string
+	// AuthToken is the auth token value for the config.
+	AuthToken string
+	// TakeOfferPath is the take offer path value for the config.
+	TakeOfferPath string
+	// OpenPositionsPath is the open positions path value for the config.
 	OpenPositionsPath string
-	PositionPath      string
-	CreateOrderPath   string
-	RobotPath         string
+	// PositionPath is the position path value for the config.
+	PositionPath string
+	// CreateOrderPath is the create order path value for the config.
+	CreateOrderPath string
+	// RobotPath is the robot path value for the config.
+	RobotPath string
 }
 
+// Client represents a client.
 type Client struct {
 	baseURL           string
 	authToken         string
@@ -34,33 +43,56 @@ type Client struct {
 	http              *http.Client
 }
 
+// Robot identifies a robot.
 type Robot map[string]any
 
+// Position represents a position.
 type Position struct {
-	ID            string          `json:"id"`
-	OfferID       string          `json:"offer_id"`
-	Type          string          `json:"type"`
-	Status        string          `json:"status"`
-	Amount        json.Number     `json:"amount"`
-	MinAmount     json.Number     `json:"min_amount"`
-	MaxAmount     json.Number     `json:"max_amount"`
-	Price         json.Number     `json:"price"`
-	Premium       json.Number     `json:"premium"`
-	PaymentMethod string          `json:"payment_method"`
-	Raw           json.RawMessage `json:"raw,omitempty"`
+	// ID identifies the position.
+	ID string `json:"id"`
+	// OfferID is the offer id value for the position.
+	OfferID string `json:"offer_id"`
+	// Type is the type value for the position.
+	Type string `json:"type"`
+	// Status is the current status of the position.
+	Status string `json:"status"`
+	// Amount is the amount value for the position.
+	Amount json.Number `json:"amount"`
+	// MinAmount is the min amount value for the position.
+	MinAmount json.Number `json:"min_amount"`
+	// MaxAmount is the max amount value for the position.
+	MaxAmount json.Number `json:"max_amount"`
+	// Price is the price value used by the position.
+	Price json.Number `json:"price"`
+	// Premium is the premium value for the position.
+	Premium json.Number `json:"premium"`
+	// PaymentMethod is the payment method value for the position.
+	PaymentMethod string `json:"payment_method"`
+	// Raw preserves additional source data for the position.
+	Raw json.RawMessage `json:"raw,omitempty"`
 }
 
+// CreatePositionParams represents a create position params.
 type CreatePositionParams struct {
-	Type          int    `json:"type"`
-	Currency      int    `json:"currency"`
-	Amount        int64  `json:"amount,omitempty"`
-	MinAmount     int64  `json:"min_amount,omitempty"`
-	MaxAmount     int64  `json:"max_amount,omitempty"`
-	Price         string `json:"price,omitempty"`
-	Premium       string `json:"premium,omitempty"`
+	// Type is the type value for the create position params.
+	Type int `json:"type"`
+	// Currency names the asset or network for the create position params.
+	Currency int `json:"currency"`
+	// Amount is the amount value for the create position params.
+	Amount int64 `json:"amount,omitempty"`
+	// MinAmount is the min amount value for the create position params.
+	MinAmount int64 `json:"min_amount,omitempty"`
+	// MaxAmount is the max amount value for the create position params.
+	MaxAmount int64 `json:"max_amount,omitempty"`
+	// Price is the price value used by the create position params.
+	Price string `json:"price,omitempty"`
+	// Premium is the premium value for the create position params.
+	Premium string `json:"premium,omitempty"`
+	// PaymentMethod is the payment method value for the create position params.
 	PaymentMethod string `json:"payment_method,omitempty"`
 }
 
+// NewClient creates a client.
 func NewClient(cfg Config) *Client {
 	return &Client{
 		baseURL:           strings.TrimRight(cfg.BaseURL, "/"),
@@ -74,12 +106,14 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
+// WithAuthToken configures the RoboSats authentication token.
 func (c *Client) WithAuthToken(authToken string) *Client {
 	clone := *c
 	clone.authToken = authToken
 	return &clone
 }
 
+// GetRobot retrieves a robot.
 func (c *Client) GetRobot(ctx context.Context) (Robot, error) {
 	var robot Robot
 	if err := c.request(ctx, http.MethodGet, c.robotPath, nil, &robot); err != nil {
@@ -88,6 +122,7 @@ func (c *Client) GetRobot(ctx context.Context) (Robot, error) {
 	return robot, nil
 }
 
+// TakeOffer accepts an existing DEX offer.
 func (c *Client) TakeOffer(ctx context.Context, offerID string) (*Position, error) {
 	if offerID == "" {
 		return nil, errors.New("robosats: offer ID is required")
@@ -100,6 +135,7 @@ func (c *Client) TakeOffer(ctx context.Context, offerID string) (*Position, erro
 	return &pos, nil
 }
 
+// GetOpenPositions retrieves an open positions.
 func (c *Client) GetOpenPositions(ctx context.Context) ([]Position, error) {
 	var positions []Position
 	if err := c.request(ctx, http.MethodGet, c.openPositionsPath, nil, &positions); err != nil {
@@ -108,6 +144,7 @@ func (c *Client) GetOpenPositions(ctx context.Context) ([]Position, error) {
 	return positions, nil
 }
 
+// GetPosition retrieves a position.
 func (c *Client) GetPosition(ctx context.Context, positionID string) (*Position, error) {
 	if positionID == "" {
 		return nil, errors.New("robosats: position ID is required")
@@ -120,6 +157,7 @@ func (c *Client) GetPosition(ctx context.Context, positionID string) (*Position,
 	return &pos, nil
 }
 
+// CreatePosition creates a position.
 func (c *Client) CreatePosition(ctx context.Context, params CreatePositionParams) (*Position, error) {
 	var pos Position
 	if err := c.request(ctx, http.MethodPost, c.createOrderPath, params, &pos); err != nil {

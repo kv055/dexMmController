@@ -6,18 +6,22 @@ import (
 	"dexMmController/internal/exchanges/cex/binance"
 )
 
+// BinanceBridge represents a binance bridge.
 type BinanceBridge struct {
 	client *binance.Client
 }
 
+// NewBinanceBridge creates a binance bridge.
 func NewBinanceBridge(client *binance.Client) *BinanceBridge {
 	return &BinanceBridge{client: client}
 }
 
+// Name returns the exchange or bridge name.
 func (b *BinanceBridge) Name() string {
 	return "binance"
 }
 
+// GetDepositAddress retrieves a deposit address.
 func (b *BinanceBridge) GetDepositAddress(ctx context.Context, coin, network string) (string, error) {
 	resp, err := b.client.GetDepositAddress(ctx, coin, network)
 	if err != nil {
@@ -26,6 +30,7 @@ func (b *BinanceBridge) GetDepositAddress(ctx context.Context, coin, network str
 	return resp.Address, nil
 }
 
+// WithdrawToAddress withdraws funds using the configured bridge.
 func (b *BinanceBridge) WithdrawToAddress(ctx context.Context, req ExchangeWithdrawRequest) (*ExchangeWithdrawResponse, error) {
 	resp, err := b.client.ApplyWithdraw(ctx, binance.WithdrawRequest{
 		Coin:            req.Coin,
@@ -41,6 +46,7 @@ func (b *BinanceBridge) WithdrawToAddress(ctx context.Context, req ExchangeWithd
 	return &ExchangeWithdrawResponse{ID: resp.ID}, nil
 }
 
+// GetDepositHistory retrieves a deposit history.
 func (b *BinanceBridge) GetDepositHistory(ctx context.Context, params ExchangeDepositHistoryParams) ([]ExchangeDepositRecord, error) {
 	records, err := b.client.GetDepositHistory(ctx, binance.DepositHistoryParams{
 		Coin:      params.Coin,
@@ -67,6 +73,7 @@ func (b *BinanceBridge) GetDepositHistory(ctx context.Context, params ExchangeDe
 	return out, nil
 }
 
+// GetWithdrawHistory retrieves a withdraw history.
 func (b *BinanceBridge) GetWithdrawHistory(ctx context.Context, params ExchangeWithdrawHistoryParams) ([]ExchangeWithdrawRecord, error) {
 	records, err := b.client.GetWithdrawHistory(ctx, binance.WithdrawHistoryParams{
 		Coin:            params.Coin,

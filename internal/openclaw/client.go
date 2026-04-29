@@ -13,6 +13,7 @@ import (
 	"nhooyr.io/websocket/wsjson"
 )
 
+// Client represents a client.
 type Client struct {
 	url string
 
@@ -25,6 +26,7 @@ type Client struct {
 	pending   map[string]chan resMsg
 }
 
+// NewClient creates a client.
 func NewClient(url string) *Client {
 	return &Client{
 		url:     url,
@@ -32,6 +34,7 @@ func NewClient(url string) *Client {
 	}
 }
 
+// Connect opens the websocket connection.
 func (c *Client) Connect(ctx context.Context) error {
 	c.connMu.Lock()
 	defer c.connMu.Unlock()
@@ -50,6 +53,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	return nil
 }
 
+// Close releases the underlying network resources.
 func (c *Client) Close() error {
 	c.connMu.Lock()
 	conn := c.conn
@@ -121,6 +125,7 @@ func (c *Client) nextID() string {
 	return fmt.Sprintf("req-%d", n)
 }
 
+// Call sends an RPC request and decodes the response payload.
 func (c *Client) Call(ctx context.Context, method string, params any, out any) error {
 	c.connMu.Lock()
 	conn := c.conn
@@ -182,8 +187,9 @@ func (c *Client) Call(ctx context.Context, method string, params any, out any) e
 	}
 }
 
-// BankTxHasBeenSent asks the gateway once whether it has already sent the bank
-// transaction with the given code to the CEX. Returns false (not an error) when it hasn't.
+// BankTxHasBeenSentToCex asks the gateway once whether it has already sent the
+// bank transaction with the given code to the CEX. It returns false without an
+// error when the gateway reports that the transfer has not arrived yet.
 func (c *Client) BankTxHasBeenSentToCex(ctx context.Context, code string) (bool, error) {
 	var payload BankTxArrivedPayload
 	if err := c.Call(ctx, "bank.tx.arrived", BankTxArrivedParams{Code: code}, &payload); err != nil {

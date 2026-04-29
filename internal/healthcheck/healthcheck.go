@@ -23,6 +23,7 @@ type HealthChecker struct {
 	hodlhodl   *hodlhodl.Client
 }
 
+// NewHealthChecker creates a health checker.
 func NewHealthChecker(repo *db.TransactionRepository, oc *openclaw.Client, hb *hummingbot.Client, btc *bitcoin.NetworkDataFetcher, hh *hodlhodl.Client) *HealthChecker {
 	return &HealthChecker{repo: repo, openclaw: oc, hummingbot: hb, btc: btc, hodlhodl: hh}
 }

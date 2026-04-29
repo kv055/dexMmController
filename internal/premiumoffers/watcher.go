@@ -27,6 +27,7 @@ const (
 	defaultMinQualifiedOffers = 3
 )
 
+// Watcher represents a watcher.
 type Watcher struct {
 	repo                *db.TransactionRepository
 	bisq                *bisq.Client
@@ -38,23 +39,39 @@ type Watcher struct {
 	lastLoggedSignature string
 }
 
+// Offer is a normalized DEX offer used by this package.
 type Offer struct {
-	ID                int64    `json:"id"`
-	Exchange          string   `json:"exchange"`
-	Direction         string   `json:"direction"`
-	Price             float64  `json:"price"`
-	PriceDiffPercent  *float64 `json:"price_diff_percent"`
-	TradeCostPercent  *float64 `json:"trade_cost_percent"`
+	// ID identifies the offer.
+	ID int64 `json:"id"`
+	// Exchange is the exchange value for the offer.
+	Exchange string `json:"exchange"`
+	// Direction is the direction value for the offer.
+	Direction string `json:"direction"`
+	// Price is the price value used by the offer.
+	Price float64 `json:"price"`
+	// PriceDiffPercent is a percentage value.
+	PriceDiffPercent *float64 `json:"price_diff_percent"`
+	// TradeCostPercent is a percentage value.
+	TradeCostPercent *float64 `json:"trade_cost_percent"`
+	// NetPremiumPercent is a percentage value.
 	NetPremiumPercent *float64 `json:"net_premium_percent"`
-	BTCMin            *float64 `json:"btc_min"`
-	BTCMax            *float64 `json:"btc_max"`
-	PaymentMethod     *string  `json:"payment_method"`
-	OfferID           *string  `json:"offer_id"`
-	FirstSeen         *string  `json:"first_seen"`
-	LastSeen          *string  `json:"last_seen"`
-	RefPrice          *float64 `json:"ref_price"`
+	// BTCMin is a BTC-denominated btcmin value.
+	BTCMin *float64 `json:"btc_min"`
+	// BTCMax is a BTC-denominated btcmax value.
+	BTCMax *float64 `json:"btc_max"`
+	// PaymentMethod is the payment method value for the offer.
+	PaymentMethod *string `json:"payment_method"`
+	// OfferID is the offer id value for the offer.
+	OfferID *string `json:"offer_id"`
+	// FirstSeen is the first seen value for the offer.
+	FirstSeen *string `json:"first_seen"`
+	// LastSeen is the last seen value for the offer.
+	LastSeen *string `json:"last_seen"`
+	// RefPrice is the price value used by the offer.
+	RefPrice *float64 `json:"ref_price"`
 }
 
+// NewWatcher creates a watcher.
 func NewWatcher(
 	repo *db.TransactionRepository,
 	bisqClient *bisq.Client,
@@ -73,6 +90,7 @@ func NewWatcher(
 	}
 }
 
+// Run runs value.
 func (w *Watcher) Run(ctx context.Context) error {
 	if w.url == "" {
 		return nil

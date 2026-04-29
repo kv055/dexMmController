@@ -8,6 +8,7 @@ import (
 	"dexMmController/internal/exchanges/cex/kraken"
 )
 
+// KrakenBridge represents a kraken bridge.
 type KrakenBridge struct {
 	client                        *kraken.Client
 	depositMethodByCoin           map[string]string
@@ -16,6 +17,7 @@ type KrakenBridge struct {
 	lightningWithdrawMethodByCoin map[string]string
 }
 
+// NewKrakenBridge creates a kraken bridge.
 func NewKrakenBridge(
 	client *kraken.Client,
 	depositMethodByCoin map[string]string,
@@ -32,10 +34,12 @@ func NewKrakenBridge(
 	}
 }
 
+// Name returns the exchange or bridge name.
 func (k *KrakenBridge) Name() string {
 	return "kraken"
 }
 
+// GetDepositAddress retrieves a deposit address.
 func (k *KrakenBridge) GetDepositAddress(ctx context.Context, coin, network string) (string, error) {
 	method := network
 	if method == "" {
@@ -55,6 +59,7 @@ func (k *KrakenBridge) GetDepositAddress(ctx context.Context, coin, network stri
 	return addresses[0].Address, nil
 }
 
+// WithdrawToAddress withdraws funds using the configured bridge.
 func (k *KrakenBridge) WithdrawToAddress(ctx context.Context, req ExchangeWithdrawRequest) (*ExchangeWithdrawResponse, error) {
 	withdrawKey := req.AddressTag
 	if withdrawKey == "" {
@@ -75,6 +80,7 @@ func (k *KrakenBridge) WithdrawToAddress(ctx context.Context, req ExchangeWithdr
 	return &ExchangeWithdrawResponse{ID: resp.RefID}, nil
 }
 
+// GetLightningDepositInvoice retrieves a lightning deposit invoice.
 func (k *KrakenBridge) GetLightningDepositInvoice(ctx context.Context, req ExchangeLightningDepositRequest) (string, error) {
 	method := req.Network
 	if method == "" {
@@ -102,6 +108,7 @@ func (k *KrakenBridge) GetLightningDepositInvoice(ctx context.Context, req Excha
 	return addresses[0].Address, nil
 }
 
+// WithdrawByInvoice withdraws funds using the configured bridge.
 func (k *KrakenBridge) WithdrawByInvoice(ctx context.Context, req ExchangeLightningWithdrawRequest) (*ExchangeLightningWithdrawResponse, error) {
 	method := req.Network
 	if method == "" {
@@ -126,6 +133,7 @@ func (k *KrakenBridge) WithdrawByInvoice(ctx context.Context, req ExchangeLightn
 	return &ExchangeLightningWithdrawResponse{ID: resp.RefID}, nil
 }
 
+// GetDepositHistory retrieves a deposit history.
 func (k *KrakenBridge) GetDepositHistory(ctx context.Context, params ExchangeDepositHistoryParams) ([]ExchangeDepositRecord, error) {
 	method := k.depositMethodByCoin[params.Coin]
 	records, err := k.client.GetDepositStatus(ctx, kraken.DepositStatusRequest{
@@ -154,6 +162,7 @@ func (k *KrakenBridge) GetDepositHistory(ctx context.Context, params ExchangeDep
 	return out, nil
 }
 
+// GetWithdrawHistory retrieves a withdraw history.
 func (k *KrakenBridge) GetWithdrawHistory(ctx context.Context, params ExchangeWithdrawHistoryParams) ([]ExchangeWithdrawRecord, error) {
 	method := k.depositMethodByCoin[params.Coin]
 	records, err := k.client.GetWithdrawStatus(ctx, kraken.WithdrawStatusRequest{

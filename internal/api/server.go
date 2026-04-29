@@ -15,6 +15,7 @@ import (
 	"dexMmController/internal/db"
 )
 
+// Server represents a server.
 type Server struct {
 	addr          string
 	repo          *db.TransactionRepository
@@ -39,6 +40,7 @@ type healthResponse struct {
 	PrimaryWalletPresent bool   `json:"primary_wallet_present"`
 }
 
+// NewServer creates a server.
 func NewServer(addr string, repo *db.TransactionRepository) *Server {
 	return &Server{
 		addr: addr,
@@ -46,11 +48,13 @@ func NewServer(addr string, repo *db.TransactionRepository) *Server {
 	}
 }
 
+// WithAccountHealth attaches the account health service to the API server.
 func (s *Server) WithAccountHealth(checker accountHealthChecker) *Server {
 	s.accountHealth = checker
 	return s
 }
 
+// Run runs value.
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)

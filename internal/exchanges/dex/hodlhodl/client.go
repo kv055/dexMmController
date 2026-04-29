@@ -23,7 +23,9 @@ type Client struct {
 	http    *http.Client
 }
 
+// MeResponse represents a me response.
 type MeResponse struct {
+	// User is the user value for the me response.
 	User json.RawMessage `json:"user"`
 }
 
@@ -131,6 +133,7 @@ func (c *Client) GetMyOffers(ctx context.Context) ([]Offer, error) {
 	return resp.Offers, nil
 }
 
+// GetMe retrieves a me.
 func (c *Client) GetMe(ctx context.Context) (*MeResponse, error) {
 	var resp MeResponse
 	if err := c.get(ctx, "/api/v1/users/me", &resp); err != nil {
@@ -139,6 +142,7 @@ func (c *Client) GetMe(ctx context.Context) (*MeResponse, error) {
 	return &resp, nil
 }
 
+// VerifySignatureKey verifies that a HodlHodl API signature key is usable.
 func (c *Client) VerifySignatureKey(ctx context.Context, signatureKey string) error {
 	nonce := strconv.FormatInt(time.Now().Unix(), 10)
 	mac := hmac.New(sha256.New, []byte(signatureKey))

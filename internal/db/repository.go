@@ -12,8 +12,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// ErrWalletAddressNotFound is the err wallet address not found value.
 var ErrWalletAddressNotFound = errors.New("wallet address not found")
 
+// LNDAccountProvider is the lndaccount provider value.
 const LNDAccountProvider = "LND wallet"
 
 // TransactionRepository provides database operations for transactions
@@ -21,6 +23,7 @@ type TransactionRepository struct {
 	db *gorm.DB
 }
 
+// GetAccountByProvider retrieves an account by provider.
 func (r *TransactionRepository) GetAccountByProvider(ctx context.Context, provider string) (*Account, error) {
 	var account Account
 	if err := r.db.WithContext(ctx).Where("provider = ?", strings.TrimSpace(provider)).First(&account).Error; err != nil {
@@ -32,6 +35,7 @@ func (r *TransactionRepository) GetAccountByProvider(ctx context.Context, provid
 	return &account, nil
 }
 
+// GetActiveAPIKeysForProvider retrieves an active apikeys for provider.
 func (r *TransactionRepository) GetActiveAPIKeysForProvider(ctx context.Context, provider string) ([]APIKey, error) {
 	var keys []APIKey
 	if err := r.db.WithContext(ctx).
@@ -46,6 +50,7 @@ func (r *TransactionRepository) GetActiveAPIKeysForProvider(ctx context.Context,
 	return keys, nil
 }
 
+// UpdateAccountHealthCheckedAt updates the timestamp of the latest account health check.
 func (r *TransactionRepository) UpdateAccountHealthCheckedAt(ctx context.Context, provider string, healthy bool) (time.Time, error) {
 	var checkedAt time.Time
 	err := r.db.WithContext(ctx).Raw(`
@@ -65,13 +70,21 @@ func (r *TransactionRepository) UpdateAccountHealthCheckedAt(ctx context.Context
 	return checkedAt, nil
 }
 
+// TransactionFilters represents a transaction filters.
 type TransactionFilters struct {
-	Limit          int
-	Offset         int
-	Status         string
-	Direction      string
-	CEX            string
-	Dex            string
+	// Limit is the limit value for the transaction filters.
+	Limit int
+	// Offset is the offset value for the transaction filters.
+	Offset int
+	// Status is the current status of the transaction filters.
+	Status string
+	// Direction is the direction value for the transaction filters.
+	Direction string
+	// CEX is the cex value for the transaction filters.
+	CEX string
+	// Dex is the dex value for the transaction filters.
+	Dex string
+	// IncompleteOnly is the incomplete only value for the transaction filters.
 	IncompleteOnly bool
 }
 
@@ -121,6 +134,7 @@ func (r *TransactionRepository) GetAllTransactions(limit int, offset int) ([]Tra
 	return transactions, nil
 }
 
+// ListTransactions returns transactions matching the provided filters.
 func (r *TransactionRepository) ListTransactions(filters TransactionFilters) ([]Transaction, int64, error) {
 	var (
 		transactions []Transaction
@@ -252,6 +266,7 @@ func (r *TransactionRepository) GetPnlStats() (map[string]interface{}, error) {
 	}, nil
 }
 
+// GetWalletAddressByLabel retrieves a wallet address by label.
 func (r *TransactionRepository) GetWalletAddressByLabel(label string) (*WalletAddress, error) {
 	var wallet WalletAddress
 	if err := r.db.Where("label = ?", label).First(&wallet).Error; err != nil {
@@ -263,6 +278,7 @@ func (r *TransactionRepository) GetWalletAddressByLabel(label string) (*WalletAd
 	return &wallet, nil
 }
 
+// SaveWalletAddress stores or updates a wallet address record.
 func (r *TransactionRepository) SaveWalletAddress(wallet *WalletAddress) error {
 	if wallet == nil {
 		return errors.New("wallet address is required")
@@ -283,10 +299,12 @@ func (r *TransactionRepository) SaveWalletAddress(wallet *WalletAddress) error {
 	return nil
 }
 
+// GetPrimaryWalletAddress retrieves a primary wallet address.
 func (r *TransactionRepository) GetPrimaryWalletAddress() (*WalletAddress, error) {
 	return r.GetWalletAddressByLabel("Primary")
 }
 
+// RecordLNDMasterKeyHash stores the hash of the configured LND master key.
 func (r *TransactionRepository) RecordLNDMasterKeyHash(masterKeyHash, sourcePath string, fileSizeBytes int64) error {
 	masterKeyHash = strings.TrimSpace(masterKeyHash)
 	if masterKeyHash == "" {
@@ -324,6 +342,7 @@ func (r *TransactionRepository) RecordLNDMasterKeyHash(masterKeyHash, sourcePath
 	})
 }
 
+// UpdateAccountHealth records the latest health state for a provider.
 func (r *TransactionRepository) UpdateAccountHealth(ctx context.Context, provider string, healthy bool) error {
 	_, err := r.UpdateAccountHealthCheckedAt(ctx, provider, healthy)
 	return err

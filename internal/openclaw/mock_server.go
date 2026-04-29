@@ -12,7 +12,9 @@ import (
 	"nhooyr.io/websocket/wsjson"
 )
 
+// MockServer represents a mock server.
 type MockServer struct {
+	// Addr is the wallet or peer address used by the mock server.
 	Addr string
 
 	// For each code, treat it as "arrived" once time.Now() >= arriveAt.
@@ -23,6 +25,7 @@ type MockServer struct {
 	ln  net.Listener
 }
 
+// NewMockServer creates a mock server.
 func NewMockServer(addr string) *MockServer {
 	return &MockServer{
 		Addr:     addr,
@@ -37,6 +40,7 @@ func (m *MockServer) SetArrivedAfter(code string, d time.Duration) {
 	m.arriveAt[code] = time.Now().Add(d)
 }
 
+// Start starts the configured worker.
 func (m *MockServer) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", m.handleWS)
@@ -59,6 +63,7 @@ func (m *MockServer) Start() error {
 	return nil
 }
 
+// WSURL returns the websocket URL for the mock server.
 func (m *MockServer) WSURL() string {
 	if m.ln == nil {
 		return ""
@@ -66,6 +71,7 @@ func (m *MockServer) WSURL() string {
 	return "ws://" + m.ln.Addr().String() + "/ws"
 }
 
+// Close releases the underlying network resources.
 func (m *MockServer) Close(ctx context.Context) error {
 	if m.srv == nil {
 		return nil

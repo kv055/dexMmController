@@ -22,6 +22,7 @@ const (
 	tradesCategoryOpen      int32 = 0
 )
 
+// Client represents a client.
 type Client struct {
 	host     string
 	password string
@@ -31,66 +32,117 @@ type Client struct {
 	once    sync.Once
 }
 
+// Offer is a normalized DEX offer used by this package.
 type Offer struct {
-	ID                     string
-	Direction              string
-	Price                  string
-	AmountSats             uint64
-	MinAmountSats          uint64
-	Volume                 string
-	MinVolume              string
-	PaymentAccountID       string
-	PaymentMethodID        string
-	PaymentMethodShortName string
-	State                  string
-	IsActivated            bool
-	IsMyOffer              bool
-}
-
-type PaymentAccount struct {
-	ID              string
-	AccountName     string
+	// ID identifies the offer.
+	ID string
+	// Direction is the direction value for the offer.
+	Direction string
+	// Price is the price value used by the offer.
+	Price string
+	// AmountSats is the amount in satoshis.
+	AmountSats uint64
+	// MinAmountSats is the amount in satoshis.
+	MinAmountSats uint64
+	// Volume is the volume value for the offer.
+	Volume string
+	// MinVolume is the min volume value for the offer.
+	MinVolume string
+	// PaymentAccountID is the count associated with the offer.
+	PaymentAccountID string
+	// PaymentMethodID is the payment method id value for the offer.
 	PaymentMethodID string
-	TradeCurrency   string
+	// PaymentMethodShortName is the payment method short name value for the offer.
+	PaymentMethodShortName string
+	// State is the state value for the offer.
+	State string
+	// IsActivated reports whether the offer condition is true.
+	IsActivated bool
+	// IsMyOffer reports whether the offer condition is true.
+	IsMyOffer bool
 }
 
+// PaymentAccount represents a payment account.
+type PaymentAccount struct {
+	// ID identifies the payment account.
+	ID string
+	// AccountName is the count associated with the payment account.
+	AccountName string
+	// PaymentMethodID is the payment method id value for the payment account.
+	PaymentMethodID string
+	// TradeCurrency names the asset or network for the payment account.
+	TradeCurrency string
+}
+
+// Trade represents a trade.
 type Trade struct {
-	TradeID         string
-	OfferID         string
-	Role            string
-	State           string
-	Phase           string
-	TradePrice      string
-	TradeVolume     string
+	// TradeID is the trade id value for the trade.
+	TradeID string
+	// OfferID is the offer id value for the trade.
+	OfferID string
+	// Role is the role value for the trade.
+	Role string
+	// State is the state value for the trade.
+	State string
+	// Phase is the phase value for the trade.
+	Phase string
+	// TradePrice is the price value used by the trade.
+	TradePrice string
+	// TradeVolume is the trade volume value for the trade.
+	TradeVolume string
+	// TradeAmountSats is the amount in satoshis.
 	TradeAmountSats uint64
-	IsCompleted     bool
-	HasFailed       bool
-	ErrorMessage    string
-	DepositTxID     string
-	PayoutTxID      string
-	CreatedAt       time.Time
+	// IsCompleted reports whether the trade condition is true.
+	IsCompleted bool
+	// HasFailed reports whether the trade condition is true.
+	HasFailed bool
+	// ErrorMessage carries a human-readable message for the trade.
+	ErrorMessage string
+	// DepositTxID is the deposit tx id value for the trade.
+	DepositTxID string
+	// PayoutTxID is the payout tx id value for the trade.
+	PayoutTxID string
+	// CreatedAt records the relevant time for the trade.
+	CreatedAt time.Time
 }
 
+// TakeOfferParams represents a take offer params.
 type TakeOfferParams struct {
-	PaymentAccountID     string
+	// PaymentAccountID is the count associated with the take offer params.
+	PaymentAccountID string
+	// TakerFeeCurrencyCode names the asset or network for the take offer params.
 	TakerFeeCurrencyCode string
-	AmountSats           uint64
+	// AmountSats is the amount in satoshis.
+	AmountSats uint64
 }
 
+// CreatePositionParams represents a create position params.
 type CreatePositionParams struct {
-	CurrencyCode            string
-	Direction               string
-	Price                   string
-	UseMarketBasedPrice     bool
-	MarketPriceMarginPct    float64
-	AmountSats              uint64
-	MinAmountSats           uint64
+	// CurrencyCode names the asset or network for the create position params.
+	CurrencyCode string
+	// Direction is the direction value for the create position params.
+	Direction string
+	// Price is the price value used by the create position params.
+	Price string
+	// UseMarketBasedPrice is the price value used by the create position params.
+	UseMarketBasedPrice bool
+	// MarketPriceMarginPct is a percentage value.
+	MarketPriceMarginPct float64
+	// AmountSats is the amount in satoshis.
+	AmountSats uint64
+	// MinAmountSats is the amount in satoshis.
+	MinAmountSats uint64
+	// BuyerSecurityDepositPct is a percentage value.
 	BuyerSecurityDepositPct float64
-	TriggerPrice            string
-	PaymentAccountID        string
-	MakerFeeCurrencyCode    string
+	// TriggerPrice is the price value used by the create position params.
+	TriggerPrice string
+	// PaymentAccountID is the count associated with the create position params.
+	PaymentAccountID string
+	// MakerFeeCurrencyCode names the asset or network for the create position params.
+	MakerFeeCurrencyCode string
 }
 
+// NewClient creates a client.
 func NewClient(host, password string) *Client {
 	if host == "" {
 		host = defaultHost
@@ -98,6 +150,7 @@ func NewClient(host, password string) *Client {
 	return &Client{host: host, password: password}
 }
 
+// GetMyOffers retrieves a my offers.
 func (c *Client) GetMyOffers(ctx context.Context, direction, currencyCode string) ([]Offer, error) {
 	if currencyCode == "" {
 		currencyCode = defaultCurrencyCode
@@ -120,6 +173,7 @@ func (c *Client) GetMyOffers(ctx context.Context, direction, currencyCode string
 	return out, nil
 }
 
+// GetPaymentAccounts retrieves a payment accounts.
 func (c *Client) GetPaymentAccounts(ctx context.Context) ([]PaymentAccount, error) {
 	req := newMessage("GetPaymentAccountsRequest")
 	resp := newMessage("GetPaymentAccountsReply")
@@ -135,6 +189,7 @@ func (c *Client) GetPaymentAccounts(ctx context.Context) ([]PaymentAccount, erro
 	return out, nil
 }
 
+// TakeOffer accepts an existing DEX offer.
 func (c *Client) TakeOffer(ctx context.Context, offerID string, params TakeOfferParams) (*Trade, error) {
 	if offerID == "" {
 		return nil, errors.New("bisq: offer ID is required")
@@ -173,6 +228,7 @@ func (c *Client) TakeOffer(ctx context.Context, offerID string, params TakeOffer
 	return &trade, nil
 }
 
+// GetOpenPositions retrieves an open positions.
 func (c *Client) GetOpenPositions(ctx context.Context) ([]Trade, error) {
 	req := newMessage("GetTradesRequest")
 	setEnum(req, "category", tradesCategoryOpen)
@@ -190,6 +246,7 @@ func (c *Client) GetOpenPositions(ctx context.Context) ([]Trade, error) {
 	return out, nil
 }
 
+// GetPosition retrieves a position.
 func (c *Client) GetPosition(ctx context.Context, tradeID string) (*Trade, error) {
 	if tradeID == "" {
 		return nil, errors.New("bisq: trade ID is required")
@@ -211,6 +268,7 @@ func (c *Client) GetPosition(ctx context.Context, tradeID string) (*Trade, error
 	return &trade, nil
 }
 
+// CreatePosition creates a position.
 func (c *Client) CreatePosition(ctx context.Context, params CreatePositionParams) (*Offer, error) {
 	if params.CurrencyCode == "" {
 		params.CurrencyCode = defaultCurrencyCode
@@ -280,10 +338,12 @@ func (c *Client) connection(ctx context.Context) (*grpc.ClientConn, error) {
 
 type bisqCreds struct{ password string }
 
+// GetRequestMetadata retrieves a request metadata.
 func (c bisqCreds) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
 	return map[string]string{"password": c.password}, nil
 }
 
+// RequireTransportSecurity reports whether the credentials require transport security.
 func (c bisqCreds) RequireTransportSecurity() bool { return false }
 
 var (

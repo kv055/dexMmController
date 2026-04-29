@@ -23,6 +23,7 @@ const (
 	requestHost    = "api.coinbase.com"
 )
 
+// Client represents a client.
 type Client struct {
 	baseURL    string
 	keyName    string
@@ -30,6 +31,7 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// NewClient creates a client.
 func NewClient(baseURL, keyName, privateKey string) *Client {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
@@ -42,6 +44,7 @@ func NewClient(baseURL, keyName, privateKey string) *Client {
 	}
 }
 
+// KeyPermissions retrieves Coinbase key permissions.
 func (c *Client) KeyPermissions(ctx context.Context) error {
 	const path = "/api/v3/brokerage/key_permissions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)

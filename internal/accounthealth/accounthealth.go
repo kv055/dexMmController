@@ -16,43 +16,61 @@ import (
 	"dexMmController/internal/exchanges/dex/robosats"
 )
 
+// ErrUnsupportedProvider is the err unsupported provider value.
 var ErrUnsupportedProvider = errors.New("unsupported account health provider")
 
+// Repository defines the behavior required by this package.
 type Repository interface {
 	GetAccountByProvider(ctx context.Context, provider string) (*db.Account, error)
 	GetActiveAPIKeysForProvider(ctx context.Context, provider string) ([]db.APIKey, error)
 	UpdateAccountHealthCheckedAt(ctx context.Context, provider string, healthy bool) (time.Time, error)
 }
 
+// Config represents a config.
 type Config struct {
+	// HodlHodlBaseURL is the hodl hodl base url value for the config.
 	HodlHodlBaseURL string
-	BinanceBaseURL  string
-	KrakenBaseURL   string
+	// BinanceBaseURL is the binance base url value for the config.
+	BinanceBaseURL string
+	// KrakenBaseURL is the kraken base url value for the config.
+	KrakenBaseURL string
+	// CoinbaseBaseURL is the coinbase base url value for the config.
 	CoinbaseBaseURL string
+	// RobosatsBaseURL is the robosats base url value for the config.
 	RobosatsBaseURL string
 }
 
+// Checker represents a checker.
 type Checker struct {
 	repo Repository
 	cfg  Config
 }
 
+// Result represents a result.
 type Result struct {
-	Provider  string    `json:"provider"`
-	Status    string    `json:"status"`
-	Healthy   bool      `json:"healthy"`
-	Message   string    `json:"message"`
+	// Provider is the provider value for the result.
+	Provider string `json:"provider"`
+	// Status is the current status of the result.
+	Status string `json:"status"`
+	// Healthy reports whether the result condition is true.
+	Healthy bool `json:"healthy"`
+	// Message carries a human-readable message for the result.
+	Message string `json:"message"`
+	// CheckedAt records the relevant time for the result.
 	CheckedAt time.Time `json:"checked_at"`
 }
 
+// NewChecker creates a checker.
 func NewChecker(repo Repository, cfg Config) *Checker {
 	return &Checker{repo: repo, cfg: cfg}
 }
 
+// SupportedProviders returns the provider names checked by account health.
 func SupportedProviders() []string {
 	return []string{"HodlHodl", "Robosats", "Binance", "Kraken", "Coinbase"}
 }
 
+// CanonicalProvider maps provider aliases to their canonical names.
 func CanonicalProvider(raw string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "hodlhodl", "hodl hodl":
@@ -70,6 +88,7 @@ func CanonicalProvider(raw string) (string, error) {
 	}
 }
 
+// CheckProvider checks a provider.
 func (c *Checker) CheckProvider(ctx context.Context, rawProvider string) (Result, error) {
 	provider, err := CanonicalProvider(rawProvider)
 	if err != nil {
@@ -107,6 +126,7 @@ func (c *Checker) CheckProvider(ctx context.Context, rawProvider string) (Result
 	}, nil
 }
 
+// CheckAll checks an all.
 func (c *Checker) CheckAll(ctx context.Context) []Result {
 	results := make([]Result, 0, len(SupportedProviders()))
 	for _, provider := range SupportedProviders() {
@@ -121,6 +141,7 @@ func (c *Checker) CheckAll(ctx context.Context) []Result {
 	return results
 }
 
+// RunPeriodic runs a periodic.
 func (c *Checker) RunPeriodic(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 10 * time.Minute
@@ -191,6 +212,7 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 	}
 }
 
+// ParseInterval parses an interval.
 func ParseInterval(raw string) time.Duration {
 	if strings.TrimSpace(raw) == "" {
 		return 10 * time.Minute
