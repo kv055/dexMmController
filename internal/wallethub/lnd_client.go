@@ -91,13 +91,15 @@ func New(
 		return nil, err
 	}
 
-	// 3. Wait until fully active.
-	fmt.Println("lnd: waiting for SERVER_ACTIVE...")
-	if err := c.waitState(ctx, "SERVER_ACTIVE"); err != nil {
-		return nil, fmt.Errorf("waiting for SERVER_ACTIVE: %w", err)
+	// 3. Wait until RPC is available. SERVER_ACTIVE requires full chain
+	// backend sync, which can lag when neutrino peers are slow, but wallet RPCs
+	// are already available in RPC_ACTIVE.
+	fmt.Println("lnd: waiting for RPC_ACTIVE or SERVER_ACTIVE...")
+	if err := c.waitState(ctx, "RPC_ACTIVE", "SERVER_ACTIVE"); err != nil {
+		return nil, fmt.Errorf("waiting for LND RPC readiness: %w", err)
 	}
 	if err := c.waitMacaroon(ctx, macaroonPath); err != nil {
-		return nil, fmt.Errorf("loading macaroon after SERVER_ACTIVE: %w", err)
+		return nil, fmt.Errorf("loading macaroon after LND RPC readiness: %w", err)
 	}
 
 	fmt.Println("lnd: ready")
@@ -204,20 +206,24 @@ func (c *Client) waitReachable(ctx context.Context) error {
 	}
 }
 
-func (c *Client) waitState(ctx context.Context, target string) error {
+func (c *Client) waitState(ctx context.Context, targets ...string) error {
+	targetSet := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		targetSet[target] = struct{}{}
+	}
 	for {
 		state, err := c.getState(ctx)
 		if err != nil {
 			return err
 		}
-		if state == target {
+		if _, ok := targetSet[state]; ok {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(3 * time.Second):
-			fmt.Printf("lnd: state=%s, waiting for %s...\n", state, target)
+			fmt.Printf("lnd: state=%s, waiting for one of %s...\n", state, strings.Join(targets, ", "))
 		}
 	}
 }
