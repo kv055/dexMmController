@@ -181,7 +181,7 @@ Important transaction fields:
 - `DexOfferCreation`: JSON payload containing trigger metadata, qualified offers, the selected offer, and execution result or error
 - `DexBtcAddress`: destination BTC address for CEX withdrawals
 
-Schema migrations live in `dexUnifiedApi`.
+Shared schema files live in `dexUnifiedApi`.
 
 ## Operational Notes
 

@@ -9,7 +9,7 @@ import (
 )
 
 // InitDB connects to the shared Postgres database owned by dexUnifiedApi.
-// Schema creation and migrations are intentionally handled by the unified API.
+// Schema creation is intentionally handled by the unified API.
 func InitDB(databaseURL string) (*gorm.DB, error) {
 	db, err := gorm.Open(postgres.Open(databaseURL), &gorm.Config{})
 	if err != nil {

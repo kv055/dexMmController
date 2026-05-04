@@ -20,7 +20,7 @@ This file implements 2 function or method entry point(s).
 ### `InitDB`
 
 InitDB connects to the shared Postgres database owned by dexUnifiedApi.
-Schema creation and migrations are intentionally handled by the unified API.
+Schema creation is intentionally handled by the unified API.
 
 Signature: `func InitDB(databaseURL string) (*gorm.DB, error)`
 
@@ -36,4 +36,3 @@ Signature: `func Close(db *gorm.DB) error`
 - `log`
 - `gorm.io/driver/postgres`
 - `gorm.io/gorm`
-

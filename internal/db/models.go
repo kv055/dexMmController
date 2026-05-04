@@ -7,7 +7,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// Account is a shared provider/account row owned by dexUnifiedApi migrations.
+// Account is a shared provider/account row owned by dexUnifiedApi schema files.
 type Account struct {
 	// ID identifies the account.
 	ID uint `gorm:"primaryKey" json:"id"`
@@ -34,7 +34,7 @@ func (Account) TableName() string {
 	return "accounts"
 }
 
-// APIKey is a shared account API-key row owned by dexUnifiedApi migrations.
+// APIKey is a shared account API-key row owned by dexUnifiedApi schema files.
 type APIKey struct {
 	// ID identifies the apikey.
 	ID uint `gorm:"primaryKey" json:"id"`

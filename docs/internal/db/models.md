@@ -21,7 +21,7 @@ This file defines 6 type(s), implements 3 function or method entry point(s), dec
 
 ### `Account`
 
-Account is a shared provider/account row owned by dexUnifiedApi migrations.
+Account is a shared provider/account row owned by dexUnifiedApi schema files.
 
 Fields:
 
@@ -37,7 +37,7 @@ Fields:
 
 ### `APIKey`
 
-APIKey is a shared account API-key row owned by dexUnifiedApi migrations.
+APIKey is a shared account API-key row owned by dexUnifiedApi schema files.
 
 Fields:
 
@@ -159,4 +159,3 @@ Signature: `func (Transaction) TableName() string`
 - `encoding/json`
 - `time`
 - `gorm.io/gorm`
-
