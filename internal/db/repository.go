@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -33,6 +32,24 @@ func (r *TransactionRepository) GetAccountByProvider(ctx context.Context, provid
 		return nil, fmt.Errorf("load account %s: %w", provider, err)
 	}
 	return &account, nil
+}
+
+// EnsureAccount creates a provider account row if it does not already exist.
+func (r *TransactionRepository) EnsureAccount(ctx context.Context, provider string) (*Account, error) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return nil, errors.New("account provider is required")
+	}
+
+	if err := r.db.WithContext(ctx).Exec(`
+		INSERT INTO accounts (provider)
+		VALUES (?)
+		ON CONFLICT (provider) DO NOTHING
+	`, provider).Error; err != nil {
+		return nil, fmt.Errorf("ensure account %s: %w", provider, err)
+	}
+
+	return r.GetAccountByProvider(ctx, provider)
 }
 
 // GetActiveAPIKeysForProvider retrieves an active apikeys for provider.
@@ -313,16 +330,22 @@ func (r *TransactionRepository) RecordLNDMasterKeyHash(masterKeyHash, sourcePath
 
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var accountID int64
-		err := tx.Raw(`
+		if err := tx.Exec(`
+			INSERT INTO accounts (provider)
+			VALUES (?)
+			ON CONFLICT (provider) DO NOTHING
+		`, LNDAccountProvider).Error; err != nil {
+			return fmt.Errorf("ensure LND account row: %w", err)
+		}
+		if err := tx.Raw(`
 			SELECT id
 			FROM accounts
 			WHERE provider = ?
-		`, LNDAccountProvider).Row().Scan(&accountID)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("LND account row %q is missing", LNDAccountProvider)
-			}
+		`, LNDAccountProvider).Scan(&accountID).Error; err != nil {
 			return fmt.Errorf("load LND account row: %w", err)
+		}
+		if accountID == 0 {
+			return fmt.Errorf("LND account row %q is missing", LNDAccountProvider)
 		}
 
 		if err := tx.Exec(`
@@ -333,8 +356,15 @@ func (r *TransactionRepository) RecordLNDMasterKeyHash(masterKeyHash, sourcePath
 				source_path,
 				file_size_bytes
 			)
-			VALUES (?, 'sha256', ?, NULLIF(?, ''), ?)
-		`, accountID, masterKeyHash, strings.TrimSpace(sourcePath), fileSizeBytes).Error; err != nil {
+			SELECT ?, 'sha256', ?, NULLIF(?, ''), ?
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM lnd_master_key_hashes
+				WHERE account_id = ?
+				  AND master_key_hash = ?
+				  AND file_size_bytes = ?
+			)
+		`, accountID, masterKeyHash, strings.TrimSpace(sourcePath), fileSizeBytes, accountID, masterKeyHash, fileSizeBytes).Error; err != nil {
 			return fmt.Errorf("insert LND master key hash: %w", err)
 		}
 

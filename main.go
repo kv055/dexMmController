@@ -82,6 +82,10 @@ func main() {
 
 	repo := db.NewTransactionRepository(database)
 
+	if _, err := repo.EnsureAccount(ctx, db.LNDAccountProvider); err != nil {
+		log.Fatalf("failed to ensure LND account row: %v", err)
+	}
+
 	if err := recordLNDMasterKeyHash(repo, lndExtendedMasterKeyFile); err != nil {
 		log.Fatalf("failed to record LND master key hash: %v", err)
 	}
