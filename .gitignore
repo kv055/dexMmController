@@ -42,6 +42,7 @@ __pycache__/
 
 # Environment / secrets
 .env
+.env.keys
 .env.local
 secrets/
 
