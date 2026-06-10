@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -19,9 +20,11 @@ import (
 
 // Client is the LND REST client.
 type Client struct {
-	host       string
-	macaroon   string
-	httpClient *http.Client
+	host                  string
+	macaroon              string
+	httpClient            *http.Client
+	walletJustInitialized         bool
+	generatedCipherSeedMnemonic []string
 }
 
 type stateResponse struct {
@@ -106,6 +109,22 @@ func New(
 	return c, nil
 }
 
+// WalletJustInitialized reports whether this client run created a new wallet.
+func (c *Client) WalletJustInitialized() bool {
+	if c == nil {
+		return false
+	}
+	return c.walletJustInitialized
+}
+
+// GeneratedCipherSeedMnemonic returns the aezeed LND generated during fresh wallet init.
+func (c *Client) GeneratedCipherSeedMnemonic() string {
+	if c == nil || len(c.generatedCipherSeedMnemonic) == 0 {
+		return ""
+	}
+	return strings.Join(c.generatedCipherSeedMnemonic, " ")
+}
+
 // ── startup ───────────────────────────────────────────────────────────────────
 
 func (c *Client) handleWalletState(
@@ -122,13 +141,25 @@ func (c *Client) handleWalletState(
 
 		switch state {
 		case "NON_EXISTING":
-			fmt.Println("lnd: no wallet found, restoring from supplied wallet secret...")
-			if err := initCfg.Validate(); err != nil {
-				return err
+			cfg := initCfg
+			if cfg.HasRestoreSecret() {
+				fmt.Println("lnd: no wallet found, restoring from supplied wallet secret...")
+				if err := cfg.Validate(); err != nil {
+					return err
+				}
+			} else {
+				fmt.Println("lnd: no wallet found, generating new aezeed cipher seed...")
+				mnemonic, err := c.genSeed(ctx, cfg.AEZEEDPassphrase)
+				if err != nil {
+					return fmt.Errorf("generating cipher seed: %w", err)
+				}
+				cfg.CipherSeedMnemonic = mnemonic
+				c.generatedCipherSeedMnemonic = append([]string(nil), mnemonic...)
 			}
-			if err := c.initWallet(ctx, password, initCfg); err != nil {
+			if err := c.initWallet(ctx, password, cfg); err != nil {
 				return fmt.Errorf("initialising wallet: %w", err)
 			}
+			c.walletJustInitialized = true
 			return nil
 
 		case "LOCKED":
@@ -155,17 +186,42 @@ func (c *Client) handleWalletState(
 	}
 }
 
-// Validate validates the provided value.
+// HasRestoreSecret reports whether init should recover an existing wallet root.
+func (cfg InitConfig) HasRestoreSecret() bool {
+	return len(cfg.CipherSeedMnemonic) > 0 || strings.TrimSpace(cfg.ExtendedMasterKey) != ""
+}
+
+// Validate validates restore configuration when a wallet secret is supplied.
 func (cfg InitConfig) Validate() error {
 	hasMnemonic := len(cfg.CipherSeedMnemonic) > 0
 	hasMasterKey := strings.TrimSpace(cfg.ExtendedMasterKey) != ""
-	if hasMnemonic == hasMasterKey {
-		return errors.New("exactly one of cipher seed mnemonic or extended master key must be configured")
+	if hasMnemonic && hasMasterKey {
+		return errors.New("cipher seed mnemonic and extended master key cannot both be configured")
 	}
 	if hasMnemonic && len(cfg.CipherSeedMnemonic) != 24 {
 		return fmt.Errorf("cipher seed mnemonic must contain 24 words, got %d", len(cfg.CipherSeedMnemonic))
 	}
 	return nil
+}
+
+type genSeedResponse struct {
+	CipherSeedMnemonic []string `json:"cipher_seed_mnemonic"`
+}
+
+func (c *Client) genSeed(ctx context.Context, aezeedPassphrase string) ([]string, error) {
+	path := "/v1/genseed"
+	if strings.TrimSpace(aezeedPassphrase) != "" {
+		encoded := base64.StdEncoding.EncodeToString([]byte(aezeedPassphrase))
+		path += "?aezeed_passphrase=" + url.QueryEscape(encoded)
+	}
+	var resp genSeedResponse
+	if err := c.get(ctx, path, &resp); err != nil {
+		return nil, err
+	}
+	if len(resp.CipherSeedMnemonic) != 24 {
+		return nil, fmt.Errorf("genseed returned %d words, want 24", len(resp.CipherSeedMnemonic))
+	}
+	return resp.CipherSeedMnemonic, nil
 }
 
 func (c *Client) initWallet(ctx context.Context, password string, cfg InitConfig) error {

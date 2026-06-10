@@ -1,8 +1,14 @@
 # LND Wallet Secret Files
 
-This project now uses a strict bring-your-own-wallet-secret flow for LND.
+## Fresh wallet (default)
 
-`dexMmController` will not generate a new LND wallet seed for you. If LND reports `NON_EXISTING`, the controller expects one supported wallet secret to be mounted as a file and will fail startup if none is configured.
+For a **new** LND wallet you only need the **wallet password** in the dexMonitor Accounts panel (`accounts.password` on the `LND wallet` account).
+
+On first startup, when LND reports `NON_EXISTING`, mm-controller calls LND's `GenSeed` API, commits that aezeed with `InitWallet`, and stores the 24-word phrase in `seeds.seed_phrase`. You do not generate or paste the seed yourself.
+
+## Restore an existing wallet
+
+To recover an existing LND wallet, provide one supported wallet secret **before** first init:
 
 ## Supported Formats
 
@@ -137,13 +143,26 @@ Alternative extended master key setup:
 
 If you really want to avoid the extra file, `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP` still works as a plain env var fallback.
 
+## Wallet Password and Aezeed in Postgres
+
+The LND wallet password and aezeed are stored in Postgres and edited in the dexMonitor **Accounts** panel:
+
+| Secret | Storage |
+|--------|---------|
+| Wallet password | `accounts.password` on the `LND wallet` account |
+| Aezeed (24 words) | `seeds.seed_phrase` for that account |
+| Static channel backups | `lnd_channel_backups.multi_chan_backup` |
+
+`mm-controller` loads the wallet password and latest aezeed from the database before `InitWallet` / `UnlockWallet`. Do not put the wallet password in `.env` or compose env.
+
+Mounted `LND_SEED_MNEMONIC_FILE` may still be used once to import aezeed into `seeds` when restoring an existing wallet (Bisq-style). After import, the database is canonical. Leave seeds empty for a brand-new wallet so LND can generate the aezeed.
+
 ## File Handling Advice
 
-- Keep these files outside version control.
+- Keep secret files outside version control.
 - Use permissions like `chmod 600`.
 - Mount them read-only.
-- Keep `LND_WALLET_PASSWORD` in `dexMmController/.env`.
-- Prefer file mounts over `.env` for wallet secrets themselves.
+- Prefer file mounts over `.env` for one-time aezeed import files.
 - Back up the original secret separately from the machine that runs Docker.
 
 ## Notes

@@ -1,6 +1,26 @@
 package lnd
 
-import "testing"
+import (
+	"testing"
+)
+
+func TestInitConfigHasRestoreSecret(t *testing.T) {
+	empty := InitConfig{}
+	if empty.HasRestoreSecret() {
+		t.Fatal("empty InitConfig should not have restore secret")
+	}
+	cfg := InitConfig{ExtendedMasterKey: "xprv-example"}
+	if !cfg.HasRestoreSecret() {
+		t.Fatal("extended master key should count as restore secret")
+	}
+}
+
+func TestWalletJustInitializedDefaultsFalse(t *testing.T) {
+	client := &Client{}
+	if client.WalletJustInitialized() {
+		t.Fatal("WalletJustInitialized() = true, want false before init")
+	}
+}
 
 func TestInitConfigValidate(t *testing.T) {
 	tests := []struct {
@@ -20,9 +40,8 @@ func TestInitConfigValidate(t *testing.T) {
 			},
 		},
 		{
-			name:    "missing secret",
-			cfg:     InitConfig{},
-			wantErr: true,
+			name: "empty config for fresh wallet",
+			cfg:  InitConfig{},
 		},
 		{
 			name: "both secret types",

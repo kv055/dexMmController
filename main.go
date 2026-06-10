@@ -48,7 +48,6 @@ func main() {
 	lndHost := envOr("LND_HOST", "")
 	lndTLSCertPath := envOr("LND_TLS_CERT_PATH", "")
 	lndMacaroonPath := envOr("LND_MACAROON_PATH", "")
-	lndWalletPassword := os.Getenv("LND_WALLET_PASSWORD")
 	lndSeedMnemonicFile := envOr("LND_SEED_MNEMONIC_FILE", "")
 	lndAEZEEDPassphraseFile := envOr("LND_AEZEED_PASSPHRASE_FILE", "")
 	lndExtendedMasterKeyFile := envOr("LND_EXTENDED_MASTER_KEY_FILE", "")
@@ -56,18 +55,7 @@ func main() {
 	lndRecoveryWindow := envOr("LND_RECOVERY_WINDOW", "")
 	lndExtendedMasterKeyBirthdayTimestamp := envOr("LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP", "")
 	accountHealthInterval := parseAccountHealthInterval(envOr("ACCOUNT_HEALTH_INTERVAL", ""))
-
-	lndInitCfg, err := loadLNDInitConfig(
-		lndSeedMnemonicFile,
-		lndAEZEEDPassphraseFile,
-		lndExtendedMasterKeyFile,
-		lndExtendedMasterKeyBirthdayTimestampFile,
-		lndRecoveryWindow,
-		lndExtendedMasterKeyBirthdayTimestamp,
-	)
-	if err != nil {
-		log.Fatalf("invalid LND wallet secret configuration: %v", err)
-	}
+	lndBackupInterval := parseLNDBackupInterval(envOr("LND_BACKUP_INTERVAL", ""), accountHealthInterval)
 
 	// Graceful shutdown context for long-running stream.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -82,7 +70,8 @@ func main() {
 
 	repo := db.NewTransactionRepository(database)
 
-	if _, err := repo.EnsureAccount(ctx, db.LNDAccountProvider); err != nil {
+	lndAccount, err := repo.EnsureAccount(ctx, db.LNDAccountProvider)
+	if err != nil {
 		log.Fatalf("failed to ensure LND account row: %v", err)
 	}
 
@@ -90,20 +79,54 @@ func main() {
 		log.Fatalf("failed to record LND master key hash: %v", err)
 	}
 
+	fileInitCfg, err := loadLNDInitConfig(
+		lndSeedMnemonicFile,
+		lndAEZEEDPassphraseFile,
+		lndExtendedMasterKeyFile,
+		lndExtendedMasterKeyBirthdayTimestampFile,
+		lndRecoveryWindow,
+		lndExtendedMasterKeyBirthdayTimestamp,
+	)
+	if err != nil {
+		log.Fatalf("invalid LND wallet secret configuration: %v", err)
+	}
+	if err := importLNDSeedFromFile(ctx, repo, int64(lndAccount.ID), fileInitCfg); err != nil {
+		log.Fatalf("failed to import LND seed into database: %v", err)
+	}
+
+	walletPassword, aezeed, err := repo.LNDWalletCredentials(ctx)
+	if err != nil {
+		log.Fatalf("failed to load LND wallet credentials from database: %v", err)
+	}
+	initCfg := mergeLNDInitConfig(fileInitCfg, aezeed)
+
 	primaryAddress, lndClient, err := ensurePrimaryDepositAddress(
 		ctx,
 		repo,
 		lndHost,
 		lndTLSCertPath,
 		lndMacaroonPath,
-		lndWalletPassword,
-		lndInitCfg,
+		walletPassword,
+		initCfg,
 	)
 	if err != nil {
 		log.Printf("warning: failed to initialize primary wallet address: %v", err)
 	}
 	if primaryAddress != "" {
 		log.Printf("primary CEX deposit address ready: %s", primaryAddress)
+	}
+	if lndClient != nil {
+		if mnemonic := lndClient.GeneratedCipherSeedMnemonic(); mnemonic != "" {
+			if err := repo.EnsureLNDSeed(ctx, int64(lndAccount.ID), mnemonic); err != nil {
+				log.Printf("warning: failed to persist generated LND aezeed: %v", err)
+			} else {
+				log.Println("LND aezeed generated and stored in database")
+			}
+		}
+		if err := runLNDChannelBackupCycle(ctx, repo, lndClient, int64(lndAccount.ID)); err != nil {
+			log.Printf("warning: LND channel backup failed: %v", err)
+		}
+		go runPeriodicLNDChannelBackup(ctx, lndBackupInterval, repo, lndClient, int64(lndAccount.ID))
 	}
 
 	// ── OpenClaw ──────────────────────────────────────────────────────────────
@@ -217,17 +240,22 @@ func ensurePrimaryDepositAddress(
 	lndHost, tlsCertPath, macaroonPath, password string,
 	initCfg lnd.InitConfig,
 ) (string, *lnd.Client, error) {
-	if lndHost == "" || tlsCertPath == "" || macaroonPath == "" || password == "" {
+	if lndHost == "" || tlsCertPath == "" || macaroonPath == "" {
 		log.Println("LND startup configuration incomplete; skipping primary wallet bootstrap")
 		if existing, err := repo.GetPrimaryWalletAddress(); err == nil && existing.Address != "" {
 			return existing.Address, nil, nil
 		}
 		return "", nil, nil
 	}
+	if strings.TrimSpace(password) == "" {
+		return "", nil, fmt.Errorf("LND wallet password missing in accounts.password for provider %q", db.LNDAccountProvider)
+	}
 
 	log.Println("initializing LND wallet hub")
-	if err := initCfg.Validate(); err != nil {
-		return "", nil, fmt.Errorf("LND wallet restore secret is required: %w", err)
+	if initCfg.HasRestoreSecret() {
+		if err := initCfg.Validate(); err != nil {
+			return "", nil, fmt.Errorf("invalid LND wallet restore secret: %w", err)
+		}
 	}
 	client, err := lnd.New(ctx, lndHost, tlsCertPath, macaroonPath, password, initCfg)
 	if err != nil {
