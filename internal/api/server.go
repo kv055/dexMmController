@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"dexMmController/internal/accounthealth"
+	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 )
 
@@ -20,6 +21,8 @@ type Server struct {
 	addr          string
 	repo          *db.TransactionRepository
 	accountHealth accountHealthChecker
+	cexAccount    *cexaccount.Service
+	lndWallet     lndWalletClient
 }
 
 type accountHealthChecker interface {
@@ -62,6 +65,14 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/transactions/{id}", s.handleTransactionByID)
 	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("POST /api/accounts/health_check", s.handleAccountHealthCheck)
+	mux.HandleFunc("GET /api/lnd/wallet", s.handleLNDWalletStatus)
+	mux.HandleFunc("POST /api/lnd/addresses", s.handleLNDCreateAddress)
+	mux.HandleFunc("POST /api/lnd/channels/open", s.handleLNDOpenChannel)
+	mux.HandleFunc("POST /api/lnd/channels/close", s.handleLNDCloseChannel)
+	mux.HandleFunc("GET /api/cex/deposit-addresses", s.handleCexDepositAddresses)
+	mux.HandleFunc("GET /api/cex/balances", s.handleCexBalances)
+	mux.HandleFunc("GET /api/cex/hedge-positions", s.handleCexHedgePositions)
+	mux.HandleFunc("GET /api/cex/spot-trades", s.handleCexSpotTrades)
 
 	server := &http.Server{
 		Addr:              s.addr,

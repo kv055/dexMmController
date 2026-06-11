@@ -321,6 +321,15 @@ func (r *TransactionRepository) GetPrimaryWalletAddress() (*WalletAddress, error
 	return r.GetWalletAddressByLabel("Primary")
 }
 
+// ListWalletAddresses returns all stored wallet address records.
+func (r *TransactionRepository) ListWalletAddresses() ([]WalletAddress, error) {
+	var wallets []WalletAddress
+	if err := r.db.Order("created_at ASC, id ASC").Find(&wallets).Error; err != nil {
+		return nil, fmt.Errorf("failed to list wallet addresses: %w", err)
+	}
+	return wallets, nil
+}
+
 // RecordLNDMasterKeyHash stores the hash of the configured LND master key.
 func (r *TransactionRepository) RecordLNDMasterKeyHash(masterKeyHash, sourcePath string, fileSizeBytes int64) error {
 	masterKeyHash = strings.TrimSpace(masterKeyHash)

@@ -15,6 +15,7 @@ import (
 
 	"dexMmController/internal/accounthealth"
 	"dexMmController/internal/api"
+	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/db"
 	"dexMmController/internal/exchanges/dex/bisq"
@@ -168,7 +169,19 @@ func main() {
 		CoinbaseBaseURL: coinbaseBaseURL,
 		RobosatsBaseURL: robosatsURL,
 	})
-	apiServer := api.NewServer(apiAddr, repo).WithAccountHealth(exchangeAccountHealth)
+	cexAccountService := cexaccount.NewService(repo, hb, accounthealth.Config{
+		HodlHodlBaseURL: hhBaseURL,
+		BinanceBaseURL:  binanceBaseURL,
+		KrakenBaseURL:   krakenBaseURL,
+		CoinbaseBaseURL: coinbaseBaseURL,
+		RobosatsBaseURL: robosatsURL,
+	})
+	apiServer := api.NewServer(apiAddr, repo).
+		WithAccountHealth(exchangeAccountHealth).
+		WithCexAccount(cexAccountService)
+	if lndClient != nil {
+		apiServer = apiServer.WithLNDWallet(lndClient)
+	}
 
 	// ── Run healthcheck once ──────────────────────────────────────────────────
 	log.Println("running healthcheck")

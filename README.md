@@ -59,6 +59,10 @@ Default listen address: `:5001`.
 - `GET /api/transactions/{id}`
 - `GET /api/stats`
 - `POST /api/accounts/health_check?provider=Bisq`
+- `GET /api/lnd/wallet` — node, peers, channels, pending channels, and addresses (requires live LND client)
+- `POST /api/lnd/addresses` — generate a new on-chain address (`{"label":"optional"}`)
+- `POST /api/lnd/channels/open` — open a channel (`node_pubkey`, `peer_host`, `local_funding_amount_sat`, …)
+- `POST /api/lnd/channels/close` — close a channel (`channel_point`, `force`, `sat_per_vbyte`)
 
 `dexMonitor` calls this API through its `/api/mm-controller/*` proxy endpoints.
 

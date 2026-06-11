@@ -70,6 +70,21 @@ func SupportedProviders() []string {
 	return []string{"HodlHodl", "Robosats", "Binance", "Kraken", "Coinbase"}
 }
 
+// SupportedCEXProviders returns the centralized exchange providers.
+func SupportedCEXProviders() []string {
+	return []string{"Binance", "Kraken", "Coinbase"}
+}
+
+// IsCEXProvider reports whether the canonical provider is a supported CEX.
+func IsCEXProvider(provider string) bool {
+	switch provider {
+	case "Binance", "Kraken", "Coinbase":
+		return true
+	default:
+		return false
+	}
+}
+
 // CanonicalProvider maps provider aliases to their canonical names.
 func CanonicalProvider(raw string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
