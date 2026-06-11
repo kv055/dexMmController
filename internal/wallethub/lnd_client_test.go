@@ -1,6 +1,11 @@
 package lnd
 
 import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -81,5 +86,86 @@ func TestInitConfigValidate(t *testing.T) {
 				t.Fatalf("unexpected validation error: %v", err)
 			}
 		})
+	}
+}
+
+func TestMultiBackupBytes(t *testing.T) {
+	raw := []byte("encrypted-scb-payload")
+	snapshot := &ChanBackupSnapshot{
+		MultiChanBackup: &MultiChanBackup{
+			MultiChanBackup: base64.StdEncoding.EncodeToString(raw),
+			ChanPoints: []ChannelPoint{
+				{FundingTxidStr: "abc", OutputIndex: 1},
+			},
+		},
+	}
+
+	got, count, err := MultiBackupBytes(snapshot)
+	if err != nil {
+		t.Fatalf("MultiBackupBytes() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("channel count = %d, want 1", count)
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("backup bytes = %q, want %q", got, raw)
+	}
+}
+
+func TestMultiBackupBytesEmptySnapshot(t *testing.T) {
+	got, count, err := MultiBackupBytes(nil)
+	if err != nil {
+		t.Fatalf("MultiBackupBytes(nil) error = %v", err)
+	}
+	if got != nil || count != 0 {
+		t.Fatalf("got (%q, %d), want (nil, 0)", got, count)
+	}
+}
+
+func TestSyncChannelBackupsRestoresOnlyAfterFreshInit(t *testing.T) {
+	existing := []byte("stored-scb")
+	exported := []byte("exported-scb")
+	restoreCalled := false
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/channels/backup/restore":
+			restoreCalled = true
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(restoreChanBackupResponse{NumRestored: 1})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/channels/backup":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(ChanBackupSnapshot{
+				MultiChanBackup: &MultiChanBackup{
+					MultiChanBackup: base64.StdEncoding.EncodeToString(exported),
+					ChanPoints:      []ChannelPoint{{FundingTxidStr: "abc", OutputIndex: 0}},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &Client{host: server.URL, httpClient: server.Client()}
+
+	if err := client.syncChannelBackups(context.Background(), existing); err != nil {
+		t.Fatalf("syncChannelBackups() error = %v", err)
+	}
+	if restoreCalled {
+		t.Fatal("restore called on normal restart")
+	}
+	got, count := client.LastExportedChannelBackup()
+	if count != 1 || string(got) != string(exported) {
+		t.Fatalf("export = (%q, %d), want (%q, 1)", got, count, exported)
+	}
+
+	restoreCalled = false
+	client.walletJustInitialized = true
+	if err := client.syncChannelBackups(context.Background(), existing); err != nil {
+		t.Fatalf("syncChannelBackups() after init error = %v", err)
+	}
+	if !restoreCalled {
+		t.Fatal("restore not called after fresh wallet init")
 	}
 }

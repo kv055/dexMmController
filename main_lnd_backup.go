@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -32,38 +31,23 @@ type lndChannelBackupRepository interface {
 	RecordLNDChannelBackup(ctx context.Context, accountID int64, channelCount int, multiChanBackup []byte) error
 }
 
-type lndBackupClient interface {
-	WalletJustInitialized() bool
-	RestoreChannelBackups(ctx context.Context, multiChanBackup []byte) (uint32, error)
-	ExportAllChannelBackups(ctx context.Context) (*lnd.ChanBackupSnapshot, error)
+func loadLNDChannelBackupRestore(ctx context.Context, repo lndChannelBackupRepository, accountID int64) []byte {
+	backup, err := repo.LatestLNDChannelBackup(ctx, accountID)
+	if err != nil {
+		log.Printf("warning: failed to load LND channel backup from database: %v", err)
+		return nil
+	}
+	if backup == nil || len(backup.MultiChanBackup) == 0 {
+		return nil
+	}
+	return backup.MultiChanBackup
 }
 
-func runLNDChannelBackupCycle(ctx context.Context, repo lndChannelBackupRepository, client lndBackupClient, accountID int64) error {
+func persistLNDChannelBackup(ctx context.Context, repo lndChannelBackupRepository, client *lnd.Client, accountID int64) error {
 	if client == nil {
 		return nil
 	}
-	if client.WalletJustInitialized() {
-		backup, err := repo.LatestLNDChannelBackup(ctx, accountID)
-		if err != nil {
-			return err
-		}
-		if backup != nil && backup.ChannelCount > 0 && len(backup.MultiChanBackup) > 0 {
-			restored, err := client.RestoreChannelBackups(ctx, backup.MultiChanBackup)
-			if err != nil {
-				return fmt.Errorf("restore LND channel backups: %w", err)
-			}
-			log.Printf("restored %d LND channel backup(s) from database", restored)
-		}
-	}
-
-	snapshot, err := client.ExportAllChannelBackups(ctx)
-	if err != nil {
-		return fmt.Errorf("export LND channel backups: %w", err)
-	}
-	raw, channelCount, err := lnd.MultiBackupBytes(snapshot)
-	if err != nil {
-		return err
-	}
+	raw, channelCount := client.LastExportedChannelBackup()
 	if len(raw) == 0 {
 		log.Println("LND channel backup export returned no multi-channel backup payload")
 		return nil
@@ -75,7 +59,7 @@ func runLNDChannelBackupCycle(ctx context.Context, repo lndChannelBackupReposito
 	return nil
 }
 
-func runPeriodicLNDChannelBackup(ctx context.Context, interval time.Duration, repo lndChannelBackupRepository, client lndBackupClient, accountID int64) {
+func runPeriodicLNDChannelBackup(ctx context.Context, interval time.Duration, repo lndChannelBackupRepository, client *lnd.Client, accountID int64) {
 	if client == nil || interval <= 0 {
 		return
 	}
@@ -86,7 +70,11 @@ func runPeriodicLNDChannelBackup(ctx context.Context, interval time.Duration, re
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := runLNDChannelBackupCycle(ctx, repo, client, accountID); err != nil {
+			if err := client.ExportChannelBackup(ctx); err != nil {
+				log.Printf("warning: periodic LND channel backup export failed: %v", err)
+				continue
+			}
+			if err := persistLNDChannelBackup(ctx, repo, client, accountID); err != nil {
 				log.Printf("warning: periodic LND channel backup failed: %v", err)
 			}
 		}

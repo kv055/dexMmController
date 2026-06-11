@@ -25,6 +25,8 @@ type Client struct {
 	httpClient            *http.Client
 	walletJustInitialized         bool
 	generatedCipherSeedMnemonic []string
+	lastExportedChannelBackup   []byte
+	lastExportedChannelCount    int
 }
 
 type stateResponse struct {
@@ -57,6 +59,8 @@ type InitConfig struct {
 	ExtendedMasterKey string
 	// ExtendedMasterKeyBirthdayTimestamp records the relevant time for the init config.
 	ExtendedMasterKeyBirthdayTimestamp uint64
+	// ChannelBackupRestore is an optional static channel backup blob from Postgres.
+	ChannelBackupRestore []byte
 }
 
 // New initialises the LND client, waits for LND to be reachable,
@@ -105,6 +109,10 @@ func New(
 		return nil, fmt.Errorf("loading macaroon after LND RPC readiness: %w", err)
 	}
 
+	if err := c.syncChannelBackups(ctx, initCfg.ChannelBackupRestore); err != nil {
+		return nil, fmt.Errorf("syncing channel backups: %w", err)
+	}
+
 	fmt.Println("lnd: ready")
 	return c, nil
 }
@@ -123,6 +131,131 @@ func (c *Client) GeneratedCipherSeedMnemonic() string {
 		return ""
 	}
 	return strings.Join(c.generatedCipherSeedMnemonic, " ")
+}
+
+// LastExportedChannelBackup returns the latest export from syncChannelBackups or ExportChannelBackup.
+func (c *Client) LastExportedChannelBackup() ([]byte, int) {
+	if c == nil {
+		return nil, 0
+	}
+	return c.lastExportedChannelBackup, c.lastExportedChannelCount
+}
+
+// ExportChannelBackup refreshes the static channel backup snapshot from LND.
+func (c *Client) ExportChannelBackup(ctx context.Context) error {
+	return c.exportChannelBackup(ctx)
+}
+
+// ── static channel backups ──────────────────────────────────────────────────────
+
+// ChannelPoint identifies a channel funding output.
+type ChannelPoint struct {
+	FundingTxidStr string `json:"funding_txid_str"`
+	OutputIndex    uint32 `json:"output_index"`
+}
+
+// ChannelBackup is a single encrypted static channel backup.
+type ChannelBackup struct {
+	ChanPoint  ChannelPoint `json:"chan_point"`
+	ChanBackup string       `json:"chan_backup"`
+}
+
+// ChannelBackups is a list of single-channel backups.
+type ChannelBackups struct {
+	ChanBackups []ChannelBackup `json:"chan_backups"`
+}
+
+// MultiChanBackup is the multi-channel encrypted backup blob.
+type MultiChanBackup struct {
+	ChanPoints      []ChannelPoint `json:"chan_points"`
+	MultiChanBackup string         `json:"multi_chan_backup"`
+}
+
+// ChanBackupSnapshot is the export-all-channel-backups response.
+type ChanBackupSnapshot struct {
+	SingleChanBackups *ChannelBackups `json:"single_chan_backups"`
+	MultiChanBackup   *MultiChanBackup `json:"multi_chan_backup"`
+}
+
+type restoreChanBackupRequest struct {
+	MultiChanBackup string `json:"multi_chan_backup"`
+}
+
+type restoreChanBackupResponse struct {
+	NumRestored uint32 `json:"num_restored"`
+}
+
+func (c *Client) syncChannelBackups(ctx context.Context, restoreFrom []byte) error {
+	if c.walletJustInitialized && len(restoreFrom) > 0 {
+		restored, err := c.RestoreChannelBackups(ctx, restoreFrom)
+		if err != nil {
+			return fmt.Errorf("restore channel backups: %w", err)
+		}
+		fmt.Printf("lnd: restored %d channel backup(s) from database\n", restored)
+	}
+	return c.exportChannelBackup(ctx)
+}
+
+func (c *Client) exportChannelBackup(ctx context.Context) error {
+	snapshot, err := c.ExportAllChannelBackups(ctx)
+	if err != nil {
+		return err
+	}
+	raw, channelCount, err := multiBackupBytes(snapshot)
+	if err != nil {
+		return err
+	}
+	c.lastExportedChannelBackup = raw
+	c.lastExportedChannelCount = channelCount
+	return nil
+}
+
+// ExportAllChannelBackups returns static channel backups for all known channels.
+func (c *Client) ExportAllChannelBackups(ctx context.Context) (*ChanBackupSnapshot, error) {
+	var resp ChanBackupSnapshot
+	if err := c.get(ctx, "/v1/channels/backup", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// RestoreChannelBackups restores channel funds from a multi-channel backup blob.
+func (c *Client) RestoreChannelBackups(ctx context.Context, multiChanBackup []byte) (uint32, error) {
+	if len(multiChanBackup) == 0 {
+		return 0, fmt.Errorf("multi-channel backup is empty")
+	}
+	req := restoreChanBackupRequest{
+		MultiChanBackup: base64.StdEncoding.EncodeToString(multiChanBackup),
+	}
+	var resp restoreChanBackupResponse
+	if err := c.post(ctx, "/v1/channels/backup/restore", req, &resp); err != nil {
+		return 0, err
+	}
+	return resp.NumRestored, nil
+}
+
+// MultiBackupBytes decodes the multi-channel backup payload from an export snapshot.
+func MultiBackupBytes(snapshot *ChanBackupSnapshot) ([]byte, int, error) {
+	return multiBackupBytes(snapshot)
+}
+
+func multiBackupBytes(snapshot *ChanBackupSnapshot) ([]byte, int, error) {
+	if snapshot == nil || snapshot.MultiChanBackup == nil {
+		return nil, 0, nil
+	}
+	encoded := snapshot.MultiChanBackup.MultiChanBackup
+	if encoded == "" {
+		return nil, len(snapshot.MultiChanBackup.ChanPoints), nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, 0, fmt.Errorf("decode multi_chan_backup: %w", err)
+	}
+	channelCount := len(snapshot.MultiChanBackup.ChanPoints)
+	if channelCount == 0 && snapshot.SingleChanBackups != nil {
+		channelCount = len(snapshot.SingleChanBackups.ChanBackups)
+	}
+	return raw, channelCount, nil
 }
 
 // ── startup ───────────────────────────────────────────────────────────────────

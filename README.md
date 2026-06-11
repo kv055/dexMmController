@@ -67,15 +67,22 @@ Default listen address: `:5001`.
 The controller stores reusable wallet addresses in the `wallet_addresses` table.
 
 - Label `Primary` is reserved for the main CEX withdrawal destination.
-- On first startup with LND configured, the controller restores the wallet from a supplied secret file instead of generating a new seed.
+- LND wallet password and aezeed live in Postgres (`accounts.password`, `seeds.seed_phrase`) via the dexMonitor Accounts panel — not in `.env`.
+- On first startup with an empty `seeds` row, mm-controller asks LND to generate a new aezeed (`GenSeed` + `InitWallet`) and stores it in the database.
+- To restore an existing wallet, set the aezeed in Seeds (or mount `LND_SEED_MNEMONIC_FILE` once) before first init.
 - Supported restore inputs are a 24-word aezeed mnemonic or an extended master key (`xprv`/`tprv`).
-- A single raw private key is not enough to initialize LND's full wallet.
-- If no supported LND secret is configured, startup fails instead of auto-generating one.
-- Once the wallet is available, a new address is generated and stored as `Primary`.
+- Once the wallet is available, a new address is generated and stored as `Primary` when missing.
 - On later startups, the stored `Primary` address is reused.
-- New transactions created through the repository automatically inherit this address when `DexBtcAddress` is empty.
 
-See `LND_WALLET_SECRETS.md` for the full restore-secret workflow.
+### Lightning channel backups (SCB)
+
+- Table `lnd_channel_backups` is created by **unified-api** migration `019_lnd_channel_backups.sql` on startup (`EnsureUnifiedSchema`). Rebuild/restart unified-api before mm-controller or dexMonitor use this table.
+- mm-controller exports LND static channel backups to Postgres on startup and on `LND_BACKUP_INTERVAL` (defaults to account health interval).
+- After a disaster recovery wallet re-init, the latest backup is restored into LND automatically.
+- Open Lightning channels manually; until channels exist there is nothing meaningful to back up.
+- dexMonitor shows backup metadata (not the raw blob) on the LND wallet account.
+
+See `LND_WALLET_SECRETS.md` for the full workflow.
 
 ## Connectors
 
