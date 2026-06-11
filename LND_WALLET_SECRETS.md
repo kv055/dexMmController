@@ -157,6 +157,19 @@ The LND wallet password and aezeed are stored in Postgres and edited in the dexM
 
 Mounted `LND_SEED_MNEMONIC_FILE` may still be used once to import aezeed into `seeds` when restoring an existing wallet (Bisq-style). After import, the database is canonical. Leave seeds empty for a brand-new wallet so LND can generate the aezeed.
 
+## Lightning static channel backups (SCB)
+
+SCB is **not** a file on disk in this stack. LND returns an encrypted backup blob via its REST API; mm-controller saves it in Postgres.
+
+| Step | What happens |
+|------|----------------|
+| Schema | **unified-api** applies `dexUnifiedApi/db/schema/019_lnd_channel_backups.sql` on startup. If the table is missing in Postgres, rebuild and restart unified-api first. |
+| Export | After LND wallet is ready, mm-controller exports SCB and inserts into `lnd_channel_backups`. Runs again on a periodic interval. |
+| UI | dexMonitor Accounts panel → LND wallet → **Channel backups** (metadata only). |
+| Recovery | After wiping `lnd-data`, keep aezeed + wallet password + SCB row in the DB. mm-controller re-inits the wallet and restores the SCB on that same startup. |
+
+Open Lightning channels **yourself** before expecting a backup row. With zero channels, export succeeds but stores nothing useful.
+
 ## File Handling Advice
 
 - Keep secret files outside version control.

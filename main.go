@@ -99,6 +99,7 @@ func main() {
 		log.Fatalf("failed to load LND wallet credentials from database: %v", err)
 	}
 	initCfg := mergeLNDInitConfig(fileInitCfg, aezeed)
+	initCfg.ChannelBackupRestore = loadLNDChannelBackupRestore(ctx, repo, int64(lndAccount.ID))
 
 	primaryAddress, lndClient, err := ensurePrimaryDepositAddress(
 		ctx,
@@ -123,7 +124,7 @@ func main() {
 				log.Println("LND aezeed generated and stored in database")
 			}
 		}
-		if err := runLNDChannelBackupCycle(ctx, repo, lndClient, int64(lndAccount.ID)); err != nil {
+		if err := persistLNDChannelBackup(ctx, repo, lndClient, int64(lndAccount.ID)); err != nil {
 			log.Printf("warning: LND channel backup failed: %v", err)
 		}
 		go runPeriodicLNDChannelBackup(ctx, lndBackupInterval, repo, lndClient, int64(lndAccount.ID))
