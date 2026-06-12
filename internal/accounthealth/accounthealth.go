@@ -25,6 +25,7 @@ type Repository interface {
 	GetAccountByProvider(ctx context.Context, provider string) (*db.Account, error)
 	GetActiveAPIKeysForProvider(ctx context.Context, provider string) ([]db.APIKey, error)
 	UpdateAccountHealthCheckedAt(ctx context.Context, provider string, healthy bool) (time.Time, error)
+	UpdateAPIKeyPermissions(ctx context.Context, keyID uint, permissions map[string]bool, checkedAt time.Time) error
 }
 
 // Config represents a config.
@@ -137,6 +138,14 @@ func (c *Checker) CheckProvider(ctx context.Context, rawProvider string) (Result
 	if updateErr != nil {
 		return Result{}, updateErr
 	}
+	for _, keyResult := range keyResults {
+		if len(keyResult.Permissions) == 0 {
+			continue
+		}
+		if err := c.repo.UpdateAPIKeyPermissions(ctx, keyResult.KeyID, keyResult.Permissions, checkedAt); err != nil {
+			return Result{}, err
+		}
+	}
 
 	message := fmt.Sprintf("%d active %s API key(s) validated.", len(keys), provider)
 	if len(keyResults) > 0 {
@@ -223,8 +232,10 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 			BaseURL:   c.cfg.RobosatsBaseURL,
 			AuthToken: apiKey,
 		})
-		_, err := client.GetRobot(ctx)
-		return nil, err
+		if _, err := client.GetRobot(ctx); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"robot": true}, nil
 	}
 	if apiSecret == "" {
 		return nil, errors.New("api_secret is required")
@@ -239,7 +250,10 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 		if err := client.VerifySignatureKey(ctx, apiSecret); err != nil {
 			return nil, err
 		}
-		return nil, nil
+		return map[string]bool{
+			"api_key":        true,
+			"signature_key": true,
+		}, nil
 	case "Binance":
 		client := binance.NewClient(c.cfg.BinanceBaseURL, apiKey, apiSecret)
 		restrictions, err := client.KeyRestrictions(ctx)

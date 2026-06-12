@@ -104,11 +104,12 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 type accountHealthResponse struct {
-	Provider  string `json:"provider"`
-	Status    string `json:"status"`
-	Healthy   bool   `json:"healthy"`
-	Message   string `json:"message"`
-	CheckedAt string `json:"checked_at"`
+	Provider  string                              `json:"provider"`
+	Status    string                              `json:"status"`
+	Healthy   bool                                `json:"healthy"`
+	Message   string                              `json:"message"`
+	Keys      []accounthealth.KeyPermissionResult `json:"keys,omitempty"`
+	CheckedAt string                              `json:"checked_at"`
 }
 
 func (s *Server) handleAccountHealthCheck(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +136,7 @@ func (s *Server) handleAccountHealthCheck(w http.ResponseWriter, r *http.Request
 		Status:    result.Status,
 		Healthy:   result.Healthy,
 		Message:   result.Message,
+		Keys:      result.Keys,
 		CheckedAt: result.CheckedAt.UTC().Format(time.RFC3339),
 	})
 }

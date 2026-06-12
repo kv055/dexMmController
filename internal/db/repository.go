@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -65,6 +66,34 @@ func (r *TransactionRepository) GetActiveAPIKeysForProvider(ctx context.Context,
 		return nil, fmt.Errorf("load active API keys for %s: %w", provider, err)
 	}
 	return keys, nil
+}
+
+// UpdateAPIKeyPermissions stores the latest normalized permissions for an API key.
+func (r *TransactionRepository) UpdateAPIKeyPermissions(ctx context.Context, keyID uint, permissions map[string]bool, checkedAt time.Time) error {
+	if keyID == 0 {
+		return errors.New("api key id is required")
+	}
+	if len(permissions) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(permissions)
+	if err != nil {
+		return fmt.Errorf("marshal api key permissions: %w", err)
+	}
+	result := r.db.WithContext(ctx).Exec(`
+		UPDATE api_keys
+		SET permissions = ?::jsonb,
+		    permissions_checked_at = ?,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, string(raw), checkedAt, keyID)
+	if result.Error != nil {
+		return fmt.Errorf("update api key permissions for key %d: %w", keyID, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // UpdateAccountHealthCheckedAt updates the timestamp of the latest account health check.
