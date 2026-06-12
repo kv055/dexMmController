@@ -178,6 +178,69 @@ func TestCheckProviderRobosatsDoesNotRequireSecret(t *testing.T) {
 	if repo.updatedProvider != "Robosats" || !repo.updatedHealthy {
 		t.Fatalf("updated provider=%q healthy=%v, want Robosats true", repo.updatedProvider, repo.updatedHealthy)
 	}
+	if len(result.Keys) != 1 || !result.Keys[0].Permissions["robot"] {
+		t.Fatalf("result keys = %+v, want robot permission", result.Keys)
+	}
+	if len(repo.permissionUpdates) != 1 || !repo.permissionUpdates[0].permissions["robot"] {
+		t.Fatalf("permission updates = %+v, want robot permission persisted", repo.permissionUpdates)
+	}
+}
+
+func TestCheckProviderHodlHodlValidatesAPIAndSignatureKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/users/me":
+			_, _ = w.Write([]byte(`{"status":"success","user":{}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/contracts/verify_signature_key":
+			_, _ = w.Write([]byte(`{"status":"success"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	repo := &fakeRepo{
+		accountProvider: "HodlHodl",
+		keys: []db.APIKey{{
+			ID:        9,
+			APIKey:    "hh-api-key",
+			APISecret: "hh-signature-key",
+			IsActive:  true,
+		}},
+	}
+	checker := NewChecker(repo, Config{HodlHodlBaseURL: srv.URL})
+	result, err := checker.CheckProvider(context.Background(), "hodlhodl")
+	if err != nil {
+		t.Fatalf("CheckProvider: %v", err)
+	}
+	if result.Status != "healthy" || !result.Healthy {
+		t.Fatalf("result = %+v, want healthy true", result)
+	}
+	if len(result.Keys) != 1 {
+		t.Fatalf("result keys = %+v, want one key result", result.Keys)
+	}
+	if !result.Keys[0].Permissions["api_key"] || !result.Keys[0].Permissions["signature_key"] {
+		t.Fatalf("permissions = %+v, want api_key and signature_key", result.Keys[0].Permissions)
+	}
+	if len(repo.permissionUpdates) != 1 {
+		t.Fatalf("permission updates = %+v, want one persisted update", repo.permissionUpdates)
+	}
+}
+
+func TestCheckProviderHodlHodlMissingSignatureMarksUnhealthy(t *testing.T) {
+	repo := &fakeRepo{
+		accountProvider: "HodlHodl",
+		keys:            []db.APIKey{{ID: 9, APIKey: "hh-api-key", IsActive: true}},
+	}
+	checker := NewChecker(repo, Config{})
+	result, err := checker.CheckProvider(context.Background(), "hodlhodl")
+	if err != nil {
+		t.Fatalf("CheckProvider: %v", err)
+	}
+	if result.Status != "unhealthy" || result.Healthy {
+		t.Fatalf("result = %+v, want unhealthy false", result)
+	}
 }
 
 func TestCheckProviderRobosatsBadStatusMarksUnhealthy(t *testing.T) {

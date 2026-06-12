@@ -232,8 +232,10 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 			BaseURL:   c.cfg.RobosatsBaseURL,
 			AuthToken: apiKey,
 		})
-		_, err := client.GetRobot(ctx)
-		return nil, err
+		if _, err := client.GetRobot(ctx); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"robot": true}, nil
 	}
 	if apiSecret == "" {
 		return nil, errors.New("api_secret is required")
@@ -248,7 +250,10 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 		if err := client.VerifySignatureKey(ctx, apiSecret); err != nil {
 			return nil, err
 		}
-		return nil, nil
+		return map[string]bool{
+			"api_key":        true,
+			"signature_key": true,
+		}, nil
 	case "Binance":
 		client := binance.NewClient(c.cfg.BinanceBaseURL, apiKey, apiSecret)
 		restrictions, err := client.KeyRestrictions(ctx)

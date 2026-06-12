@@ -50,7 +50,7 @@ type APIKey struct {
 	Passphrase string `json:"passphrase"`
 	// IsActive reports whether the apikey condition is true.
 	IsActive bool `json:"is_active"`
-	// Permissions stores the normalized permission map from the latest health check.
+	// Permissions stores normalized validation or permission flags from the latest health check.
 	Permissions json.RawMessage `gorm:"column:permissions;type:jsonb" json:"permissions,omitempty"`
 	// PermissionsCheckedAt records when permissions were last fetched from the exchange.
 	PermissionsCheckedAt *time.Time `json:"permissions_checked_at,omitempty"`
