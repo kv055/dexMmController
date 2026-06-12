@@ -14,6 +14,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -44,29 +45,197 @@ func NewClient(baseURL, keyName, privateKey string) *Client {
 	}
 }
 
+// AccountAmount is a currency amount from the Coinbase API.
+type AccountAmount struct {
+	Value    string `json:"value"`
+	Currency string `json:"currency"`
+}
+
+// Account is a Coinbase Advanced Trade account row.
+type Account struct {
+	UUID             string        `json:"uuid"`
+	Name             string        `json:"name"`
+	Currency         string        `json:"currency"`
+	AvailableBalance AccountAmount `json:"available_balance"`
+	Hold             AccountAmount `json:"hold"`
+	Type             string        `json:"type"`
+	Active           bool          `json:"active"`
+}
+
+// DepositAddress is a Coinbase wallet deposit address.
+type DepositAddress struct {
+	ID      string `json:"id"`
+	Address string `json:"address"`
+	Network string `json:"network"`
+}
+
+// KeyPermissions reports Coinbase CDP API key capabilities.
+type KeyPermissions struct {
+	// CanView reports whether the key can view account data.
+	CanView bool `json:"can_view"`
+	// CanTrade reports whether the key can place trades.
+	CanTrade bool `json:"can_trade"`
+	// CanTransfer reports whether the key can transfer funds.
+	CanTransfer bool `json:"can_transfer"`
+}
+
 // KeyPermissions retrieves Coinbase key permissions.
-func (c *Client) KeyPermissions(ctx context.Context) error {
-	const path = "/api/v3/brokerage/key_permissions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+func (c *Client) KeyPermissions(ctx context.Context) (*KeyPermissions, error) {
+	var permissions KeyPermissions
+	if err := c.getJSON(ctx, http.MethodGet, "/api/v3/brokerage/key_permissions", nil, &permissions); err != nil {
+		return nil, err
+	}
+	return &permissions, nil
+}
+
+// ListAccounts returns all Advanced Trade accounts for the API key.
+func (c *Client) ListAccounts(ctx context.Context) ([]Account, error) {
+	accounts := make([]Account, 0)
+	cursor := ""
+	for {
+		path := "/api/v3/brokerage/accounts?limit=250"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		var page struct {
+			Accounts []Account `json:"accounts"`
+			HasNext  bool      `json:"has_next"`
+			Cursor   string    `json:"cursor"`
+		}
+		if err := c.getJSON(ctx, http.MethodGet, path, nil, &page); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, page.Accounts...)
+		if !page.HasNext || strings.TrimSpace(page.Cursor) == "" {
+			break
+		}
+		cursor = page.Cursor
+	}
+	return accounts, nil
+}
+
+// BTCDepositAddresses returns on-chain BTC deposit addresses for the account.
+func (c *Client) BTCDepositAddresses(ctx context.Context) ([]DepositAddress, error) {
+	accounts, err := c.ListAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	btcAccountID := findBTCAccountID(accounts)
+	if btcAccountID == "" {
+		btcAccountID, err = c.findV2BTCAccountID(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if btcAccountID == "" {
+		return []DepositAddress{}, nil
+	}
+
+	path := "/v2/accounts/" + btcAccountID + "/addresses"
+	var listed struct {
+		Data []DepositAddress `json:"data"`
+	}
+	if err := c.getJSON(ctx, http.MethodGet, path, nil, &listed); err == nil {
+		addresses := filterCoinbaseBTCAddresses(listed.Data)
+		if len(addresses) > 0 {
+			return addresses, nil
+		}
+	}
+
+	var created struct {
+		Data DepositAddress `json:"data"`
+	}
+	if err := c.getJSON(ctx, http.MethodPost, path, strings.NewReader("{}"), &created); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(created.Data.Address) == "" {
+		return nil, fmt.Errorf("coinbase: deposit address response was empty")
+	}
+	return []DepositAddress{created.Data}, nil
+}
+
+func findBTCAccountID(accounts []Account) string {
+	for _, account := range accounts {
+		if !strings.EqualFold(strings.TrimSpace(account.Currency), "BTC") {
+			continue
+		}
+		if id := strings.TrimSpace(account.UUID); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func (c *Client) findV2BTCAccountID(ctx context.Context) (string, error) {
+	var listed struct {
+		Data []struct {
+			ID       string `json:"id"`
+			Currency struct {
+				Code string `json:"code"`
+			} `json:"currency"`
+		} `json:"data"`
+	}
+	if err := c.getJSON(ctx, http.MethodGet, "/v2/accounts", nil, &listed); err != nil {
+		return "", err
+	}
+	for _, account := range listed.Data {
+		if strings.EqualFold(strings.TrimSpace(account.Currency.Code), "BTC") {
+			if id := strings.TrimSpace(account.ID); id != "" {
+				return id, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+func filterCoinbaseBTCAddresses(addresses []DepositAddress) []DepositAddress {
+	out := make([]DepositAddress, 0, len(addresses))
+	for _, row := range addresses {
+		if strings.TrimSpace(row.Address) == "" {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func (c *Client) getJSON(ctx context.Context, method, path string, body io.Reader, dest any) error {
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
 		return err
 	}
-	token, err := c.buildJWT(http.MethodGet, path)
+	signPath := path
+	if idx := strings.Index(path, "?"); idx >= 0 {
+		signPath = path[:idx]
+	}
+	token, err := c.buildJWT(method, signPath)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("coinbase: GET %s failed: %w", path, err)
+		return fmt.Errorf("coinbase: %s %s failed: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("coinbase: reading response body: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("coinbase: GET %s returned HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(raw)))
+		return fmt.Errorf("coinbase: %s %s returned HTTP %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if dest == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, dest); err != nil {
+		return fmt.Errorf("coinbase: decode %s response: %w", path, err)
 	}
 	return nil
 }

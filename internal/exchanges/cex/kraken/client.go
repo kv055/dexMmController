@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -307,11 +308,27 @@ func (c *Client) GetWithdrawStatus(ctx context.Context, req WithdrawStatusReques
 	return resp.Result, nil
 }
 
+type nonceSequencer struct {
+	mu   sync.Mutex
+	last int64
+}
+
+var apiNonceSequencers sync.Map
+
 func (c *Client) privateRequest(ctx context.Context, path string, form url.Values, out any) error {
+	err := c.doPrivateRequest(ctx, path, form, out)
+	if err == nil || !isKrakenInvalidNonce(err) {
+		return err
+	}
+	c.bumpNonceAhead()
+	return c.doPrivateRequest(ctx, path, form, out)
+}
+
+func (c *Client) doPrivateRequest(ctx context.Context, path string, form url.Values, out any) error {
 	if form == nil {
 		form = url.Values{}
 	}
-	nonce := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	nonce := c.nextNonce()
 	form.Set("nonce", nonce)
 	encodedForm := form.Encode()
 
@@ -344,7 +361,43 @@ func (c *Client) privateRequest(ctx context.Context, path string, form url.Value
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("kraken: decode response: %w", err)
 	}
+	return krakenAPIError(path, out)
+}
 
+func (c *Client) nextNonce() string {
+	value, _ := apiNonceSequencers.LoadOrStore(c.apiKey, &nonceSequencer{})
+	seq := value.(*nonceSequencer)
+	seq.mu.Lock()
+	defer seq.mu.Unlock()
+	now := time.Now().UnixMicro()
+	if now <= seq.last {
+		seq.last++
+	} else {
+		seq.last = now
+	}
+	return strconv.FormatInt(seq.last, 10)
+}
+
+func (c *Client) bumpNonceAhead() {
+	value, _ := apiNonceSequencers.LoadOrStore(c.apiKey, &nonceSequencer{})
+	seq := value.(*nonceSequencer)
+	seq.mu.Lock()
+	defer seq.mu.Unlock()
+	now := time.Now().UnixMicro()
+	if now > seq.last {
+		seq.last = now
+	}
+	seq.last += 1000
+}
+
+func isKrakenInvalidNonce(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "EAPI:Invalid nonce")
+}
+
+func krakenAPIError(path string, out any) error {
 	switch envelope := out.(type) {
 	case *apiEnvelope[[]DepositMethod]:
 		if len(envelope.Error) > 0 {

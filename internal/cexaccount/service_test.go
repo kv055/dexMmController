@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"dexMmController/internal/db"
+	"dexMmController/internal/exchanges/cex/coinbase"
 )
 
 func TestHedgePositionFromTransactionActiveVsPast(t *testing.T) {
@@ -39,6 +40,27 @@ func TestHedgePositionFromTransactionActiveVsPast(t *testing.T) {
 	}
 	if !hasJSONData(past.CexCounterPositionCloseDetails) {
 		t.Fatal("expected close details to be present")
+	}
+}
+
+func TestBalancesFromCoinbase(t *testing.T) {
+	resp := balancesFromCoinbase([]coinbase.Account{
+		{
+			Currency: "BTC",
+			Active:   true,
+			AvailableBalance: coinbase.AccountAmount{Value: "0.25", Currency: "BTC"},
+		},
+		{
+			Currency: "EUR",
+			Active:   true,
+			AvailableBalance: coinbase.AccountAmount{Value: "42.10", Currency: "EUR"},
+		},
+	})
+	if resp.Bitcoin == nil || resp.Bitcoin.Total != 0.25 {
+		t.Fatalf("bitcoin balance = %#v, want 0.25 BTC", resp.Bitcoin)
+	}
+	if len(resp.Fiat) != 1 || resp.Fiat[0].Asset != "EUR" {
+		t.Fatalf("fiat balances = %#v, want EUR only", resp.Fiat)
 	}
 }
 

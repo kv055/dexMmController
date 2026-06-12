@@ -12,17 +12,24 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-const defaultBaseURL = "https://api.binance.com"
+const (
+	defaultBaseURL      = "https://api.binance.com"
+	defaultRecvWindowMS = int64(10000)
+)
 
 // Client represents a client.
 type Client struct {
-	baseURL    string
-	apiKey     string
-	secretKey  string
-	httpClient *http.Client
+	baseURL      string
+	apiKey       string
+	secretKey    string
+	httpClient   *http.Client
+	timeMu       sync.Mutex
+	timeOffsetMS int64
+	timeSynced   bool
 }
 
 // DepositAddressResponse represents a deposit address response.
@@ -161,6 +168,18 @@ type WithdrawRecord struct {
 	TxID string `json:"txId"`
 }
 
+// SpotBalance is a single asset balance from the spot account endpoint.
+type SpotBalance struct {
+	Asset  string `json:"asset"`
+	Free   string `json:"free"`
+	Locked string `json:"locked"`
+}
+
+// spotAccountResponse is the balance payload from GET /api/v3/account.
+type spotAccountResponse struct {
+	Balances []SpotBalance `json:"balances"`
+}
+
 // AccountInfo reports Binance account permissions and balances.
 type AccountInfo struct {
 	// CanTrade is the can trade value for the account info.
@@ -169,6 +188,18 @@ type AccountInfo struct {
 	CanWithdraw bool `json:"canWithdraw"`
 	// CanDeposit is the can deposit value for the account info.
 	CanDeposit bool `json:"canDeposit"`
+}
+
+// KeyRestrictions reports API-key-level permissions from Binance.
+type KeyRestrictions struct {
+	// IPRestrict reports whether the key is IP-restricted.
+	IPRestrict bool `json:"ipRestrict"`
+	// EnableReading reports whether the key can read account data.
+	EnableReading bool `json:"enableReading"`
+	// EnableSpotAndMarginTrading reports whether the key can trade spot/margin.
+	EnableSpotAndMarginTrading bool `json:"enableSpotAndMarginTrading"`
+	// EnableWithdrawals reports whether the key can withdraw funds.
+	EnableWithdrawals bool `json:"enableWithdrawals"`
 }
 
 // NewClient creates a client.
@@ -193,6 +224,24 @@ func (c *Client) Name() string {
 func (c *Client) AccountInfo(ctx context.Context) (*AccountInfo, error) {
 	var resp AccountInfo
 	if err := c.signedRequest(ctx, http.MethodGet, "/api/v3/account", nil, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// SpotBalances retrieves non-zero spot wallet balances.
+func (c *Client) SpotBalances(ctx context.Context) ([]SpotBalance, error) {
+	var resp spotAccountResponse
+	if err := c.signedRequest(ctx, http.MethodGet, "/api/v3/account", nil, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Balances, nil
+}
+
+// KeyRestrictions retrieves API-key permission flags for the configured credentials.
+func (c *Client) KeyRestrictions(ctx context.Context) (*KeyRestrictions, error) {
+	var resp KeyRestrictions
+	if err := c.signedRequest(ctx, http.MethodGet, "/sapi/v1/account/apiRestrictions", nil, nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -316,10 +365,26 @@ func (c *Client) GetWithdrawHistory(ctx context.Context, params WithdrawHistoryP
 }
 
 func (c *Client) signedRequest(ctx context.Context, method, path string, params url.Values, headers http.Header, out any) error {
+	err := c.doSignedRequest(ctx, method, path, params, headers, out)
+	if err == nil || !isBinanceTimestampError(err) {
+		return err
+	}
+	c.invalidateServerTime()
+	return c.doSignedRequest(ctx, method, path, params, headers, out)
+}
+
+func (c *Client) doSignedRequest(ctx context.Context, method, path string, params url.Values, headers http.Header, out any) error {
 	if params == nil {
 		params = url.Values{}
 	}
-	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+	timestamp, err := c.serverTimestamp(ctx)
+	if err != nil {
+		return err
+	}
+	if params.Get("recvWindow") == "" {
+		params.Set("recvWindow", strconv.FormatInt(defaultRecvWindowMS, 10))
+	}
+	params.Set("timestamp", strconv.FormatInt(timestamp, 10))
 	queryString := params.Encode()
 	signature := sign(queryString, c.secretKey)
 	params.Set("signature", signature)
@@ -369,6 +434,61 @@ func (c *Client) signedRequest(ctx context.Context, method, path string, params 
 		return fmt.Errorf("binance: decode response: %w", err)
 	}
 	return nil
+}
+
+func (c *Client) serverTimestamp(ctx context.Context) (int64, error) {
+	c.timeMu.Lock()
+	defer c.timeMu.Unlock()
+	if !c.timeSynced {
+		if err := c.syncServerTimeLocked(ctx); err != nil {
+			return 0, err
+		}
+	}
+	return time.Now().UnixMilli() + c.timeOffsetMS, nil
+}
+
+func (c *Client) syncServerTimeLocked(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v3/time", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("binance: GET /api/v3/time failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("binance: reading server time: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("binance: GET /api/v3/time returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var payload struct {
+		ServerTime int64 `json:"serverTime"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return fmt.Errorf("binance: decode server time: %w", err)
+	}
+	c.timeOffsetMS = payload.ServerTime - time.Now().UnixMilli()
+	c.timeSynced = true
+	return nil
+}
+
+func (c *Client) invalidateServerTime() {
+	c.timeMu.Lock()
+	c.timeSynced = false
+	c.timeOffsetMS = 0
+	c.timeMu.Unlock()
+}
+
+func isBinanceTimestampError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, `"code":-1021`) || strings.Contains(msg, "Timestamp for this request")
 }
 
 func sign(payload, secret string) string {

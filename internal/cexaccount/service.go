@@ -13,6 +13,7 @@ import (
 	"dexMmController/internal/accounthealth"
 	"dexMmController/internal/db"
 	"dexMmController/internal/exchanges/cex/binance"
+	"dexMmController/internal/exchanges/cex/coinbase"
 	"dexMmController/internal/exchanges/cex/kraken"
 	"dexMmController/internal/hummingbot"
 )
@@ -148,6 +149,26 @@ func (s *Service) DepositAddresses(ctx context.Context, rawProvider string) ([]D
 			Address: resp.Address,
 			Tag:     resp.Tag,
 		}}, nil
+	case "coinbase":
+		client := coinbase.NewClient(s.cfg.CoinbaseBaseURL, key.APIKey, key.APISecret)
+		rows, err := client.BTCDepositAddresses(ctx)
+		if err != nil {
+			return nil, err
+		}
+		addresses := make([]DepositAddress, 0, len(rows))
+		for _, row := range rows {
+			network := strings.TrimSpace(row.Network)
+			if network == "" {
+				network = "bitcoin"
+			}
+			addresses = append(addresses, DepositAddress{
+				Asset:   "BTC",
+				Network: network,
+				Address: row.Address,
+				Method:  network,
+			})
+		}
+		return addresses, nil
 	default:
 		return nil, fmt.Errorf("%s deposit addresses are not supported yet", provider)
 	}
@@ -168,6 +189,20 @@ func (s *Service) Balances(ctx context.Context, rawProvider string) (*BalancesRe
 			return nil, err
 		}
 		return balancesFromKraken(balances), nil
+	case "binance":
+		client := binance.NewClient(s.cfg.BinanceBaseURL, key.APIKey, key.APISecret)
+		balances, err := client.SpotBalances(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return balancesFromBinance(balances), nil
+	case "coinbase":
+		client := coinbase.NewClient(s.cfg.CoinbaseBaseURL, key.APIKey, key.APISecret)
+		accounts, err := client.ListAccounts(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return balancesFromCoinbase(accounts), nil
 	default:
 		if s.hb == nil {
 			return nil, errors.New("hummingbot client is not configured")
@@ -262,6 +297,81 @@ func (s *Service) firstActiveKey(ctx context.Context, rawProvider string) (strin
 		return "", db.APIKey{}, fmt.Errorf("active %s API key is missing credentials", provider)
 	}
 	return provider, key, nil
+}
+
+func balancesFromBinance(balances []binance.SpotBalance) *BalancesResponse {
+	resp := &BalancesResponse{
+		Fiat:   []AssetBalance{},
+		Source: "binance",
+	}
+	for _, row := range balances {
+		available, err := strconv.ParseFloat(strings.TrimSpace(row.Free), 64)
+		if err != nil {
+			continue
+		}
+		locked, err := strconv.ParseFloat(strings.TrimSpace(row.Locked), 64)
+		if err != nil {
+			locked = 0
+		}
+		total := available + locked
+		if total <= 0 {
+			continue
+		}
+		asset := strings.ToUpper(strings.TrimSpace(row.Asset))
+		entry := AssetBalance{
+			Asset:     asset,
+			Available: available,
+			Total:     total,
+		}
+		if isBitcoinAsset(asset) {
+			copy := entry
+			resp.Bitcoin = &copy
+			continue
+		}
+		if isFiatAsset(asset) {
+			resp.Fiat = append(resp.Fiat, entry)
+		}
+	}
+	return resp
+}
+
+func balancesFromCoinbase(accounts []coinbase.Account) *BalancesResponse {
+	resp := &BalancesResponse{
+		Fiat:   []AssetBalance{},
+		Source: "coinbase",
+	}
+	for _, account := range accounts {
+		if !account.Active {
+			continue
+		}
+		available, err := strconv.ParseFloat(strings.TrimSpace(account.AvailableBalance.Value), 64)
+		if err != nil {
+			continue
+		}
+		held, err := strconv.ParseFloat(strings.TrimSpace(account.Hold.Value), 64)
+		if err != nil {
+			held = 0
+		}
+		total := available + held
+		if total <= 0 && available <= 0 {
+			continue
+		}
+		asset := strings.ToUpper(strings.TrimSpace(account.Currency))
+		entry := AssetBalance{
+			Asset:     asset,
+			Available: available,
+			Total:     total,
+		}
+		if isBitcoinAsset(asset) {
+			copy := entry
+			resp.Bitcoin = &copy
+			continue
+		}
+		if isFiatAsset(asset) {
+			resp.Fiat = append(resp.Fiat, entry)
+		}
+	}
+	return resp
 }
 
 func balancesFromKraken(balances kraken.Balance) *BalancesResponse {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -46,6 +47,16 @@ type Checker struct {
 	cfg  Config
 }
 
+// KeyPermissionResult reports normalized permissions for one API key.
+type KeyPermissionResult struct {
+	// KeyID identifies the API key row.
+	KeyID uint `json:"key_id"`
+	// Name is the configured key label.
+	Name string `json:"name"`
+	// Permissions maps normalized permission names to granted flags.
+	Permissions map[string]bool `json:"permissions"`
+}
+
 // Result represents a result.
 type Result struct {
 	// Provider is the provider value for the result.
@@ -56,6 +67,8 @@ type Result struct {
 	Healthy bool `json:"healthy"`
 	// Message carries a human-readable message for the result.
 	Message string `json:"message"`
+	// Keys reports per-key permission details for CEX providers.
+	Keys []KeyPermissionResult `json:"keys,omitempty"`
 	// CheckedAt records the relevant time for the result.
 	CheckedAt time.Time `json:"checked_at"`
 }
@@ -118,7 +131,7 @@ func (c *Checker) CheckProvider(ctx context.Context, rawProvider string) (Result
 		return Result{}, err
 	}
 
-	checkErr := c.checkActiveKeys(ctx, provider, keys)
+	keyResults, checkErr := c.checkActiveKeys(ctx, provider, keys)
 	healthy := checkErr == nil
 	checkedAt, updateErr := c.repo.UpdateAccountHealthCheckedAt(ctx, provider, healthy)
 	if updateErr != nil {
@@ -126,6 +139,9 @@ func (c *Checker) CheckProvider(ctx context.Context, rawProvider string) (Result
 	}
 
 	message := fmt.Sprintf("%d active %s API key(s) validated.", len(keys), provider)
+	if len(keyResults) > 0 {
+		message = message + " " + formatKeyPermissionsMessage(keyResults)
+	}
 	status := "healthy"
 	if checkErr != nil {
 		status = "unhealthy"
@@ -137,6 +153,7 @@ func (c *Checker) CheckProvider(ctx context.Context, rawProvider string) (Result
 		Status:    status,
 		Healthy:   healthy,
 		Message:   message,
+		Keys:      keyResults,
 		CheckedAt: checkedAt,
 	}, nil
 }
@@ -174,23 +191,32 @@ func (c *Checker) RunPeriodic(ctx context.Context, interval time.Duration) {
 	}
 }
 
-func (c *Checker) checkActiveKeys(ctx context.Context, provider string, keys []db.APIKey) error {
+func (c *Checker) checkActiveKeys(ctx context.Context, provider string, keys []db.APIKey) ([]KeyPermissionResult, error) {
 	if len(keys) == 0 {
-		return fmt.Errorf("%s: no active API keys configured", provider)
+		return nil, fmt.Errorf("%s: no active API keys configured", provider)
 	}
+	keyResults := make([]KeyPermissionResult, 0, len(keys))
 	for _, key := range keys {
-		if err := c.checkKey(ctx, provider, key); err != nil {
-			return fmt.Errorf("%s API key #%d failed: %w", provider, key.ID, err)
+		permissions, err := c.checkKey(ctx, provider, key)
+		if err != nil {
+			return keyResults, fmt.Errorf("%s API key #%d failed: %w", provider, key.ID, err)
+		}
+		if permissions != nil {
+			keyResults = append(keyResults, KeyPermissionResult{
+				KeyID:       key.ID,
+				Name:        keyDisplayName(key),
+				Permissions: permissions,
+			})
 		}
 	}
-	return nil
+	return keyResults, nil
 }
 
-func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) error {
+func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) (map[string]bool, error) {
 	apiKey := strings.TrimSpace(key.APIKey)
 	apiSecret := strings.TrimSpace(key.APISecret)
 	if apiKey == "" {
-		return errors.New("api_key is required")
+		return nil, errors.New("api_key is required")
 	}
 	if provider == "Robosats" {
 		client := robosats.NewClient(robosats.Config{
@@ -198,33 +224,88 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 			AuthToken: apiKey,
 		})
 		_, err := client.GetRobot(ctx)
-		return err
+		return nil, err
 	}
 	if apiSecret == "" {
-		return errors.New("api_secret is required")
+		return nil, errors.New("api_secret is required")
 	}
 
 	switch provider {
 	case "HodlHodl":
 		client := hodlhodl.NewClient(c.cfg.HodlHodlBaseURL, apiKey)
 		if _, err := client.GetMe(ctx); err != nil {
-			return err
+			return nil, err
 		}
-		return client.VerifySignatureKey(ctx, apiSecret)
+		if err := client.VerifySignatureKey(ctx, apiSecret); err != nil {
+			return nil, err
+		}
+		return nil, nil
 	case "Binance":
 		client := binance.NewClient(c.cfg.BinanceBaseURL, apiKey, apiSecret)
-		_, err := client.AccountInfo(ctx)
-		return err
+		restrictions, err := client.KeyRestrictions(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{
+			"read":          restrictions.EnableReading,
+			"trade":         restrictions.EnableSpotAndMarginTrading,
+			"withdraw":      restrictions.EnableWithdrawals,
+			"ip_restricted": restrictions.IPRestrict,
+		}, nil
 	case "Kraken":
 		client := kraken.NewClient(c.cfg.KrakenBaseURL, apiKey, apiSecret)
-		_, err := client.Balance(ctx)
-		return err
+		if _, err := client.Balance(ctx); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"read": true}, nil
 	case "Coinbase":
 		client := coinbase.NewClient(c.cfg.CoinbaseBaseURL, apiKey, apiSecret)
-		return client.KeyPermissions(ctx)
+		permissions, err := client.KeyPermissions(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{
+			"view":     permissions.CanView,
+			"trade":    permissions.CanTrade,
+			"transfer": permissions.CanTransfer,
+		}, nil
 	default:
-		return ErrUnsupportedProvider
+		return nil, ErrUnsupportedProvider
 	}
+}
+
+func keyDisplayName(key db.APIKey) string {
+	name := strings.TrimSpace(key.Name)
+	if name == "" {
+		return fmt.Sprintf("key %d", key.ID)
+	}
+	return name
+}
+
+func formatKeyPermissionsMessage(keys []KeyPermissionResult) string {
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf(`key %q: %s`, key.Name, formatPermissions(key.Permissions)))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func formatPermissions(permissions map[string]bool) string {
+	names := make([]string, 0, len(permissions))
+	for name := range permissions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		mark := "✗"
+		if permissions[name] {
+			mark = "✓"
+		}
+		parts = append(parts, fmt.Sprintf("%s %s", name, mark))
+	}
+	return strings.Join(parts, " ")
 }
 
 // ParseInterval parses an interval.
