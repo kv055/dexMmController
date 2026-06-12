@@ -24,6 +24,7 @@ var ErrUnsupportedProvider = errors.New("unsupported account health provider")
 type Repository interface {
 	GetAccountByProvider(ctx context.Context, provider string) (*db.Account, error)
 	GetActiveAPIKeysForProvider(ctx context.Context, provider string) ([]db.APIKey, error)
+	UpdateAPIKeyPermissions(ctx context.Context, keyID uint, permissions map[string]bool, checkedAt time.Time) error
 	UpdateAccountHealthCheckedAt(ctx context.Context, provider string, healthy bool) (time.Time, error)
 }
 
@@ -136,6 +137,14 @@ func (c *Checker) CheckProvider(ctx context.Context, rawProvider string) (Result
 	checkedAt, updateErr := c.repo.UpdateAccountHealthCheckedAt(ctx, provider, healthy)
 	if updateErr != nil {
 		return Result{}, updateErr
+	}
+	for _, keyResult := range keyResults {
+		if len(keyResult.Permissions) == 0 {
+			continue
+		}
+		if err := c.repo.UpdateAPIKeyPermissions(ctx, keyResult.KeyID, keyResult.Permissions, checkedAt); err != nil {
+			return Result{}, err
+		}
 	}
 
 	message := fmt.Sprintf("%d active %s API key(s) validated.", len(keys), provider)

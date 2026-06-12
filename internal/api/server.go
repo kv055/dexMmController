@@ -14,6 +14,7 @@ import (
 	"dexMmController/internal/accounthealth"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
+	"dexMmController/internal/lndhealth"
 )
 
 // Server represents a server.
@@ -23,10 +24,15 @@ type Server struct {
 	accountHealth accountHealthChecker
 	cexAccount    *cexaccount.Service
 	lndWallet     lndWalletClient
+	lndHealth     lndWalletHealthChecker
 }
 
 type accountHealthChecker interface {
 	CheckProvider(ctx context.Context, provider string) (accounthealth.Result, error)
+}
+
+type lndWalletHealthChecker interface {
+	Check(ctx context.Context) (lndhealth.Result, error)
 }
 
 type transactionListResponse struct {
@@ -54,6 +60,12 @@ func NewServer(addr string, repo *db.TransactionRepository) *Server {
 // WithAccountHealth attaches the account health service to the API server.
 func (s *Server) WithAccountHealth(checker accountHealthChecker) *Server {
 	s.accountHealth = checker
+	return s
+}
+
+// WithLNDHealth attaches the LND wallet health checker to the API server.
+func (s *Server) WithLNDHealth(checker lndWalletHealthChecker) *Server {
+	s.lndHealth = checker
 	return s
 }
 
@@ -104,21 +116,41 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 type accountHealthResponse struct {
-	Provider  string `json:"provider"`
-	Status    string `json:"status"`
-	Healthy   bool   `json:"healthy"`
-	Message   string `json:"message"`
-	CheckedAt string `json:"checked_at"`
+	Provider  string                              `json:"provider"`
+	Status    string                              `json:"status"`
+	Healthy   bool                                `json:"healthy"`
+	Message   string                              `json:"message"`
+	Keys      []accounthealth.KeyPermissionResult `json:"keys,omitempty"`
+	CheckedAt string                              `json:"checked_at"`
 }
 
 func (s *Server) handleAccountHealthCheck(w http.ResponseWriter, r *http.Request) {
-	if s.accountHealth == nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("account health checker is not configured"))
-		return
-	}
 	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
 	if provider == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("provider query parameter is required"))
+		return
+	}
+	if lndhealth.IsLNDWalletProvider(provider) {
+		if s.lndHealth == nil {
+			writeError(w, http.StatusServiceUnavailable, fmt.Errorf("LND wallet health checker is not configured"))
+			return
+		}
+		result, err := s.lndHealth.Check(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, accountHealthResponse{
+			Provider:  result.Provider,
+			Status:    result.Status,
+			Healthy:   result.Healthy,
+			Message:   result.Message,
+			CheckedAt: result.CheckedAt.UTC().Format(time.RFC3339),
+		})
+		return
+	}
+	if s.accountHealth == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("account health checker is not configured"))
 		return
 	}
 	if _, err := accounthealth.CanonicalProvider(provider); err != nil {
@@ -135,6 +167,7 @@ func (s *Server) handleAccountHealthCheck(w http.ResponseWriter, r *http.Request
 		Status:    result.Status,
 		Healthy:   result.Healthy,
 		Message:   result.Message,
+		Keys:      result.Keys,
 		CheckedAt: result.CheckedAt.UTC().Format(time.RFC3339),
 	})
 }

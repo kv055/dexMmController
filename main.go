@@ -23,6 +23,7 @@ import (
 	"dexMmController/internal/exchanges/dex/robosats"
 	"dexMmController/internal/healthcheck"
 	"dexMmController/internal/hummingbot"
+	"dexMmController/internal/lndhealth"
 	"dexMmController/internal/openclaw"
 	"dexMmController/internal/premiumoffers"
 	lnd "dexMmController/internal/wallethub"
@@ -179,6 +180,14 @@ func main() {
 	apiServer := api.NewServer(apiAddr, repo).
 		WithAccountHealth(exchangeAccountHealth).
 		WithCexAccount(cexAccountService)
+	var lndHealthClient lndhealth.Client
+	if lndClient != nil {
+		lndHealthClient = lndClient
+	}
+	lndHealthChecker := lndhealth.NewChecker(repo, lndHealthClient, lndhealth.Config{
+		ExtendedMasterKeyFile: lndExtendedMasterKeyFile,
+	})
+	apiServer = apiServer.WithLNDHealth(lndHealthChecker)
 	if lndClient != nil {
 		apiServer = apiServer.WithLNDWallet(lndClient)
 	}
@@ -190,8 +199,8 @@ func main() {
 	}
 	log.Println("healthcheck complete")
 
-	runLNDAccountHealthCheck(ctx, repo, lndClient)
-	go runPeriodicLNDAccountHealthCheck(ctx, accountHealthInterval, repo, lndClient)
+	lndHealthChecker.RunAndLog(ctx)
+	go lndHealthChecker.RunPeriodic(ctx, accountHealthInterval)
 	go exchangeAccountHealth.RunPeriodic(ctx, accountHealthInterval)
 
 	go func() {
@@ -295,61 +304,6 @@ func ensurePrimaryDepositAddress(
 
 	log.Printf("generated new primary wallet address %s", address)
 	return address, client, nil
-}
-
-type lndHealthClient interface {
-	HealthCheck(ctx context.Context) error
-}
-
-type lndAccountHealthRepository interface {
-	GetPrimaryWalletAddress() (*db.WalletAddress, error)
-	UpdateAccountHealth(ctx context.Context, provider string, healthy bool) error
-}
-
-func checkLNDAccountHealth(ctx context.Context, repo lndAccountHealthRepository, client lndHealthClient) error {
-	if client == nil {
-		return fmt.Errorf("LND client is not initialized")
-	}
-	if err := client.HealthCheck(ctx); err != nil {
-		return err
-	}
-	wallet, err := repo.GetPrimaryWalletAddress()
-	if err != nil {
-		return fmt.Errorf("primary wallet address missing: %w", err)
-	}
-	if wallet == nil || strings.TrimSpace(wallet.Address) == "" {
-		return fmt.Errorf("primary wallet address missing")
-	}
-	return nil
-}
-
-func runLNDAccountHealthCheck(ctx context.Context, repo lndAccountHealthRepository, client lndHealthClient) {
-	err := checkLNDAccountHealth(ctx, repo, client)
-	healthy := err == nil
-	if updateErr := repo.UpdateAccountHealth(ctx, db.LNDAccountProvider, healthy); updateErr != nil {
-		log.Printf("[AccountHealth] %s: failed to persist health=%t: %v", db.LNDAccountProvider, healthy, updateErr)
-	}
-	if err != nil {
-		log.Printf("[AccountHealth] %s unhealthy: %v", db.LNDAccountProvider, err)
-		return
-	}
-	log.Printf("[AccountHealth] %s healthy", db.LNDAccountProvider)
-}
-
-func runPeriodicLNDAccountHealthCheck(ctx context.Context, interval time.Duration, repo lndAccountHealthRepository, client lndHealthClient) {
-	if interval <= 0 {
-		interval = time.Minute
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			runLNDAccountHealthCheck(ctx, repo, client)
-		}
-	}
 }
 
 func parseAccountHealthInterval(raw string) time.Duration {

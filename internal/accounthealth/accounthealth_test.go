@@ -12,11 +12,16 @@ import (
 )
 
 type fakeRepo struct {
-	accountProvider string
-	keys            []db.APIKey
-	updatedProvider string
-	updatedHealthy  bool
-	checkedAt       time.Time
+	accountProvider   string
+	keys              []db.APIKey
+	updatedProvider   string
+	updatedHealthy    bool
+	checkedAt         time.Time
+	permissionUpdates []struct {
+		keyID       uint
+		permissions map[string]bool
+		checkedAt   time.Time
+	}
 }
 
 func (f *fakeRepo) GetAccountByProvider(_ context.Context, provider string) (*db.Account, error) {
@@ -28,6 +33,15 @@ func (f *fakeRepo) GetAccountByProvider(_ context.Context, provider string) (*db
 
 func (f *fakeRepo) GetActiveAPIKeysForProvider(context.Context, string) ([]db.APIKey, error) {
 	return f.keys, nil
+}
+
+func (f *fakeRepo) UpdateAPIKeyPermissions(_ context.Context, keyID uint, permissions map[string]bool, checkedAt time.Time) error {
+	f.permissionUpdates = append(f.permissionUpdates, struct {
+		keyID       uint
+		permissions map[string]bool
+		checkedAt   time.Time
+	}{keyID, permissions, checkedAt})
+	return nil
 }
 
 func (f *fakeRepo) UpdateAccountHealthCheckedAt(_ context.Context, provider string, healthy bool) (time.Time, error) {
