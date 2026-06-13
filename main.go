@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -98,41 +99,12 @@ func main() {
 		log.Fatalf("failed to import LND seed into database: %v", err)
 	}
 
-	walletPassword, aezeed, err := repo.LNDWalletCredentials(ctx)
+	walletPassword, _, err := repo.LNDWalletCredentials(ctx)
 	if err != nil {
 		log.Fatalf("failed to load LND wallet credentials from database: %v", err)
 	}
-	initCfg := mergeLNDInitConfig(fileInitCfg, aezeed)
-	initCfg.ChannelBackupRestore = loadLNDChannelBackupRestore(ctx, repo, int64(lndAccount.ID))
-
-	primaryAddress, lndClient, err := ensurePrimaryDepositAddress(
-		ctx,
-		repo,
-		lndHost,
-		lndTLSCertPath,
-		lndMacaroonPath,
-		walletPassword,
-		initCfg,
-	)
-	if err != nil {
-		log.Printf("warning: failed to initialize primary wallet address: %v", err)
-	}
-	if primaryAddress != "" {
-		log.Printf("primary CEX deposit address ready: %s", primaryAddress)
-	}
-	if lndClient != nil {
-		if mnemonic := lndClient.GeneratedCipherSeedMnemonic(); mnemonic != "" {
-			if err := repo.EnsureLNDSeed(ctx, int64(lndAccount.ID), mnemonic); err != nil {
-				log.Printf("warning: failed to persist generated LND aezeed: %v", err)
-			} else {
-				log.Println("LND aezeed generated and stored in database")
-			}
-		}
-		if err := persistLNDChannelBackup(ctx, repo, lndClient, int64(lndAccount.ID)); err != nil {
-			log.Printf("warning: LND channel backup failed: %v", err)
-		}
-		go runPeriodicLNDChannelBackup(ctx, lndBackupInterval, repo, lndClient, int64(lndAccount.ID))
-	}
+	// LND wallet bootstrap is defined below (lndInit) so it can run at startup when a
+	// password already exists, or on demand from the UI via POST /api/lnd/wallet/init.
 
 	// ── OpenClaw ──────────────────────────────────────────────────────────────
 	claw := openclaw.NewClient(openclawURL)
@@ -183,19 +155,77 @@ func main() {
 		RobosatsBaseURL:         robosatsURL,
 		TorProxyURL:             torProxyURL,
 	})
-	apiServer := api.NewServer(apiAddr, repo).
-		WithAccountHealth(exchangeAccountHealth).
-		WithCexAccount(cexAccountService)
-	var lndHealthClient lndhealth.Client
-	if lndClient != nil {
-		lndHealthClient = lndClient
-	}
-	lndHealthChecker := lndhealth.NewChecker(repo, lndHealthClient, lndhealth.Config{
+	lndHealthChecker := lndhealth.NewChecker(repo, nil, lndhealth.Config{
 		ExtendedMasterKeyFile: lndExtendedMasterKeyFile,
 	})
-	apiServer = apiServer.WithLNDHealth(lndHealthChecker)
-	if lndClient != nil {
-		apiServer = apiServer.WithLNDWallet(lndClient)
+	apiServer := api.NewServer(apiAddr, repo).
+		WithAccountHealth(exchangeAccountHealth).
+		WithCexAccount(cexAccountService).
+		WithLNDHealth(lndHealthChecker)
+
+	// lndInit creates (or restores) the LND wallet using the password stored in the
+	// database, persists the generated seed + primary address + channel backup, and
+	// injects the live client into the running API server and health checker. It runs
+	// once at startup when a password already exists, and on demand from the UI via
+	// POST /api/lnd/wallet/init.
+	var lndBackupOnce sync.Once
+	lndInit := func(reqCtx context.Context) (api.LNDInitResult, error) {
+		password, aezeed, err := repo.LNDWalletCredentials(reqCtx)
+		if err != nil {
+			return api.LNDInitResult{}, err
+		}
+		if strings.TrimSpace(password) == "" {
+			return api.LNDInitResult{}, api.ErrLNDWalletPasswordMissing
+		}
+		cfg := mergeLNDInitConfig(fileInitCfg, aezeed)
+		cfg.ChannelBackupRestore = loadLNDChannelBackupRestore(reqCtx, repo, int64(lndAccount.ID))
+
+		primaryAddress, lndClient, err := ensurePrimaryDepositAddress(
+			reqCtx, repo, lndHost, lndTLSCertPath, lndMacaroonPath, password, cfg,
+		)
+		if err != nil {
+			return api.LNDInitResult{}, err
+		}
+		if lndClient == nil {
+			return api.LNDInitResult{}, fmt.Errorf("LND wallet client was not created; check LND_HOST/LND_TLS_CERT_PATH/LND_MACAROON_PATH")
+		}
+
+		if mnemonic := lndClient.GeneratedCipherSeedMnemonic(); mnemonic != "" {
+			if err := repo.EnsureLNDSeed(reqCtx, int64(lndAccount.ID), mnemonic); err != nil {
+				log.Printf("warning: failed to persist generated LND aezeed: %v", err)
+			} else {
+				log.Println("LND aezeed generated and stored in database")
+			}
+		}
+		if err := persistLNDChannelBackup(reqCtx, repo, lndClient, int64(lndAccount.ID)); err != nil {
+			log.Printf("warning: LND channel backup failed: %v", err)
+		}
+
+		apiServer.WithLNDWallet(lndClient)
+		lndHealthChecker.SetClient(lndClient)
+		// Periodic backup must outlive the request, so use the long-lived app context.
+		lndBackupOnce.Do(func() {
+			go runPeriodicLNDChannelBackup(ctx, lndBackupInterval, repo, lndClient, int64(lndAccount.ID))
+		})
+
+		if primaryAddress != "" {
+			log.Printf("primary CEX deposit address ready: %s", primaryAddress)
+		}
+		return api.LNDInitResult{PrimaryAddress: primaryAddress}, nil
+	}
+	apiServer = apiServer.WithLNDManagement(api.LNDManagement{
+		Init: lndInit,
+		StateProbe: func(probeCtx context.Context) (string, error) {
+			return lnd.ProbeState(probeCtx, lndHost, lndTLSCertPath)
+		},
+	})
+
+	if strings.TrimSpace(walletPassword) != "" {
+		if _, err := lndInit(ctx); err != nil {
+			log.Printf("warning: failed to initialize LND wallet at startup: %v", err)
+		}
+	} else {
+		log.Println("LND wallet password not set; skipping wallet bootstrap — create it from the UI")
 	}
 
 	// ── Run healthcheck once ──────────────────────────────────────────────────

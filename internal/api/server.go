@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"dexMmController/internal/accounthealth"
@@ -23,9 +24,37 @@ type Server struct {
 	repo          *db.TransactionRepository
 	accountHealth accountHealthChecker
 	cexAccount    *cexaccount.Service
-	lndWallet     lndWalletClient
 	lndHealth     lndWalletHealthChecker
+
+	// lndWallet is the live LND client. It can be wired at startup or swapped in at
+	// runtime once the wallet is created via the init endpoint, so it is guarded.
+	lndWalletMu sync.RWMutex
+	lndWallet   lndWalletClient
+
+	// LND on-demand management hooks, set by main via WithLNDManagement.
+	lndInit       func(ctx context.Context) (LNDInitResult, error)
+	lndStateProbe func(ctx context.Context) (string, error)
+	lndInitMu     sync.Mutex
 }
+
+// LNDInitResult is returned by the on-demand wallet creation hook.
+type LNDInitResult struct {
+	PrimaryAddress string `json:"primary_address"`
+}
+
+// LNDManagement bundles the on-demand LND wallet hooks wired in by main.
+type LNDManagement struct {
+	// Init creates (or restores) the wallet using the password already stored in the
+	// database, persists the generated seed + primary address, and injects the live
+	// client into the running server and health checker.
+	Init func(ctx context.Context) (LNDInitResult, error)
+	// StateProbe reports LND's wallet state (e.g. NON_EXISTING, LOCKED, RPC_ACTIVE).
+	StateProbe func(ctx context.Context) (string, error)
+}
+
+// ErrLNDWalletPasswordMissing signals the wallet cannot be created because no password
+// is stored yet. The init hook returns it so the handler can answer 400.
+var ErrLNDWalletPasswordMissing = errors.New("LND wallet password is not set; set it under Account → Edit first")
 
 type accountHealthChecker interface {
 	CheckProvider(ctx context.Context, provider string) (accounthealth.Result, error)
@@ -69,6 +98,13 @@ func (s *Server) WithLNDHealth(checker lndWalletHealthChecker) *Server {
 	return s
 }
 
+// WithLNDManagement attaches the on-demand LND wallet creation/state hooks.
+func (s *Server) WithLNDManagement(m LNDManagement) *Server {
+	s.lndInit = m.Init
+	s.lndStateProbe = m.StateProbe
+	return s
+}
+
 // Run runs value.
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -78,6 +114,8 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("POST /api/accounts/health_check", s.handleAccountHealthCheck)
 	mux.HandleFunc("GET /api/lnd/wallet", s.handleLNDWalletStatus)
+	mux.HandleFunc("GET /api/lnd/wallet/state", s.handleLNDWalletState)
+	mux.HandleFunc("POST /api/lnd/wallet/init", s.handleLNDWalletInit)
 	mux.HandleFunc("POST /api/lnd/addresses", s.handleLNDCreateAddress)
 	mux.HandleFunc("POST /api/lnd/channels/open", s.handleLNDOpenChannel)
 	mux.HandleFunc("POST /api/lnd/channels/close", s.handleLNDCloseChannel)

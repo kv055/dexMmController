@@ -425,6 +425,18 @@ func (c *Client) getState(ctx context.Context) (string, error) {
 	return resp.State, nil
 }
 
+// ProbeState reports LND's wallet state (NON_EXISTING, LOCKED, RPC_ACTIVE, …) without
+// needing a macaroon or an initialized client. The /v1/state endpoint is served by the
+// WalletUnlocker and is available before any wallet exists, so this works on first boot.
+func ProbeState(ctx context.Context, host, tlsCertPath string) (string, error) {
+	httpClient, err := buildHTTPClient(tlsCertPath)
+	if err != nil {
+		return "", fmt.Errorf("building HTTP client: %w", err)
+	}
+	c := &Client{host: host, httpClient: httpClient}
+	return c.getState(ctx)
+}
+
 func (c *Client) unlockWallet(ctx context.Context, password string) error {
 	req := unlockRequest{
 		WalletPassword: base64.StdEncoding.EncodeToString([]byte(password)),

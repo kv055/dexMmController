@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -131,16 +132,29 @@ type closeLNDChannelResponse struct {
 
 // WithLNDWallet attaches the live LND client used for wallet management APIs.
 func (s *Server) WithLNDWallet(client lndWalletClient) *Server {
-	s.lndWallet = client
+	s.setLNDWallet(client)
 	return s
 }
 
+func (s *Server) setLNDWallet(client lndWalletClient) {
+	s.lndWalletMu.Lock()
+	s.lndWallet = client
+	s.lndWalletMu.Unlock()
+}
+
+func (s *Server) currentLNDWallet() lndWalletClient {
+	s.lndWalletMu.RLock()
+	defer s.lndWalletMu.RUnlock()
+	return s.lndWallet
+}
+
 func (s *Server) handleLNDWalletStatus(w http.ResponseWriter, r *http.Request) {
-	if s.lndWallet == nil {
+	client := s.currentLNDWallet()
+	if client == nil {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("LND wallet client is not configured"))
 		return
 	}
-	status, err := buildLNDWalletStatus(r.Context(), s.lndWallet, s.repo)
+	status, err := buildLNDWalletStatus(r.Context(), client, s.repo)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
@@ -149,7 +163,8 @@ func (s *Server) handleLNDWalletStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLNDCreateAddress(w http.ResponseWriter, r *http.Request) {
-	if s.lndWallet == nil {
+	client := s.currentLNDWallet()
+	if client == nil {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("LND wallet client is not configured"))
 		return
 	}
@@ -169,7 +184,7 @@ func (s *Server) handleLNDCreateAddress(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	address, err := s.lndWallet.NewAddress(r.Context())
+	address, err := client.NewAddress(r.Context())
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
@@ -194,7 +209,8 @@ func (s *Server) handleLNDCreateAddress(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleLNDOpenChannel(w http.ResponseWriter, r *http.Request) {
-	if s.lndWallet == nil {
+	client := s.currentLNDWallet()
+	if client == nil {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("LND wallet client is not configured"))
 		return
 	}
@@ -219,13 +235,13 @@ func (s *Server) handleLNDOpenChannel(w http.ResponseWriter, r *http.Request) {
 
 	peerHost := strings.TrimSpace(req.PeerHost)
 	if peerHost != "" {
-		if err := s.lndWallet.ConnectPeer(r.Context(), nodePubkey, peerHost); err != nil {
+		if err := client.ConnectPeer(r.Context(), nodePubkey, peerHost); err != nil {
 			writeError(w, http.StatusBadGateway, fmt.Errorf("connect peer: %w", err))
 			return
 		}
 	}
 
-	resp, err := s.lndWallet.OpenChannel(
+	resp, err := client.OpenChannel(
 		r.Context(),
 		nodePubkey,
 		req.LocalFundingAmountSat,
@@ -242,7 +258,8 @@ func (s *Server) handleLNDOpenChannel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLNDCloseChannel(w http.ResponseWriter, r *http.Request) {
-	if s.lndWallet == nil {
+	client := s.currentLNDWallet()
+	if client == nil {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("LND wallet client is not configured"))
 		return
 	}
@@ -261,13 +278,98 @@ func (s *Server) handleLNDCloseChannel(w http.ResponseWriter, r *http.Request) {
 		req.SatPerVbyte = 2
 	}
 
-	resp, err := s.lndWallet.CloseChannel(r.Context(), channelPoint, req.Force, req.SatPerVbyte)
+	resp, err := client.CloseChannel(r.Context(), channelPoint, req.Force, req.SatPerVbyte)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Errorf("close channel: %w", err))
 		return
 	}
 
 	writeJSON(w, http.StatusOK, closeLNDChannelResponse{ClosingTxid: resp.ClosingTxid})
+}
+
+type lndWalletStateResponse struct {
+	LNDReachable bool   `json:"lnd_reachable"`
+	LNDState     string `json:"lnd_state"`
+	WalletExists bool   `json:"wallet_exists"`
+	PasswordSet  bool   `json:"password_set"`
+	ClientReady  bool   `json:"client_ready"`
+	CanCreate    bool   `json:"can_create"`
+}
+
+type lndWalletInitResponse struct {
+	PrimaryAddress     string `json:"primary_address"`
+	AlreadyInitialized bool   `json:"already_initialized,omitempty"`
+}
+
+// handleLNDWalletState reports whether a wallet exists and can be created. It drives the
+// frontend init wizard and works before any wallet exists (no live client required).
+func (s *Server) handleLNDWalletState(w http.ResponseWriter, r *http.Request) {
+	resp := lndWalletStateResponse{
+		ClientReady: s.currentLNDWallet() != nil,
+	}
+
+	if s.repo != nil {
+		if password, _, err := s.repo.LNDWalletCredentials(r.Context()); err == nil {
+			resp.PasswordSet = strings.TrimSpace(password) != ""
+		}
+	}
+
+	if s.lndStateProbe != nil {
+		if state, err := s.lndStateProbe(r.Context()); err == nil {
+			resp.LNDReachable = true
+			resp.LNDState = state
+			resp.WalletExists = state != "NON_EXISTING"
+			resp.CanCreate = state == "NON_EXISTING"
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleLNDWalletInit creates the wallet on demand using the password already stored in the
+// database, then injects the live client into the running server and health checker.
+func (s *Server) handleLNDWalletInit(w http.ResponseWriter, r *http.Request) {
+	if s.lndInit == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("LND wallet init is not configured"))
+		return
+	}
+
+	s.lndInitMu.Lock()
+	defer s.lndInitMu.Unlock()
+
+	if s.currentLNDWallet() != nil {
+		address := ""
+		if s.repo != nil {
+			if wallet, err := s.repo.GetPrimaryWalletAddress(); err == nil && wallet != nil {
+				address = wallet.Address
+			}
+		}
+		writeJSON(w, http.StatusOK, lndWalletInitResponse{PrimaryAddress: address, AlreadyInitialized: true})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	result, err := s.lndInit(ctx)
+	if err != nil {
+		writeError(w, lndInitErrorStatus(err), err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, lndWalletInitResponse{PrimaryAddress: result.PrimaryAddress})
+}
+
+// lndInitErrorStatus maps wallet-init failures to HTTP status codes.
+func lndInitErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, ErrLNDWalletPasswordMissing):
+		return http.StatusBadRequest
+	case strings.Contains(strings.ToLower(err.Error()), "invalid passphrase"):
+		return http.StatusConflict
+	default:
+		return http.StatusBadGateway
+	}
 }
 
 func decodeJSONBody(r *http.Request, out any) error {
@@ -330,7 +432,13 @@ func buildLNDWalletStatus(
 			SyncedToGraph:     nodeInfo.SyncedToGraph,
 			BlockHeight:       nodeInfo.BlockHeight,
 		},
-		CheckedAt: time.Now().UTC().Format(time.RFC3339),
+		// Initialize as empty (not nil) so JSON encodes [] rather than null for a
+		// wallet with no peers/channels/addresses; the frontend types assume arrays.
+		Peers:           []lndPeerSummary{},
+		Channels:        []lndChannelSummary{},
+		PendingChannels: []lndPendingChannelSummary{},
+		Addresses:       []lndWalletAddressEntry{},
+		CheckedAt:       time.Now().UTC().Format(time.RFC3339),
 	}
 	for _, peer := range peers {
 		resp.Peers = append(resp.Peers, lndPeerSummary{

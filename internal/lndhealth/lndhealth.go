@@ -10,6 +10,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"dexMmController/internal/db"
@@ -59,14 +60,33 @@ type Result struct {
 
 // Checker runs comprehensive health checks for the LND wallet account.
 type Checker struct {
-	repo   Repository
+	repo Repository
+	cfg  Config
+
+	mu     sync.RWMutex
 	client Client
-	cfg    Config
 }
 
 // NewChecker creates an LND wallet health checker.
 func NewChecker(repo Repository, client Client, cfg Config) *Checker {
 	return &Checker{repo: repo, client: client, cfg: cfg}
+}
+
+// SetClient swaps the live LND client used by the checker. It is safe to call at
+// runtime, e.g. after the wallet is created on demand via the init endpoint.
+func (c *Checker) SetClient(client Client) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.client = client
+	c.mu.Unlock()
+}
+
+func (c *Checker) currentClient() Client {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.client
 }
 
 // IsLNDWalletProvider reports whether the provider name refers to the LND wallet account.
@@ -84,6 +104,8 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 	if c == nil || c.repo == nil {
 		return Result{}, errors.New("lnd health checker is not configured")
 	}
+
+	client := c.currentClient()
 
 	provider := db.LNDAccountProvider
 	account, err := c.repo.GetAccountByProvider(ctx, provider)
@@ -115,9 +137,9 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 		addRequired("wallet password", true, "configured in database")
 	}
 
-	if !clientConfigured(c.client) {
+	if !clientConfigured(client) {
 		addRequired("lnd reachable", false, "LND client is not initialized")
-	} else if err := c.client.HealthCheck(ctx); err != nil {
+	} else if err := client.HealthCheck(ctx); err != nil {
 		addRequired("lnd reachable", false, err.Error())
 	} else {
 		addRequired("lnd reachable", true, "wallet unlocked and RPC healthy")
@@ -125,8 +147,8 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 
 	var liveChannelCount int
 	channelsListed := false
-	if clientConfigured(c.client) {
-		if nodeInfo, err := c.client.NodeInfo(ctx); err != nil {
+	if clientConfigured(client) {
+		if nodeInfo, err := client.NodeInfo(ctx); err != nil {
 			addInfo("node sync", fmt.Sprintf("node info unavailable: %v", err))
 		} else {
 			addInfo(
@@ -140,7 +162,7 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 			)
 		}
 
-		channels, err := c.client.ListChannels(ctx)
+		channels, err := client.ListChannels(ctx)
 		if err != nil {
 			addRequired("channel list", false, err.Error())
 		} else {
@@ -196,16 +218,16 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 		}
 	}
 
-	if !clientConfigured(c.client) {
+	if !clientConfigured(client) {
 		// Earlier checks already recorded why RPC is unavailable.
 	} else if !channelsListed {
 		// Channel list failed; backup validation is skipped.
 	} else if liveChannelCount == 0 {
 		addInfo("channel backup", "no channels to verify")
-	} else if err := c.client.ExportChannelBackup(ctx); err != nil {
+	} else if err := client.ExportChannelBackup(ctx); err != nil {
 		addRequired("channel backup", false, err.Error())
 	} else {
-		liveRaw, liveBackupCount := c.client.LastExportedChannelBackup()
+		liveRaw, liveBackupCount := client.LastExportedChannelBackup()
 		liveHash := hashBackupBytes(liveRaw)
 		if storedBackup == nil {
 			addRequired("channel backup", false, "no backup stored in database")
