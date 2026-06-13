@@ -247,6 +247,31 @@ func (c *Client) KeyRestrictions(ctx context.Context) (*KeyRestrictions, error) 
 	return &resp, nil
 }
 
+// WithdrawAddressEntry is a saved withdrawal address from the account address book.
+type WithdrawAddressEntry struct {
+	// Address is the wallet or peer address used by the withdraw address entry.
+	Address string `json:"address"`
+	// AddressTag is the optional tag/memo for the withdraw address entry.
+	AddressTag string `json:"addressTag"`
+	// Coin names the asset for the withdraw address entry.
+	Coin string `json:"coin"`
+	// Network names the blockchain network for the withdraw address entry.
+	Network string `json:"network"`
+	// Name is the user-defined label for the withdraw address entry.
+	Name string `json:"name"`
+	// WhiteStatus reports whether the address is whitelisted.
+	WhiteStatus bool `json:"whiteStatus"`
+}
+
+// WithdrawAddressList retrieves the saved (address book) withdrawal addresses.
+func (c *Client) WithdrawAddressList(ctx context.Context) ([]WithdrawAddressEntry, error) {
+	var resp []WithdrawAddressEntry
+	if err := c.signedRequest(ctx, http.MethodGet, "/sapi/v1/capital/withdraw/address/list", nil, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 // GetDepositAddress retrieves a deposit address.
 func (c *Client) GetDepositAddress(ctx context.Context, coin, network string) (*DepositAddressResponse, error) {
 	query := url.Values{}

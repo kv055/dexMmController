@@ -14,6 +14,7 @@ import (
 	"dexMmController/internal/db"
 	"dexMmController/internal/exchanges/cex/binance"
 	"dexMmController/internal/exchanges/cex/coinbase"
+	"dexMmController/internal/exchanges/cex/coinbaseexchange"
 	"dexMmController/internal/exchanges/cex/kraken"
 	"dexMmController/internal/hummingbot"
 )
@@ -43,6 +44,16 @@ type DepositAddress struct {
 	Address string `json:"address"`
 	Tag     string `json:"tag,omitempty"`
 	Method  string `json:"method,omitempty"`
+}
+
+// WithdrawalAddress is a saved (whitelisted) withdrawal destination on a CEX.
+type WithdrawalAddress struct {
+	Asset       string `json:"asset"`
+	Network     string `json:"network"`
+	Address     string `json:"address"`
+	Tag         string `json:"tag,omitempty"`
+	Label       string `json:"label,omitempty"`
+	Whitelisted bool   `json:"whitelisted,omitempty"`
 }
 
 // AssetBalance is a single asset balance entry.
@@ -174,6 +185,86 @@ func (s *Service) DepositAddresses(ctx context.Context, rawProvider string) ([]D
 	}
 }
 
+// WithdrawalAddresses returns whitelisted BTC withdrawal addresses for the provider.
+func (s *Service) WithdrawalAddresses(ctx context.Context, rawProvider string) ([]WithdrawalAddress, error) {
+	provider, key, err := s.firstActiveKey(ctx, rawProvider)
+	if err != nil {
+		return nil, err
+	}
+
+	switch strings.ToLower(provider) {
+	case "kraken":
+		client := kraken.NewClient(s.cfg.KrakenBaseURL, key.APIKey, key.APISecret)
+		rows, err := client.GetWithdrawAddresses(ctx, "XBT")
+		if err != nil {
+			return nil, err
+		}
+		addresses := make([]WithdrawalAddress, 0, len(rows))
+		for _, row := range rows {
+			if row.Address == "" {
+				continue
+			}
+			addresses = append(addresses, WithdrawalAddress{
+				Asset:       "BTC",
+				Network:     row.Method,
+				Address:     row.Address,
+				Tag:         row.Tag,
+				Label:       row.Key,
+				Whitelisted: row.Verified,
+			})
+		}
+		return addresses, nil
+	case "binance":
+		client := binance.NewClient(s.cfg.BinanceBaseURL, key.APIKey, key.APISecret)
+		rows, err := client.WithdrawAddressList(ctx)
+		if err != nil {
+			return nil, err
+		}
+		addresses := make([]WithdrawalAddress, 0, len(rows))
+		for _, row := range rows {
+			if row.Address == "" || !isBitcoinAsset(row.Coin) {
+				continue
+			}
+			addresses = append(addresses, WithdrawalAddress{
+				Asset:       "BTC",
+				Network:     row.Network,
+				Address:     row.Address,
+				Tag:         row.AddressTag,
+				Label:       row.Name,
+				Whitelisted: row.WhiteStatus,
+			})
+		}
+		return addresses, nil
+	case "coinbase":
+		_, key, err := s.firstActiveKeyWithPassphrase(ctx, rawProvider)
+		if err != nil {
+			return nil, err
+		}
+		client := coinbaseexchange.NewClient(s.cfg.CoinbaseExchangeBaseURL, key.APIKey, key.APISecret, key.Passphrase)
+		rows, err := client.AddressBook(ctx)
+		if err != nil {
+			return nil, err
+		}
+		addresses := make([]WithdrawalAddress, 0, len(rows))
+		for _, row := range rows {
+			if row.Address == "" || !isBitcoinAsset(row.Currency) {
+				continue
+			}
+			addresses = append(addresses, WithdrawalAddress{
+				Asset:       "BTC",
+				Network:     strings.TrimSpace(row.Network),
+				Address:     row.Address,
+				Tag:         row.DestinationTag,
+				Label:       row.Label,
+				Whitelisted: true,
+			})
+		}
+		return addresses, nil
+	default:
+		return nil, fmt.Errorf("%s withdrawal addresses are not supported yet", provider)
+	}
+}
+
 // Balances returns BTC and fiat balances for the provider.
 func (s *Service) Balances(ctx context.Context, rawProvider string) (*BalancesResponse, error) {
 	provider, key, err := s.firstActiveKey(ctx, rawProvider)
@@ -297,6 +388,30 @@ func (s *Service) firstActiveKey(ctx context.Context, rawProvider string) (strin
 		return "", db.APIKey{}, fmt.Errorf("active %s API key is missing credentials", provider)
 	}
 	return provider, key, nil
+}
+
+// firstActiveKeyWithPassphrase returns the first active key that carries a passphrase.
+// Coinbase Exchange (address book) credentials are key+secret+passphrase, distinct from
+// the CDP/Advanced Trade keys (no passphrase) used for deposits and balances.
+func (s *Service) firstActiveKeyWithPassphrase(ctx context.Context, rawProvider string) (string, db.APIKey, error) {
+	provider, err := accounthealth.CanonicalProvider(rawProvider)
+	if err != nil {
+		return "", db.APIKey{}, err
+	}
+	keys, err := s.repo.GetActiveAPIKeysForProvider(ctx, provider)
+	if err != nil {
+		return "", db.APIKey{}, err
+	}
+	for _, key := range keys {
+		if strings.TrimSpace(key.APIKey) == "" || strings.TrimSpace(key.APISecret) == "" {
+			continue
+		}
+		if strings.TrimSpace(key.Passphrase) == "" {
+			continue
+		}
+		return provider, key, nil
+	}
+	return "", db.APIKey{}, fmt.Errorf("no Coinbase Exchange API key (key+secret+passphrase) configured for %s", provider)
 }
 
 func balancesFromBinance(balances []binance.SpotBalance) *BalancesResponse {

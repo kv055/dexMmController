@@ -8,8 +8,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -43,6 +46,40 @@ func NewClient(baseURL, apiKey string) *Client {
 	}
 }
 
+// errorEnvelope is the common error shape returned by the HodlHodl API.
+type errorEnvelope struct {
+	Status           string              `json:"status"`
+	ErrorCode        string              `json:"error_code,omitempty"`
+	ValidationErrors map[string][]string `json:"validation_errors,omitempty"`
+}
+
+// detail flattens the envelope into a single human-readable line.
+func (e errorEnvelope) detail() string {
+	parts := make([]string, 0, 1+len(e.ValidationErrors))
+	if e.ErrorCode != "" {
+		parts = append(parts, e.ErrorCode)
+	}
+	fields := make([]string, 0, len(e.ValidationErrors))
+	for field := range e.ValidationErrors {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	for _, field := range fields {
+		parts = append(parts, fmt.Sprintf("%s %s", field, strings.Join(e.ValidationErrors[field], ", ")))
+	}
+	return strings.Join(parts, ": ")
+}
+
+// readErrorDetail extracts the API error description from an error response
+// body, returning "" when the body is not a recognizable error envelope.
+func readErrorDetail(body io.Reader) string {
+	var envelope errorEnvelope
+	if err := json.NewDecoder(io.LimitReader(body, 4096)).Decode(&envelope); err != nil {
+		return ""
+	}
+	return envelope.detail()
+}
+
 // get performs an authenticated GET and decodes the JSON response into out.
 func (c *Client) get(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
@@ -66,6 +103,9 @@ func (c *Client) do(req *http.Request, path string, out any) error {
 		return fmt.Errorf("hodlhodl: %s %s rate limited (HTTP 429)", req.Method, path)
 	}
 	if resp.StatusCode != http.StatusOK {
+		if detail := readErrorDetail(resp.Body); detail != "" {
+			return fmt.Errorf("hodlhodl: %s %s returned HTTP %d (%s)", req.Method, path, resp.StatusCode, detail)
+		}
 		return fmt.Errorf("hodlhodl: %s %s returned HTTP %d", req.Method, path, resp.StatusCode)
 	}
 	if out == nil {
@@ -73,11 +113,7 @@ func (c *Client) do(req *http.Request, path string, out any) error {
 	}
 
 	// Decode into a raw envelope first to check the status field.
-	var envelope struct {
-		Status           string              `json:"status"`
-		ErrorCode        string              `json:"error_code,omitempty"`
-		ValidationErrors map[string][]string `json:"validation_errors,omitempty"`
-	}
+	var envelope errorEnvelope
 	// We need to decode twice: once for the envelope, once for the typed response.
 	// Use a json.RawMessage intermediary.
 	var raw json.RawMessage
@@ -142,9 +178,31 @@ func (c *Client) GetMe(ctx context.Context) (*MeResponse, error) {
 	return &resp, nil
 }
 
+// serverTime returns the API server's clock read from the Date response
+// header of a cheap HEAD request. Signed requests must carry a nonce within a
+// tight window around the server's time, so the local clock cannot be trusted.
+func (c *Client) serverTime(ctx context.Context) (time.Time, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, c.baseURL+"/api/v1/users/me", nil)
+	if err != nil {
+		return time.Time{}, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer resp.Body.Close()
+	return http.ParseTime(resp.Header.Get("Date"))
+}
+
 // VerifySignatureKey verifies that a HodlHodl API signature key is usable.
 func (c *Client) VerifySignatureKey(ctx context.Context, signatureKey string) error {
-	nonce := strconv.FormatInt(time.Now().Unix(), 10)
+	now := time.Now()
+	if serverNow, err := c.serverTime(ctx); err == nil {
+		now = serverNow
+	}
+	// Back-date the nonce slightly: the server rejects nonces ahead of its
+	// clock, and the Date header has whole-second precision.
+	nonce := strconv.FormatInt(now.Add(-2*time.Second).Unix(), 10)
 	mac := hmac.New(sha256.New, []byte(signatureKey))
 	_, _ = mac.Write([]byte(c.apiKey + ":" + nonce))
 	body := map[string]string{

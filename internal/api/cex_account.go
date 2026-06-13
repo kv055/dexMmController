@@ -22,6 +22,12 @@ func (s *Server) handleCexDepositAddresses(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (s *Server) handleCexWithdrawalAddresses(w http.ResponseWriter, r *http.Request) {
+	s.handleCexProviderRequest(w, r, func(ctx context.Context, provider string) (any, error) {
+		return s.cexAccount.WithdrawalAddresses(ctx, provider)
+	})
+}
+
 func (s *Server) handleCexBalances(w http.ResponseWriter, r *http.Request) {
 	s.handleCexProviderRequest(w, r, func(ctx context.Context, provider string) (any, error) {
 		return s.cexAccount.Balances(ctx, provider)

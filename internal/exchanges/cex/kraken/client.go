@@ -89,6 +89,22 @@ type WithdrawResponse struct {
 	RefID string `json:"refid"`
 }
 
+// WithdrawAddress is a saved (address book) withdrawal address.
+type WithdrawAddress struct {
+	// Address is the wallet or peer address used by the withdraw address.
+	Address string `json:"address"`
+	// Asset is the asset value for the withdraw address.
+	Asset string `json:"asset"`
+	// Method is the withdrawal method name for the withdraw address.
+	Method string `json:"method"`
+	// Key is the withdrawal key (label) configured on the account.
+	Key string `json:"key"`
+	// Tag is the optional tag/memo for the withdraw address.
+	Tag string `json:"tag"`
+	// Verified reports whether the address completed email confirmation.
+	Verified bool `json:"verified"`
+}
+
 // DepositStatusRequest represents a deposit status request.
 type DepositStatusRequest struct {
 	// Asset is the asset value for the deposit status request.
@@ -239,6 +255,20 @@ func (c *Client) GetWithdrawMethods(ctx context.Context, asset string) ([]Withdr
 
 	var resp apiEnvelope[[]WithdrawMethod]
 	if err := c.privateRequest(ctx, "/0/private/WithdrawMethods", form, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
+}
+
+// GetWithdrawAddresses retrieves the saved (address book) withdrawal addresses.
+func (c *Client) GetWithdrawAddresses(ctx context.Context, asset string) ([]WithdrawAddress, error) {
+	form := url.Values{}
+	if asset != "" {
+		form.Set("asset", asset)
+	}
+
+	var resp apiEnvelope[[]WithdrawAddress]
+	if err := c.privateRequest(ctx, "/0/private/WithdrawAddresses", form, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Result, nil
@@ -408,6 +438,10 @@ func krakenAPIError(path string, out any) error {
 			return fmt.Errorf("kraken: %s: %s", path, strings.Join(envelope.Error, ", "))
 		}
 	case *apiEnvelope[[]WithdrawMethod]:
+		if len(envelope.Error) > 0 {
+			return fmt.Errorf("kraken: %s: %s", path, strings.Join(envelope.Error, ", "))
+		}
+	case *apiEnvelope[[]WithdrawAddress]:
 		if len(envelope.Error) > 0 {
 			return fmt.Errorf("kraken: %s: %s", path, strings.Join(envelope.Error, ", "))
 		}

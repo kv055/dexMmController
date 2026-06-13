@@ -241,6 +241,10 @@ func TestSearchOffers(t *testing.T) {
 
 func TestVerifySignatureKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The client first syncs its nonce clock with a HEAD request.
+		if r.Method == http.MethodHead {
+			return
+		}
 		if r.URL.Path != "/api/v1/contracts/verify_signature_key" {
 			t.Fatalf("path = %s, want verify_signature_key", r.URL.Path)
 		}

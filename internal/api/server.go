@@ -82,6 +82,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/lnd/channels/open", s.handleLNDOpenChannel)
 	mux.HandleFunc("POST /api/lnd/channels/close", s.handleLNDCloseChannel)
 	mux.HandleFunc("GET /api/cex/deposit-addresses", s.handleCexDepositAddresses)
+	mux.HandleFunc("GET /api/cex/withdrawal-addresses", s.handleCexWithdrawalAddresses)
 	mux.HandleFunc("GET /api/cex/balances", s.handleCexBalances)
 	mux.HandleFunc("GET /api/cex/hedge-positions", s.handleCexHedgePositions)
 	mux.HandleFunc("GET /api/cex/spot-trades", s.handleCexSpotTrades)

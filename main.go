@@ -15,8 +15,8 @@ import (
 
 	"dexMmController/internal/accounthealth"
 	"dexMmController/internal/api"
-	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/bitcoin"
+	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/exchanges/dex/bisq"
 	"dexMmController/internal/exchanges/dex/hodlhodl"
@@ -41,10 +41,12 @@ func main() {
 	binanceBaseURL := envOr("BINANCE_API_BASE_URL", "")
 	krakenBaseURL := envOr("KRAKEN_API_BASE_URL", "")
 	coinbaseBaseURL := envOr("COINBASE_API_BASE_URL", "")
+	coinbaseExchangeBaseURL := envOr("COINBASE_EXCHANGE_API_BASE_URL", "")
 	bisqGRPCHost := envOr("BISQ_GRPC_HOST", "localhost:9998")
 	bisqAPIPassword := envOr("BISQ_API_PASSWORD", "")
 	robosatsURL := envOr("ROBOSATS_URL", "")
 	robosatsAuthToken := envOr("ROBOSATS_AUTH_TOKEN", "")
+	torProxyURL := envOr("TOR_PROXY_URL", "")
 	offerPremiumWSSURL := envOr("OFFER_PREMIUM_WSS_URL", "")
 	apiAddr := envOr("API_ADDR", ":5001")
 	lndHost := envOr("LND_HOST", "")
@@ -159,6 +161,7 @@ func main() {
 	rs := robosats.NewClient(robosats.Config{
 		BaseURL:   robosatsURL,
 		AuthToken: dbRobosatsAuthToken,
+		ProxyURL:  torProxyURL,
 	})
 
 	// ── HealthChecker ─────────────────────────────────────────────────────────
@@ -169,13 +172,16 @@ func main() {
 		KrakenBaseURL:   krakenBaseURL,
 		CoinbaseBaseURL: coinbaseBaseURL,
 		RobosatsBaseURL: robosatsURL,
+		TorProxyURL:     torProxyURL,
 	})
 	cexAccountService := cexaccount.NewService(repo, hb, accounthealth.Config{
-		HodlHodlBaseURL: hhBaseURL,
-		BinanceBaseURL:  binanceBaseURL,
-		KrakenBaseURL:   krakenBaseURL,
-		CoinbaseBaseURL: coinbaseBaseURL,
-		RobosatsBaseURL: robosatsURL,
+		HodlHodlBaseURL:         hhBaseURL,
+		BinanceBaseURL:          binanceBaseURL,
+		KrakenBaseURL:           krakenBaseURL,
+		CoinbaseBaseURL:         coinbaseBaseURL,
+		CoinbaseExchangeBaseURL: coinbaseExchangeBaseURL,
+		RobosatsBaseURL:         robosatsURL,
+		TorProxyURL:             torProxyURL,
 	})
 	apiServer := api.NewServer(apiAddr, repo).
 		WithAccountHealth(exchangeAccountHealth).

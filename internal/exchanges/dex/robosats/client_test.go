@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -24,8 +25,12 @@ func TestGetRobotSendsAuthToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRobot: %v", err)
 	}
-	if gotAuth != "Token robot-token" {
-		t.Fatalf("Authorization = %q, want Token robot-token", gotAuth)
+	wantPrefix := "Token " + AuthHeaderToken("robot-token") + " | Public "
+	if !strings.HasPrefix(gotAuth, wantPrefix) {
+		t.Fatalf("Authorization = %q, want prefix %q", gotAuth, wantPrefix)
+	}
+	if !strings.Contains(gotAuth, " | Private ") || !strings.Contains(gotAuth, " | Nostr ") {
+		t.Fatalf("Authorization = %q, want Private and Nostr identity parts", gotAuth)
 	}
 	if robot["nickname"] != "testbot" {
 		t.Fatalf("nickname = %v, want testbot", robot["nickname"])

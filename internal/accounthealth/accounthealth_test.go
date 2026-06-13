@@ -5,10 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"dexMmController/internal/db"
+	"dexMmController/internal/exchanges/dex/robosats"
 )
 
 type fakeRepo struct {
@@ -172,8 +174,8 @@ func TestCheckProviderRobosatsDoesNotRequireSecret(t *testing.T) {
 	if result.Status != "healthy" || !result.Healthy {
 		t.Fatalf("result = %+v, want healthy true", result)
 	}
-	if gotAuth != "Token robot-token" {
-		t.Fatalf("Authorization = %q, want Token robot-token", gotAuth)
+	if want := "Token " + robosats.AuthHeaderToken("robot-token") + " | Public "; !strings.HasPrefix(gotAuth, want) {
+		t.Fatalf("Authorization = %q, want prefix %q", gotAuth, want)
 	}
 	if repo.updatedProvider != "Robosats" || !repo.updatedHealthy {
 		t.Fatalf("updated provider=%q healthy=%v, want Robosats true", repo.updatedProvider, repo.updatedHealthy)

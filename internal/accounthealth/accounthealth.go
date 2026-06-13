@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -38,8 +39,13 @@ type Config struct {
 	KrakenBaseURL string
 	// CoinbaseBaseURL is the coinbase base url value for the config.
 	CoinbaseBaseURL string
+	// CoinbaseExchangeBaseURL is the Coinbase Exchange API base url (address book, HMAC auth).
+	CoinbaseExchangeBaseURL string
 	// RobosatsBaseURL is the robosats base url value for the config.
 	RobosatsBaseURL string
+	// TorProxyURL is an optional SOCKS proxy used to reach Tor-only
+	// providers such as the RoboSats onion coordinators.
+	TorProxyURL string
 }
 
 // Checker represents a checker.
@@ -228,14 +234,26 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 		return nil, errors.New("api_key is required")
 	}
 	if provider == "Robosats" {
-		client := robosats.NewClient(robosats.Config{
-			BaseURL:   c.cfg.RobosatsBaseURL,
-			AuthToken: apiKey,
-		})
-		if _, err := client.GetRobot(ctx); err != nil {
-			return nil, err
+		// Robot tokens are coordinator-specific: when no base URL is
+		// configured, probe the known coordinators until one knows the robot.
+		baseURLs := []string{c.cfg.RobosatsBaseURL}
+		if strings.TrimSpace(c.cfg.RobosatsBaseURL) == "" {
+			baseURLs = robosats.DefaultCoordinatorURLs
 		}
-		return map[string]bool{"robot": true}, nil
+		var errs []string
+		for _, baseURL := range baseURLs {
+			client := robosats.NewClient(robosats.Config{
+				BaseURL:   baseURL,
+				AuthToken: apiKey,
+				ProxyURL:  c.cfg.TorProxyURL,
+			})
+			if _, err := client.GetRobot(ctx); err == nil {
+				return map[string]bool{"robot": true}, nil
+			} else {
+				errs = append(errs, fmt.Sprintf("%s: %v", shortHost(baseURL), err))
+			}
+		}
+		return nil, errors.New(strings.Join(errs, "; "))
 	}
 	if apiSecret == "" {
 		return nil, errors.New("api_secret is required")
@@ -251,7 +269,7 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 			return nil, err
 		}
 		return map[string]bool{
-			"api_key":        true,
+			"api_key":       true,
 			"signature_key": true,
 		}, nil
 	case "Binance":
@@ -286,6 +304,20 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 	default:
 		return nil, ErrUnsupportedProvider
 	}
+}
+
+// shortHost abbreviates a coordinator URL for error messages, since onion
+// hostnames are 56 characters long.
+func shortHost(baseURL string) string {
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Host == "" {
+		return baseURL
+	}
+	host := parsed.Host
+	if len(host) > 14 {
+		return host[:8] + "…" + host[len(host)-6:]
+	}
+	return host
 }
 
 func keyDisplayName(key db.APIKey) string {
