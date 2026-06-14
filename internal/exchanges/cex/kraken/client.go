@@ -79,8 +79,9 @@ type WithdrawMethod struct {
 	Method string `json:"method"`
 	// Limit is the limit value for the withdraw method.
 	Limit bool `json:"limit"`
-	// Fee is the fee value reported for the withdraw method.
-	Fee string `json:"fee"`
+	// Fee is the fee reported for the withdraw method. Kraken returns this as either
+	// a string or a nested object depending on asset/method, so keep it raw.
+	Fee json.RawMessage `json:"fee"`
 }
 
 // WithdrawResponse represents a withdraw response.
@@ -338,6 +339,48 @@ func (c *Client) GetWithdrawStatus(ctx context.Context, req WithdrawStatusReques
 	return resp.Result, nil
 }
 
+// AddOrderResult is the result of a Kraken AddOrder call.
+type AddOrderResult struct {
+	// Descr describes the submitted order.
+	Descr struct {
+		// Order is the human-readable order description.
+		Order string `json:"order"`
+	} `json:"descr"`
+	// TxID lists the transaction ids created for the order.
+	TxID []string `json:"txid"`
+}
+
+// MarketBuy places a market buy order for volumeBTC of the base asset on pair (e.g. "XBTEUR").
+func (c *Client) MarketBuy(ctx context.Context, pair string, volumeBTC float64) (*AddOrderResult, error) {
+	form := url.Values{}
+	form.Set("pair", pair)
+	form.Set("type", "buy")
+	form.Set("ordertype", "market")
+	form.Set("volume", strconv.FormatFloat(volumeBTC, 'f', -1, 64))
+
+	var resp apiEnvelope[AddOrderResult]
+	if err := c.privateRequest(ctx, "/0/private/AddOrder", form, &resp); err != nil {
+		return nil, err
+	}
+	return &resp.Result, nil
+}
+
+// ValidateOrderPermission probes whether the key may place orders by submitting an
+// AddOrder with validate=true. Kraken validates the order WITHOUT placing it, so no
+// funds are spent. A nil error means the key has order-creation permission; a
+// "Permission denied" error means it does not (callers should classify it as denied).
+func (c *Client) ValidateOrderPermission(ctx context.Context, pair string) error {
+	form := url.Values{}
+	form.Set("pair", pair)
+	form.Set("type", "buy")
+	form.Set("ordertype", "market")
+	form.Set("volume", "0.0001")
+	form.Set("validate", "true")
+
+	var resp apiEnvelope[AddOrderResult]
+	return c.privateRequest(ctx, "/0/private/AddOrder", form, &resp)
+}
+
 type nonceSequencer struct {
 	mu   sync.Mutex
 	last int64
@@ -458,6 +501,10 @@ func krakenAPIError(path string, out any) error {
 			return fmt.Errorf("kraken: %s: %s", path, strings.Join(envelope.Error, ", "))
 		}
 	case *apiEnvelope[Balance]:
+		if len(envelope.Error) > 0 {
+			return fmt.Errorf("kraken: %s: %s", path, strings.Join(envelope.Error, ", "))
+		}
+	case *apiEnvelope[AddOrderResult]:
 		if len(envelope.Error) > 0 {
 			return fmt.Errorf("kraken: %s: %s", path, strings.Join(envelope.Error, ", "))
 		}

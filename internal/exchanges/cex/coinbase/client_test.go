@@ -133,6 +133,62 @@ func TestBTCDepositAddressesUsesExistingAddress(t *testing.T) {
 	}
 }
 
+func TestMarketBuyPostsOrder(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/brokerage/orders" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"success_response": map[string]string{
+				"order_id":   "order-123",
+				"product_id": "BTC-EUR",
+				"side":       "BUY",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "organizations/org/apiKeys/key", testECPrivateKeyPEM(t))
+	res, err := client.MarketBuy(context.Background(), "BTC-EUR", 0.01)
+	if err != nil {
+		t.Fatalf("MarketBuy: %v", err)
+	}
+	if res.SuccessResponse.OrderID != "order-123" {
+		t.Fatalf("order id = %q, want order-123", res.SuccessResponse.OrderID)
+	}
+	if gotBody["product_id"] != "BTC-EUR" || gotBody["side"] != "BUY" {
+		t.Fatalf("body = %#v, want BTC-EUR BUY", gotBody)
+	}
+	cfg, _ := gotBody["order_configuration"].(map[string]any)
+	ioc, _ := cfg["market_market_ioc"].(map[string]any)
+	if ioc["base_size"] != "0.01" {
+		t.Fatalf("base_size = %v, want 0.01", ioc["base_size"])
+	}
+}
+
+func TestMarketBuyReturnsErrorWhenRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"error_response": map[string]string{
+				"error":   "INSUFFICIENT_FUND",
+				"message": "Insufficient balance",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "organizations/org/apiKeys/key", testECPrivateKeyPEM(t))
+	if _, err := client.MarketBuy(context.Background(), "BTC-EUR", 0.01); err == nil {
+		t.Fatalf("expected rejection error")
+	}
+}
+
 func TestBuildJWTIncludesThreeParts(t *testing.T) {
 	client := NewClient("", "organizations/org/apiKeys/key", testECPrivateKeyPEM(t))
 	token, err := client.buildJWT(http.MethodGet, "/api/v3/brokerage/key_permissions")

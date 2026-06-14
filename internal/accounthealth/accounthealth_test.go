@@ -2,6 +2,13 @@ package accounthealth
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +28,7 @@ type fakeRepo struct {
 	checkedAt         time.Time
 	permissionUpdates []struct {
 		keyID       uint
-		permissions map[string]bool
+		permissions map[string]string
 		checkedAt   time.Time
 	}
 }
@@ -37,10 +44,10 @@ func (f *fakeRepo) GetActiveAPIKeysForProvider(context.Context, string) ([]db.AP
 	return f.keys, nil
 }
 
-func (f *fakeRepo) UpdateAPIKeyPermissions(_ context.Context, keyID uint, permissions map[string]bool, checkedAt time.Time) error {
+func (f *fakeRepo) UpdateAPIKeyPermissions(_ context.Context, keyID uint, permissions map[string]string, checkedAt time.Time) error {
 	f.permissionUpdates = append(f.permissionUpdates, struct {
 		keyID       uint
-		permissions map[string]bool
+		permissions map[string]string
 		checkedAt   time.Time
 	}{keyID, permissions, checkedAt})
 	return nil
@@ -180,10 +187,10 @@ func TestCheckProviderRobosatsDoesNotRequireSecret(t *testing.T) {
 	if repo.updatedProvider != "Robosats" || !repo.updatedHealthy {
 		t.Fatalf("updated provider=%q healthy=%v, want Robosats true", repo.updatedProvider, repo.updatedHealthy)
 	}
-	if len(result.Keys) != 1 || !result.Keys[0].Permissions["robot"] {
+	if len(result.Keys) != 1 || result.Keys[0].Permissions["robot"] != PermGranted {
 		t.Fatalf("result keys = %+v, want robot permission", result.Keys)
 	}
-	if len(repo.permissionUpdates) != 1 || !repo.permissionUpdates[0].permissions["robot"] {
+	if len(repo.permissionUpdates) != 1 || repo.permissionUpdates[0].permissions["robot"] != PermGranted {
 		t.Fatalf("permission updates = %+v, want robot permission persisted", repo.permissionUpdates)
 	}
 }
@@ -222,7 +229,7 @@ func TestCheckProviderHodlHodlValidatesAPIAndSignatureKey(t *testing.T) {
 	if len(result.Keys) != 1 {
 		t.Fatalf("result keys = %+v, want one key result", result.Keys)
 	}
-	if !result.Keys[0].Permissions["api_key"] || !result.Keys[0].Permissions["signature_key"] {
+	if result.Keys[0].Permissions["api_key"] != PermGranted || result.Keys[0].Permissions["signature_key"] != PermGranted {
 		t.Fatalf("permissions = %+v, want api_key and signature_key", result.Keys[0].Permissions)
 	}
 	if len(repo.permissionUpdates) != 1 {
@@ -243,6 +250,115 @@ func TestCheckProviderHodlHodlMissingSignatureMarksUnhealthy(t *testing.T) {
 	if result.Status != "unhealthy" || result.Healthy {
 		t.Fatalf("result = %+v, want unhealthy false", result)
 	}
+}
+
+func TestCheckProviderBinanceCanonicalPermissions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/time" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"serverTime": time.Now().UnixMilli()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"enableReading":              true,
+			"enableSpotAndMarginTrading": true,
+			"enableWithdrawals":          false,
+			"enableFutures":              true,
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	repo := &fakeRepo{
+		accountProvider: "Binance",
+		keys:            []db.APIKey{{ID: 3, APIKey: "k", APISecret: "s", IsActive: true}},
+	}
+	checker := NewChecker(repo, Config{BinanceBaseURL: srv.URL})
+	result, err := checker.CheckProvider(context.Background(), "binance")
+	if err != nil {
+		t.Fatalf("CheckProvider: %v", err)
+	}
+	if !result.Healthy || len(result.Keys) != 1 {
+		t.Fatalf("result = %+v, want healthy with one key", result)
+	}
+	perms := result.Keys[0].Permissions
+	if perms[PermSpotTrading] != PermGranted || perms[PermReadBalances] != PermGranted ||
+		perms[PermWithdraw] != PermDenied || perms[PermHedgePositions] != PermGranted {
+		t.Fatalf("permissions = %+v", perms)
+	}
+}
+
+func TestCheckProviderKrakenProbesPermissions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/0/private/Balance":
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": map[string]string{"XXBT": "0.1"}})
+		case "/0/private/AddOrder": // validate-only spot probe — key lacks order permission
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{"EGeneral:Permission denied"}, "result": map[string]any{}})
+		case "/0/private/WithdrawMethods":
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": []map[string]any{{"method": "Bitcoin"}}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	repo := &fakeRepo{
+		accountProvider: "Kraken",
+		keys:            []db.APIKey{{ID: 5, APIKey: "k", APISecret: base64.StdEncoding.EncodeToString([]byte("secret")), IsActive: true}},
+	}
+	checker := NewChecker(repo, Config{KrakenBaseURL: srv.URL})
+	result, err := checker.CheckProvider(context.Background(), "kraken")
+	if err != nil {
+		t.Fatalf("CheckProvider: %v", err)
+	}
+	if !result.Healthy || len(result.Keys) != 1 {
+		t.Fatalf("result = %+v, want healthy with one key", result)
+	}
+	perms := result.Keys[0].Permissions
+	if perms[PermReadBalances] != PermGranted || perms[PermSpotTrading] != PermDenied ||
+		perms[PermWithdraw] != PermGranted || perms[PermHedgePositions] != PermUnsupported {
+		t.Fatalf("permissions = %+v", perms)
+	}
+}
+
+func TestCheckProviderCoinbaseHedgeUnsupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/brokerage/key_permissions" {
+			t.Fatalf("path = %s, want key_permissions", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"can_view":true,"can_trade":true,"can_transfer":false}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	repo := &fakeRepo{
+		accountProvider: "Coinbase",
+		keys:            []db.APIKey{{ID: 4, APIKey: "organizations/org/apiKeys/key", APISecret: testECPrivateKeyPEM(t), IsActive: true}},
+	}
+	checker := NewChecker(repo, Config{CoinbaseBaseURL: srv.URL})
+	result, err := checker.CheckProvider(context.Background(), "coinbase")
+	if err != nil {
+		t.Fatalf("CheckProvider: %v", err)
+	}
+	if !result.Healthy || len(result.Keys) != 1 {
+		t.Fatalf("result = %+v, want healthy with one key", result)
+	}
+	perms := result.Keys[0].Permissions
+	if perms[PermSpotTrading] != PermGranted || perms[PermReadBalances] != PermGranted ||
+		perms[PermWithdraw] != PermDenied || perms[PermHedgePositions] != PermUnsupported {
+		t.Fatalf("permissions = %+v", perms)
+	}
+}
+
+func testECPrivateKeyPEM(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	raw, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: raw}))
 }
 
 func TestCheckProviderRobosatsBadStatusMarksUnhealthy(t *testing.T) {

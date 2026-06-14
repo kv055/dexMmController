@@ -200,6 +200,8 @@ type KeyRestrictions struct {
 	EnableSpotAndMarginTrading bool `json:"enableSpotAndMarginTrading"`
 	// EnableWithdrawals reports whether the key can withdraw funds.
 	EnableWithdrawals bool `json:"enableWithdrawals"`
+	// EnableFutures reports whether the key can trade USDⓈ-M/COIN-M futures (hedging).
+	EnableFutures bool `json:"enableFutures"`
 }
 
 // NewClient creates a client.
@@ -317,6 +319,35 @@ func (c *Client) ApplyWithdraw(ctx context.Context, req WithdrawRequest) (*Withd
 
 	var resp WithdrawResponse
 	if err := c.signedRequest(ctx, http.MethodPost, "/sapi/v1/capital/withdraw/apply", body, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// OrderResponse is the result of a Binance spot order placement.
+type OrderResponse struct {
+	// Symbol is the trading symbol the order was placed on.
+	Symbol string `json:"symbol"`
+	// OrderID is the exchange-assigned order id.
+	OrderID int64 `json:"orderId"`
+	// Status is the current order status (e.g. FILLED).
+	Status string `json:"status"`
+	// ExecutedQty is the filled base-asset quantity.
+	ExecutedQty string `json:"executedQty"`
+	// CummulativeQuoteQty is the filled quote-asset amount (spelling per Binance API).
+	CummulativeQuoteQty string `json:"cummulativeQuoteQty"`
+}
+
+// MarketBuy places a market buy order for quantityBTC of the base asset on symbol (e.g. "BTCEUR").
+func (c *Client) MarketBuy(ctx context.Context, symbol string, quantityBTC float64) (*OrderResponse, error) {
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	params.Set("side", "BUY")
+	params.Set("type", "MARKET")
+	params.Set("quantity", strconv.FormatFloat(quantityBTC, 'f', -1, 64))
+
+	var resp OrderResponse
+	if err := c.signedRequest(ctx, http.MethodPost, "/api/v3/order", params, nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

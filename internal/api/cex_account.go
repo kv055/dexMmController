@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,6 +10,47 @@ import (
 	"dexMmController/internal/accounthealth"
 	"dexMmController/internal/cexaccount"
 )
+
+// spotBuyRequest is the JSON body for POST /api/cex/spot-buy.
+type spotBuyRequest struct {
+	Provider     string  `json:"provider"`
+	BTCAmount    float64 `json:"btc_amount"`
+	FiatCurrency string  `json:"fiat_currency"`
+}
+
+func (s *Server) handleCexSpotBuy(w http.ResponseWriter, r *http.Request) {
+	if s.cexAccount == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("cex account service is not configured"))
+		return
+	}
+
+	var req spotBuyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	provider := strings.TrimSpace(req.Provider)
+	if provider == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("provider is required"))
+		return
+	}
+	canonical, err := accounthealth.CanonicalProvider(provider)
+	if err != nil || !accounthealth.IsCEXProvider(canonical) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(accounthealth.SupportedCEXProviders(), ", ")))
+		return
+	}
+	if req.BTCAmount <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("btc_amount must be greater than zero"))
+		return
+	}
+
+	result, err := s.cexAccount.MarketBuyBTC(r.Context(), provider, req.BTCAmount, req.FiatCurrency)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
 
 // WithCexAccount attaches the CEX account overview service.
 func (s *Server) WithCexAccount(service *cexaccount.Service) *Server {

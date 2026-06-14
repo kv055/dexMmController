@@ -69,7 +69,7 @@ func (r *TransactionRepository) GetActiveAPIKeysForProvider(ctx context.Context,
 }
 
 // UpdateAPIKeyPermissions stores the latest normalized permissions for an API key.
-func (r *TransactionRepository) UpdateAPIKeyPermissions(ctx context.Context, keyID uint, permissions map[string]bool, checkedAt time.Time) error {
+func (r *TransactionRepository) UpdateAPIKeyPermissions(ctx context.Context, keyID uint, permissions map[string]string, checkedAt time.Time) error {
 	if keyID == 0 {
 		return errors.New("api key id is required")
 	}

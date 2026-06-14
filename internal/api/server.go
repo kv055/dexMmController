@@ -124,6 +124,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/cex/balances", s.handleCexBalances)
 	mux.HandleFunc("GET /api/cex/hedge-positions", s.handleCexHedgePositions)
 	mux.HandleFunc("GET /api/cex/spot-trades", s.handleCexSpotTrades)
+	mux.HandleFunc("POST /api/cex/spot-buy", s.handleCexSpotBuy)
 
 	server := &http.Server{
 		Addr:              s.addr,

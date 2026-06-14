@@ -67,6 +67,43 @@ func TestSignedRequestRetriesAfterTimestampError(t *testing.T) {
 	}
 }
 
+func TestMarketBuyPostsOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/time" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"serverTime": time.Now().UnixMilli()})
+			return
+		}
+		if r.URL.Path != "/api/v3/order" {
+			t.Fatalf("path = %s, want /api/v3/order", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		_ = r.ParseForm()
+		if r.PostForm.Get("symbol") != "BTCEUR" || r.PostForm.Get("side") != "BUY" ||
+			r.PostForm.Get("type") != "MARKET" || r.PostForm.Get("quantity") != "0.01" {
+			t.Fatalf("unexpected order params: %s", r.PostForm.Encode())
+		}
+		if r.PostForm.Get("signature") == "" {
+			t.Fatalf("missing signature")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"symbol": "BTCEUR", "orderId": 12345, "status": "FILLED",
+			"executedQty": "0.01000000", "cummulativeQuoteQty": "600.00",
+		})
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "api-key", "secret")
+	order, err := client.MarketBuy(context.Background(), "BTCEUR", 0.01)
+	if err != nil {
+		t.Fatalf("MarketBuy: %v", err)
+	}
+	if order.OrderID != 12345 || order.Status != "FILLED" {
+		t.Fatalf("order = %+v, want id 12345 FILLED", order)
+	}
+}
+
 func TestKeyRestrictionsSignsRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v3/time" {
@@ -98,5 +135,30 @@ func TestKeyRestrictionsSignsRequest(t *testing.T) {
 	}
 	if !restrictions.EnableReading || !restrictions.EnableSpotAndMarginTrading || restrictions.EnableWithdrawals {
 		t.Fatalf("restrictions = %+v, want read+trade granted and withdraw denied", restrictions)
+	}
+}
+
+func TestKeyRestrictionsParsesFutures(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/time" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"serverTime": time.Now().UnixMilli()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"enableReading":              true,
+			"enableSpotAndMarginTrading": true,
+			"enableWithdrawals":          false,
+			"enableFutures":              true,
+		})
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "api-key", "secret")
+	restrictions, err := client.KeyRestrictions(context.Background())
+	if err != nil {
+		t.Fatalf("KeyRestrictions: %v", err)
+	}
+	if !restrictions.EnableFutures {
+		t.Fatalf("EnableFutures = false, want true (restrictions = %+v)", restrictions)
 	}
 }

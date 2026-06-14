@@ -1,6 +1,7 @@
 package cexaccount
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -40,6 +41,45 @@ func TestHedgePositionFromTransactionActiveVsPast(t *testing.T) {
 	}
 	if !hasJSONData(past.CexCounterPositionCloseDetails) {
 		t.Fatal("expected close details to be present")
+	}
+}
+
+func TestMarketBuyPair(t *testing.T) {
+	cases := []struct {
+		provider, fiat, want string
+	}{
+		{"kraken", "EUR", "XBTEUR"},
+		{"Kraken", "usd", "XBTUSD"},
+		{"coinbase", "EUR", "BTC-EUR"},
+		{"binance", "EUR", "BTCEUR"},
+		{"binance", "", "BTCEUR"},
+	}
+	for _, c := range cases {
+		if got := marketBuyPair(c.provider, c.fiat); got != c.want {
+			t.Fatalf("marketBuyPair(%q,%q) = %q, want %q", c.provider, c.fiat, got, c.want)
+		}
+	}
+}
+
+func TestMaxMarketBuyBTCDefault(t *testing.T) {
+	t.Setenv("MAX_MARKET_BUY_BTC", "")
+	if got := maxMarketBuyBTC(); got != defaultMaxMarketBuyBTC {
+		t.Fatalf("maxMarketBuyBTC() = %v, want default %v", got, defaultMaxMarketBuyBTC)
+	}
+	t.Setenv("MAX_MARKET_BUY_BTC", "0.25")
+	if got := maxMarketBuyBTC(); got != 0.25 {
+		t.Fatalf("maxMarketBuyBTC() = %v, want 0.25", got)
+	}
+}
+
+func TestMarketBuyBTCRejectsInvalidAmounts(t *testing.T) {
+	t.Setenv("MAX_MARKET_BUY_BTC", "1.0")
+	svc := &Service{}
+	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 0, "EUR"); err == nil {
+		t.Fatal("expected error for zero amount")
+	}
+	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 5, "EUR"); err == nil {
+		t.Fatal("expected error for amount over cap")
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -197,6 +198,58 @@ func filterCoinbaseBTCAddresses(addresses []DepositAddress) []DepositAddress {
 		out = append(out, row)
 	}
 	return out
+}
+
+// OrderResult is the result of a Coinbase Advanced Trade create-order call.
+type OrderResult struct {
+	// Success reports whether the order was accepted.
+	Success bool `json:"success"`
+	// SuccessResponse carries the accepted order identifiers.
+	SuccessResponse struct {
+		OrderID   string `json:"order_id"`
+		ProductID string `json:"product_id"`
+		Side      string `json:"side"`
+	} `json:"success_response"`
+	// ErrorResponse carries the rejection reason when Success is false.
+	ErrorResponse struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	} `json:"error_response"`
+}
+
+// MarketBuy places a market IOC buy order for baseSizeBTC of the base asset on
+// productID (e.g. "BTC-EUR").
+func (c *Client) MarketBuy(ctx context.Context, productID string, baseSizeBTC float64) (*OrderResult, error) {
+	payload := map[string]any{
+		"client_order_id": randomHex(16),
+		"product_id":      productID,
+		"side":            "BUY",
+		"order_configuration": map[string]any{
+			"market_market_ioc": map[string]any{
+				"base_size": strconv.FormatFloat(baseSizeBTC, 'f', -1, 64),
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("coinbase: encode order payload: %w", err)
+	}
+
+	var resp OrderResult
+	if err := c.getJSON(ctx, http.MethodPost, "/api/v3/brokerage/orders", strings.NewReader(string(body)), &resp); err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		reason := strings.TrimSpace(resp.ErrorResponse.Message)
+		if reason == "" {
+			reason = strings.TrimSpace(resp.ErrorResponse.Error)
+		}
+		if reason == "" {
+			reason = "order rejected"
+		}
+		return &resp, fmt.Errorf("coinbase: market buy rejected: %s", reason)
+	}
+	return &resp, nil
 }
 
 func (c *Client) getJSON(ctx context.Context, method, path string, body io.Reader, dest any) error {

@@ -21,11 +21,42 @@ import (
 // ErrUnsupportedProvider is the err unsupported provider value.
 var ErrUnsupportedProvider = errors.New("unsupported account health provider")
 
+// Canonical CEX permission keys — a common schema reported uniformly for every
+// centralized exchange so the UI can render a consistent, detailed set.
+const (
+	PermSpotTrading    = "spot_trading"
+	PermReadBalances   = "read_balances"
+	PermWithdraw       = "withdraw"
+	PermHedgePositions = "hedge_positions"
+)
+
+// Permission status values (tri-state). "unsupported" means the exchange cannot
+// report that capability (e.g. Kraken has no permissions API for futures), so the
+// UI renders it as "n/a" rather than a false negative.
+const (
+	PermGranted     = "granted"
+	PermDenied      = "denied"
+	PermUnsupported = "unsupported"
+)
+
+// CanonicalCEXPermissions lists the canonical permission keys in display order.
+func CanonicalCEXPermissions() []string {
+	return []string{PermSpotTrading, PermReadBalances, PermWithdraw, PermHedgePositions}
+}
+
+// grantedIf maps a boolean capability flag to a tri-state permission status.
+func grantedIf(ok bool) string {
+	if ok {
+		return PermGranted
+	}
+	return PermDenied
+}
+
 // Repository defines the behavior required by this package.
 type Repository interface {
 	GetAccountByProvider(ctx context.Context, provider string) (*db.Account, error)
 	GetActiveAPIKeysForProvider(ctx context.Context, provider string) ([]db.APIKey, error)
-	UpdateAPIKeyPermissions(ctx context.Context, keyID uint, permissions map[string]bool, checkedAt time.Time) error
+	UpdateAPIKeyPermissions(ctx context.Context, keyID uint, permissions map[string]string, checkedAt time.Time) error
 	UpdateAccountHealthCheckedAt(ctx context.Context, provider string, healthy bool) (time.Time, error)
 }
 
@@ -60,8 +91,9 @@ type KeyPermissionResult struct {
 	KeyID uint `json:"key_id"`
 	// Name is the configured key label.
 	Name string `json:"name"`
-	// Permissions maps normalized permission names to granted flags.
-	Permissions map[string]bool `json:"permissions"`
+	// Permissions maps canonical permission names to tri-state status
+	// ("granted" | "denied" | "unsupported").
+	Permissions map[string]string `json:"permissions"`
 }
 
 // Result represents a result.
@@ -227,7 +259,7 @@ func (c *Checker) checkActiveKeys(ctx context.Context, provider string, keys []d
 	return keyResults, nil
 }
 
-func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) (map[string]bool, error) {
+func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) (map[string]string, error) {
 	apiKey := strings.TrimSpace(key.APIKey)
 	apiSecret := strings.TrimSpace(key.APISecret)
 	if apiKey == "" {
@@ -248,7 +280,7 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 				ProxyURL:  c.cfg.TorProxyURL,
 			})
 			if _, err := client.GetRobot(ctx); err == nil {
-				return map[string]bool{"robot": true}, nil
+				return map[string]string{"robot": PermGranted}, nil
 			} else {
 				errs = append(errs, fmt.Sprintf("%s: %v", shortHost(baseURL), err))
 			}
@@ -268,9 +300,9 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 		if err := client.VerifySignatureKey(ctx, apiSecret); err != nil {
 			return nil, err
 		}
-		return map[string]bool{
-			"api_key":       true,
-			"signature_key": true,
+		return map[string]string{
+			"api_key":       PermGranted,
+			"signature_key": PermGranted,
 		}, nil
 	case "Binance":
 		client := binance.NewClient(c.cfg.BinanceBaseURL, apiKey, apiSecret)
@@ -278,32 +310,86 @@ func (c *Checker) checkKey(ctx context.Context, provider string, key db.APIKey) 
 		if err != nil {
 			return nil, err
 		}
-		return map[string]bool{
-			"read":          restrictions.EnableReading,
-			"trade":         restrictions.EnableSpotAndMarginTrading,
-			"withdraw":      restrictions.EnableWithdrawals,
-			"ip_restricted": restrictions.IPRestrict,
+		return map[string]string{
+			PermSpotTrading:    grantedIf(restrictions.EnableSpotAndMarginTrading),
+			PermReadBalances:   grantedIf(restrictions.EnableReading),
+			PermWithdraw:       grantedIf(restrictions.EnableWithdrawals),
+			PermHedgePositions: grantedIf(restrictions.EnableFutures),
 		}, nil
 	case "Kraken":
-		client := kraken.NewClient(c.cfg.KrakenBaseURL, apiKey, apiSecret)
-		if _, err := client.Balance(ctx); err != nil {
-			return nil, err
-		}
-		return map[string]bool{"read": true}, nil
+		return c.checkKrakenKey(ctx, apiKey, apiSecret)
 	case "Coinbase":
 		client := coinbase.NewClient(c.cfg.CoinbaseBaseURL, apiKey, apiSecret)
 		permissions, err := client.KeyPermissions(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]bool{
-			"view":     permissions.CanView,
-			"trade":    permissions.CanTrade,
-			"transfer": permissions.CanTransfer,
+		return map[string]string{
+			PermSpotTrading:  grantedIf(permissions.CanTrade),
+			PermReadBalances: grantedIf(permissions.CanView),
+			PermWithdraw:     grantedIf(permissions.CanTransfer),
+			// Coinbase derivatives ride on the trade scope + account eligibility;
+			// there is no separate key scope to introspect.
+			PermHedgePositions: PermUnsupported,
 		}, nil
 	default:
 		return nil, ErrUnsupportedProvider
 	}
+}
+
+// checkKrakenKey infers a Kraken key's permissions via safe capability probes,
+// because Kraken exposes no permission-introspection endpoint. The Balance call
+// also acts as the auth gate: a non-permission error there (bad signature/key)
+// fails the whole check. Each probe is read-only or validate-only (no funds move).
+func (c *Checker) checkKrakenKey(ctx context.Context, apiKey, apiSecret string) (map[string]string, error) {
+	client := kraken.NewClient(c.cfg.KrakenBaseURL, apiKey, apiSecret)
+
+	// Read balances — also validates the key signature.
+	readStatus, err := krakenProbeStatus(probeBalanceErr(ctx, client))
+	if err != nil {
+		return nil, err
+	}
+	// Spot trading — validate-only AddOrder (places nothing).
+	spotStatus, err := krakenProbeStatus(client.ValidateOrderPermission(ctx, "XBTEUR"))
+	if err != nil {
+		return nil, err
+	}
+	// Withdraw — listing withdraw methods requires the Withdraw Funds permission.
+	withdrawStatus, err := krakenProbeStatus(probeWithdrawErr(ctx, client))
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]string{
+		PermSpotTrading:  spotStatus,
+		PermReadBalances: readStatus,
+		PermWithdraw:     withdrawStatus,
+		// Kraken Futures is a separate API with its own keys; not introspectable here.
+		PermHedgePositions: PermUnsupported,
+	}, nil
+}
+
+func probeBalanceErr(ctx context.Context, client *kraken.Client) error {
+	_, err := client.Balance(ctx)
+	return err
+}
+
+func probeWithdrawErr(ctx context.Context, client *kraken.Client) error {
+	_, err := client.GetWithdrawMethods(ctx, "XBT")
+	return err
+}
+
+// krakenProbeStatus classifies a probe outcome: nil → granted, a Kraken
+// "Permission denied" → denied (key valid, capability not granted), anything else
+// (network/auth failure) → propagated so the health check surfaces the real error.
+func krakenProbeStatus(err error) (string, error) {
+	if err == nil {
+		return PermGranted, nil
+	}
+	if strings.Contains(err.Error(), "Permission denied") {
+		return PermDenied, nil
+	}
+	return "", err
 }
 
 // shortHost abbreviates a coordinator URL for error messages, since onion
@@ -336,7 +422,7 @@ func formatKeyPermissionsMessage(keys []KeyPermissionResult) string {
 	return strings.Join(parts, "; ")
 }
 
-func formatPermissions(permissions map[string]bool) string {
+func formatPermissions(permissions map[string]string) string {
 	names := make([]string, 0, len(permissions))
 	for name := range permissions {
 		names = append(names, name)
@@ -345,9 +431,14 @@ func formatPermissions(permissions map[string]bool) string {
 
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
-		mark := "✗"
-		if permissions[name] {
+		var mark string
+		switch permissions[name] {
+		case PermGranted:
 			mark = "✓"
+		case PermUnsupported:
+			mark = "—"
+		default:
+			mark = "✗"
 		}
 		parts = append(parts, fmt.Sprintf("%s %s", name, mark))
 	}

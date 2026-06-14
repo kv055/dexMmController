@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -90,6 +91,18 @@ type HedgePosition struct {
 type HedgePositionsResponse struct {
 	Active []HedgePosition `json:"active"`
 	Past   []HedgePosition `json:"past"`
+}
+
+// SpotOrderResult is the normalized result of a market-buy order placed on a CEX.
+type SpotOrderResult struct {
+	Provider     string          `json:"provider"`
+	Pair         string          `json:"pair"`
+	Side         string          `json:"side"`
+	RequestedBTC float64         `json:"requested_btc"`
+	OrderID      string          `json:"order_id"`
+	Status       string          `json:"status"`
+	SubmittedAt  string          `json:"submitted_at"`
+	Raw          json.RawMessage `json:"raw,omitempty"`
 }
 
 // SpotTrade is a spot market fill from the exchange connector.
@@ -369,6 +382,98 @@ func (s *Service) SpotTrades(ctx context.Context, rawProvider string, limit int)
 		})
 	}
 	return out, nil
+}
+
+// defaultMaxMarketBuyBTC is the fallback per-order cap when MAX_MARKET_BUY_BTC is unset.
+const defaultMaxMarketBuyBTC = 1.0
+
+// maxMarketBuyBTC returns the configured per-order BTC cap for market buys.
+func maxMarketBuyBTC() float64 {
+	raw := strings.TrimSpace(os.Getenv("MAX_MARKET_BUY_BTC"))
+	if raw == "" {
+		return defaultMaxMarketBuyBTC
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || value <= 0 {
+		return defaultMaxMarketBuyBTC
+	}
+	return value
+}
+
+// marketBuyPair builds the exchange-native trading pair for buying BTC with fiatCurrency.
+func marketBuyPair(provider, fiatCurrency string) string {
+	fiat := strings.ToUpper(strings.TrimSpace(fiatCurrency))
+	if fiat == "" {
+		fiat = "EUR"
+	}
+	switch strings.ToLower(provider) {
+	case "kraken":
+		return "XBT" + fiat
+	case "coinbase":
+		return "BTC-" + fiat
+	default: // binance and others
+		return "BTC" + fiat
+	}
+}
+
+// MarketBuyBTC places a market buy order for btcAmount of BTC on the given CEX provider,
+// pairing BTC against fiatCurrency. It is the trade-tracing "Start trade" action.
+func (s *Service) MarketBuyBTC(ctx context.Context, rawProvider string, btcAmount float64, fiatCurrency string) (*SpotOrderResult, error) {
+	if btcAmount <= 0 {
+		return nil, fmt.Errorf("btc_amount must be greater than zero")
+	}
+	if cap := maxMarketBuyBTC(); btcAmount > cap {
+		return nil, fmt.Errorf("btc_amount %.8f exceeds the configured per-order cap of %.8f BTC", btcAmount, cap)
+	}
+
+	provider, key, err := s.firstActiveKey(ctx, rawProvider)
+	if err != nil {
+		return nil, err
+	}
+	pair := marketBuyPair(provider, fiatCurrency)
+	result := &SpotOrderResult{
+		Provider:     provider,
+		Pair:         pair,
+		Side:         "BUY",
+		RequestedBTC: btcAmount,
+		SubmittedAt:  time.Now().UTC().Format(time.RFC3339),
+	}
+
+	switch strings.ToLower(provider) {
+	case "kraken":
+		client := kraken.NewClient(s.cfg.KrakenBaseURL, key.APIKey, key.APISecret)
+		order, err := client.MarketBuy(ctx, pair, btcAmount)
+		if err != nil {
+			return nil, err
+		}
+		if len(order.TxID) > 0 {
+			result.OrderID = order.TxID[0]
+		}
+		result.Status = "submitted"
+		result.Raw, _ = json.Marshal(order)
+	case "binance":
+		client := binance.NewClient(s.cfg.BinanceBaseURL, key.APIKey, key.APISecret)
+		order, err := client.MarketBuy(ctx, pair, btcAmount)
+		if err != nil {
+			return nil, err
+		}
+		result.OrderID = strconv.FormatInt(order.OrderID, 10)
+		result.Status = strings.ToLower(order.Status)
+		result.Raw, _ = json.Marshal(order)
+	case "coinbase":
+		client := coinbase.NewClient(s.cfg.CoinbaseBaseURL, key.APIKey, key.APISecret)
+		order, err := client.MarketBuy(ctx, pair, btcAmount)
+		if err != nil {
+			return nil, err
+		}
+		result.OrderID = order.SuccessResponse.OrderID
+		result.Status = "submitted"
+		result.Raw, _ = json.Marshal(order)
+	default:
+		return nil, fmt.Errorf("market buy is not supported for %s yet", provider)
+	}
+
+	return result, nil
 }
 
 func (s *Service) firstActiveKey(ctx context.Context, rawProvider string) (string, db.APIKey, error) {
