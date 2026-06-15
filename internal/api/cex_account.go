@@ -52,6 +52,42 @@ func (s *Server) handleCexSpotBuy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// hedgeOpenRequest is the JSON body for POST /api/cex/hedge-open.
+type hedgeOpenRequest struct {
+	Venue       string  `json:"venue"`
+	Side        string  `json:"side"`
+	BTCNotional float64 `json:"btc_notional"`
+	Leverage    float64 `json:"leverage"`
+}
+
+func (s *Server) handleCexHedgeOpen(w http.ResponseWriter, r *http.Request) {
+	if s.cexAccount == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("cex account service is not configured"))
+		return
+	}
+
+	var req hedgeOpenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if strings.TrimSpace(req.Venue) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("venue is required"))
+		return
+	}
+	if req.BTCNotional <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("btc_notional must be greater than zero"))
+		return
+	}
+
+	result, err := s.cexAccount.OpenHedge(r.Context(), req.Venue, req.Side, req.BTCNotional, req.Leverage)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 // WithCexAccount attaches the CEX account overview service.
 func (s *Server) WithCexAccount(service *cexaccount.Service) *Server {
 	s.cexAccount = service

@@ -476,6 +476,107 @@ func (s *Service) MarketBuyBTC(ctx context.Context, rawProvider string, btcAmoun
 	return result, nil
 }
 
+const defaultMaxHedgeBTC = 1.0
+
+func maxHedgeBTC() float64 {
+	raw := strings.TrimSpace(os.Getenv("MAX_HEDGE_BTC"))
+	if raw == "" {
+		return defaultMaxHedgeBTC
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || value <= 0 {
+		return defaultMaxHedgeBTC
+	}
+	return value
+}
+
+// HedgeOpenResult is the normalized result of opening a perpetual hedge position.
+type HedgeOpenResult struct {
+	Venue       string          `json:"venue"`
+	Instrument  string          `json:"instrument"`
+	Side        string          `json:"side"`
+	BTCNotional float64         `json:"btc_notional"`
+	OrderID     string          `json:"order_id"`
+	Status      string          `json:"status"`
+	SubmittedAt string          `json:"submitted_at"`
+	Raw         json.RawMessage `json:"raw,omitempty"`
+}
+
+var supportedHedgeVenues = map[string]bool{
+	"kraken_futures":   true,
+	"coinbase_futures": true,
+	"binance_futures":  true,
+}
+
+// OpenHedge opens a perpetual hedge position on the given futures venue.
+// venue must be one of "kraken_futures", "coinbase_futures", "binance_futures".
+// side must be "short" or "long". btcNotional is the BTC amount to hedge.
+func (s *Service) OpenHedge(ctx context.Context, venue, side string, btcNotional, leverage float64) (*HedgeOpenResult, error) {
+	venue = strings.ToLower(strings.TrimSpace(venue))
+	side = strings.ToLower(strings.TrimSpace(side))
+
+	if !supportedHedgeVenues[venue] {
+		return nil, fmt.Errorf("unsupported hedge venue %q; supported: kraken_futures, coinbase_futures, binance_futures", venue)
+	}
+	if side != "short" && side != "long" {
+		return nil, fmt.Errorf("side must be %q or %q, got %q", "short", "long", side)
+	}
+	if btcNotional <= 0 {
+		return nil, fmt.Errorf("btc_notional must be greater than zero")
+	}
+	if cap := maxHedgeBTC(); btcNotional > cap {
+		return nil, fmt.Errorf("btc_notional %.8f exceeds the configured per-order cap of %.8f BTC", btcNotional, cap)
+	}
+
+	result := &HedgeOpenResult{
+		Venue:       venue,
+		Side:        side,
+		BTCNotional: btcNotional,
+		SubmittedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	switch venue {
+	case "kraken_futures":
+		client := kraken.NewFuturesClient()
+		order, err := client.PlaceOrder(ctx, "PI_XBTUSD", side, btcNotional)
+		if err != nil {
+			return nil, err
+		}
+		result.Instrument = order.Instrument
+		result.OrderID = order.OrderID
+		result.Status = order.Status
+		result.Raw = order.Raw
+
+	case "coinbase_futures":
+		client := coinbase.NewFuturesClient()
+		order, err := client.PlaceOrder(ctx, "BTC-PERP", side, btcNotional)
+		if err != nil {
+			return nil, err
+		}
+		result.Instrument = order.Instrument
+		result.OrderID = order.OrderID
+		result.Status = order.Status
+		result.Raw = order.Raw
+
+	case "binance_futures":
+		client := binance.NewFuturesClient()
+		lev := int(leverage)
+		if lev <= 0 {
+			lev = 1
+		}
+		order, err := client.PlaceOrder(ctx, "BTCUSDT", side, btcNotional, lev)
+		if err != nil {
+			return nil, err
+		}
+		result.Instrument = order.Instrument
+		result.OrderID = order.OrderID
+		result.Status = order.Status
+		result.Raw = order.Raw
+	}
+
+	return result, nil
+}
+
 func (s *Service) firstActiveKey(ctx context.Context, rawProvider string) (string, db.APIKey, error) {
 	provider, err := accounthealth.CanonicalProvider(rawProvider)
 	if err != nil {
