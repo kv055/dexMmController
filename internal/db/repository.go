@@ -42,11 +42,18 @@ func (r *TransactionRepository) EnsureAccount(ctx context.Context, provider stri
 		return nil, errors.New("account provider is required")
 	}
 
+	// Guarded insert rather than ON CONFLICT (provider): the accounts table's unique
+	// key is (provider, category) since dexUnifiedApi migration 022, and the row's
+	// category is left NULL (the only allowed value for e.g. 'LND wallet'), so a
+	// provider-only ON CONFLICT has no matching constraint. INSERT ... WHERE NOT EXISTS
+	// stays idempotent without depending on a provider-only unique constraint.
 	if err := r.db.WithContext(ctx).Exec(`
 		INSERT INTO accounts (provider)
-		VALUES (?)
-		ON CONFLICT (provider) DO NOTHING
-	`, provider).Error; err != nil {
+		SELECT ?
+		WHERE NOT EXISTS (
+			SELECT 1 FROM accounts WHERE provider = ?
+		)
+	`, provider, provider).Error; err != nil {
 		return nil, fmt.Errorf("ensure account %s: %w", provider, err)
 	}
 
