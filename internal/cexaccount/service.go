@@ -1235,22 +1235,23 @@ func (s *Service) WhitelistedLNDWithdrawAddress(ctx context.Context, rawProvider
 	if err != nil {
 		return "", fmt.Errorf("fetching LND wallet addresses: %w", err)
 	}
-	walletSet := make(map[string]struct{}, len(walletProps))
-	for _, p := range walletProps {
-		walletSet[strings.ToLower(p.Address)] = struct{}{}
+	walletAddrs := make([]string, len(walletProps))
+	for i, p := range walletProps {
+		walletAddrs[i] = p.Address
 	}
 
 	addrs, err := s.WithdrawalAddresses(ctx, provider)
 	if err != nil {
 		return "", fmt.Errorf("fetching %s withdrawal whitelist: %w", provider, err)
 	}
+	cexAddrs := make([]string, 0, len(addrs))
 	for _, a := range addrs {
-		if !a.Whitelisted {
-			continue
+		if a.Whitelisted {
+			cexAddrs = append(cexAddrs, a.Address)
 		}
-		if _, ok := walletSet[strings.ToLower(a.Address)]; ok {
-			return a.Address, nil
-		}
+	}
+	if matched := pretradechecks.MatchWhitelistedLNDAddress(walletAddrs, cexAddrs); matched != "" {
+		return matched, nil
 	}
 	return "", fmt.Errorf(
 		"no whitelisted %s withdrawal address matches the current LND wallet; add an LND on-chain address to the %s withdrawal whitelist before trading",

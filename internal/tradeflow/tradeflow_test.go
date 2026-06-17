@@ -18,15 +18,12 @@ type fakeService struct {
 	spotErr        error
 	hedgeResult    *cexaccount.HedgeOpenResult
 	hedgeErr       error
-	lndAddress     string
-	lndAddrErr     error
 	withdrawResult *lnd.WithdrawFromExchangeResult
 	withdrawErr    error
 
 	preTradeCallCount int
 	spotCallCount     int
 	hedgeCallCount    int
-	lndAddrCallCount  int
 	withdrawCallCount int
 }
 
@@ -43,11 +40,6 @@ func (f *fakeService) MarketBuyBTC(_ context.Context, _ string, _ float64, _ str
 func (f *fakeService) OpenHedge(_ context.Context, _, _ string, _, _ float64) (*cexaccount.HedgeOpenResult, error) {
 	f.hedgeCallCount++
 	return f.hedgeResult, f.hedgeErr
-}
-
-func (f *fakeService) WhitelistedLNDWithdrawAddress(_ context.Context, _ string) (string, error) {
-	f.lndAddrCallCount++
-	return f.lndAddress, f.lndAddrErr
 }
 
 func (f *fakeService) WithdrawSpotToLND(_ context.Context, _ string, _ float64, _ string) (*lnd.WithdrawFromExchangeResult, error) {
@@ -71,7 +63,10 @@ func validOrder() Order {
 
 func happyFake() *fakeService {
 	return &fakeService{
-		preTradeReport: &pretradechecks.Report{OK: true},
+		preTradeReport: &pretradechecks.Report{
+			OK:                 true,
+			LNDWithdrawAddress: "bc1qtest",
+		},
 		spotResult: &cexaccount.SpotOrderResult{
 			OrderID: "spot-123",
 			Status:  "filled",
@@ -85,7 +80,6 @@ func happyFake() *fakeService {
 			OrderID: "hedge-456",
 			Status:  "filled",
 		},
-		lndAddress: "bc1qtest",
 		withdrawResult: &lnd.WithdrawFromExchangeResult{
 			WithdrawalID:  "wd-789",
 			WalletAddress: "bc1qtest",
@@ -200,6 +194,33 @@ func TestRun_HedgeFails_SkipsWithdraw(t *testing.T) {
 	}
 }
 
+func TestRun_WithdrawUsesPreTradeAddress(t *testing.T) {
+	svc := happyFake()
+	var capturedAddr string
+	captureService := &captureWithdrawService{fakeService: svc, capturedAddr: &capturedAddr}
+
+	_, err := New(captureService).Run(context.Background(), validOrder())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedAddr != "bc1qtest" {
+		t.Errorf("withdraw address: want bc1qtest (from pre-trade report), got %q", capturedAddr)
+	}
+}
+
+func TestRun_PreTradeOKWithoutAddress_SkipsWithdraw(t *testing.T) {
+	svc := happyFake()
+	svc.preTradeReport = &pretradechecks.Report{OK: true}
+
+	_, err := New(svc).Run(context.Background(), validOrder())
+	if err == nil {
+		t.Fatal("expected error when pre-trade OK but LNDWithdrawAddress is empty")
+	}
+	if svc.spotCallCount != 0 {
+		t.Errorf("spot buy must not run without withdrawal address, called %d times", svc.spotCallCount)
+	}
+}
+
 func TestRun_WithdrawUsesFilledBTC(t *testing.T) {
 	svc := happyFake()
 	svc.spotResult.Execution.FilledBTC = 0.00987 // different from BTCAmount
@@ -223,14 +244,20 @@ func TestRun_WithdrawUsesFilledBTC(t *testing.T) {
 	}
 }
 
-// captureWithdrawService wraps fakeService and captures the amountBTC passed to WithdrawSpotToLND.
+// captureWithdrawService wraps fakeService and captures withdraw call arguments.
 type captureWithdrawService struct {
 	*fakeService
 	capturedAmount *float64
+	capturedAddr   *string
 }
 
-func (c *captureWithdrawService) WithdrawSpotToLND(_ context.Context, _ string, amountBTC float64, _ string) (*lnd.WithdrawFromExchangeResult, error) {
-	*c.capturedAmount = amountBTC
+func (c *captureWithdrawService) WithdrawSpotToLND(_ context.Context, _ string, amountBTC float64, lndAddr string) (*lnd.WithdrawFromExchangeResult, error) {
+	if c.capturedAmount != nil {
+		*c.capturedAmount = amountBTC
+	}
+	if c.capturedAddr != nil {
+		*c.capturedAddr = lndAddr
+	}
 	return c.fakeService.withdrawResult, c.fakeService.withdrawErr
 }
 

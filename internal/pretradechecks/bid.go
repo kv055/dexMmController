@@ -55,6 +55,9 @@ type CheckResult struct {
 type Report struct {
 	OK     bool          `json:"ok"`
 	Checks []CheckResult `json:"checks"`
+	// LNDWithdrawAddress is the LND on-chain address whitelisted on the CEX for
+	// post-trade withdrawal. Set when the withdrawal-whitelist check passes.
+	LNDWithdrawAddress string `json:"lnd_withdraw_address,omitempty"`
 }
 
 // Run executes every pre-trade check to completion — it never short-circuits on the
@@ -68,10 +71,9 @@ func (c *BidChecker) Run(ctx context.Context, provider, currency string, require
 	}{
 		{"permissions", "API key permissions", func() error { return c.checkPermissions(ctx, provider) }},
 		{"capital", "Sufficient capital", func() error { return c.checkCapital(ctx, provider, currency, requiredCapital) }},
-		{"whitelist", "Withdrawal whitelist", func() error { return c.checkWhitelist(ctx, provider) }},
 	}
 
-	report := Report{OK: true, Checks: make([]CheckResult, 0, len(checks))}
+	report := Report{OK: true, Checks: make([]CheckResult, 0, len(checks)+1)}
 	for _, chk := range checks {
 		res := CheckResult{Name: chk.name, Label: chk.label, Passed: true}
 		if err := chk.run(); err != nil {
@@ -81,6 +83,18 @@ func (c *BidChecker) Run(ctx context.Context, provider, currency string, require
 		}
 		report.Checks = append(report.Checks, res)
 	}
+
+	whitelistRes := CheckResult{Name: "whitelist", Label: "Withdrawal whitelist", Passed: true}
+	lndAddr, err := c.checkWhitelist(ctx, provider)
+	if err != nil {
+		whitelistRes.Passed = false
+		whitelistRes.Message = err.Error()
+		report.OK = false
+	} else {
+		report.LNDWithdrawAddress = lndAddr
+	}
+	report.Checks = append(report.Checks, whitelistRes)
+
 	return report
 }
 
@@ -153,35 +167,29 @@ func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string
 
 // checkWhitelist verifies the provider's whitelisted withdrawal addresses contain at
 // least one address from the current LND wallet, ensuring funds can be returned after
-// the trade.
-func (c *BidChecker) checkWhitelist(ctx context.Context, provider string) error {
+// the trade. It returns the matched LND wallet address when one exists.
+func (c *BidChecker) checkWhitelist(ctx context.Context, provider string) (string, error) {
 	c.walletMu.RLock()
 	wallet := c.wallet
 	c.walletMu.RUnlock()
 	if wallet == nil {
-		return fmt.Errorf("LND wallet not available; cannot verify that %s whitelist contains an LND wallet address", provider)
+		return "", fmt.Errorf("LND wallet not available; cannot verify that %s whitelist contains an LND wallet address", provider)
 	}
 
 	cexAddresses, err := c.whitelist.WhitelistedBTCAddresses(ctx, provider)
 	if err != nil {
-		return fmt.Errorf("fetching %s whitelist for pre-trade check: %w", provider, err)
-	}
-	cexSet := make(map[string]struct{}, len(cexAddresses))
-	for _, addr := range cexAddresses {
-		cexSet[strings.ToLower(addr)] = struct{}{}
+		return "", fmt.Errorf("fetching %s whitelist for pre-trade check: %w", provider, err)
 	}
 
 	walletAddresses, err := wallet.OnChainAddresses(ctx)
 	if err != nil {
-		return fmt.Errorf("fetching LND wallet addresses for pre-trade check: %w", err)
+		return "", fmt.Errorf("fetching LND wallet addresses for pre-trade check: %w", err)
 	}
-	for _, addr := range walletAddresses {
-		if _, ok := cexSet[strings.ToLower(addr)]; ok {
-			return nil
-		}
+	if addr := MatchWhitelistedLNDAddress(walletAddresses, cexAddresses); addr != "" {
+		return addr, nil
 	}
 
-	return fmt.Errorf(
+	return "", fmt.Errorf(
 		"pre-trade check failed: %s whitelist contains no address from the current LND wallet; add an LND on-chain address to the %s withdrawal whitelist before trading",
 		provider, provider,
 	)

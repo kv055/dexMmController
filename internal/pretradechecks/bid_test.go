@@ -48,6 +48,9 @@ func TestRunAllChecksPass(t *testing.T) {
 			t.Errorf("check %q unexpectedly failed: %s", chk.Name, chk.Message)
 		}
 	}
+	if report.LNDWithdrawAddress != "bc1qwalletaddr" {
+		t.Errorf("LNDWithdrawAddress: want bc1qwalletaddr, got %q", report.LNDWithdrawAddress)
+	}
 }
 
 // TestRunRunsToCompletion is the key behavioural guarantee: even when the FIRST check
@@ -108,6 +111,9 @@ func TestRunPartialFailureReportsBoth(t *testing.T) {
 	}
 	if passed["whitelist"] {
 		t.Error("expected whitelist to fail")
+	}
+	if report.LNDWithdrawAddress != "" {
+		t.Errorf("LNDWithdrawAddress should be empty when whitelist fails, got %q", report.LNDWithdrawAddress)
 	}
 }
 

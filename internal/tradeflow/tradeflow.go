@@ -70,7 +70,6 @@ type Service interface {
 	PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64) (*pretradechecks.Report, error)
 	MarketBuyBTC(ctx context.Context, rawProvider string, btcAmount float64, fiatCurrency string, requiredCapitalEUR float64) (*cexaccount.SpotOrderResult, error)
 	OpenHedge(ctx context.Context, venue, side string, btcNotional, leverage float64) (*cexaccount.HedgeOpenResult, error)
-	WhitelistedLNDWithdrawAddress(ctx context.Context, rawProvider string) (string, error)
 	WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress string) (*lnd.WithdrawFromExchangeResult, error)
 }
 
@@ -114,7 +113,14 @@ func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 		}
 		return nil, fmt.Errorf("tradeflow: pre-trade checks failed: %s", strings.Join(failed, "; "))
 	}
-	slog.Info("tradeflow: pre-trade checks passed", "provider", order.Provider)
+	lndAddr := strings.TrimSpace(report.LNDWithdrawAddress)
+	if lndAddr == "" {
+		return nil, fmt.Errorf("tradeflow: pre-trade checks passed but no LND withdrawal address was resolved")
+	}
+	slog.Info("tradeflow: pre-trade checks passed",
+		"provider", order.Provider,
+		"lnd_withdraw_address", lndAddr,
+	)
 
 	// Step 2: spot market buy.
 	spot, err := tf.svc.MarketBuyBTC(ctx, order.Provider, order.BTCAmount, order.FiatCurrency, order.RequiredCapitalEUR)
@@ -144,11 +150,7 @@ func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 		"status", hedge.Status,
 	)
 
-	// Step 4: find the whitelisted LND address and withdraw the net filled BTC.
-	lndAddr, err := tf.svc.WhitelistedLNDWithdrawAddress(ctx, order.Provider)
-	if err != nil {
-		return nil, fmt.Errorf("tradeflow: cannot determine withdrawal address: %w", err)
-	}
+	// Step 4: withdraw the net filled BTC to the LND address resolved during pre-trade checks.
 	wd, err := tf.svc.WithdrawSpotToLND(ctx, order.Provider, filledBTC, lndAddr)
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: withdrawal failed (spot order_id=%s): %w", spot.OrderID, err)
