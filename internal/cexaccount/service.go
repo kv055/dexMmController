@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ import (
 	"dexMmController/internal/exchanges/cex/coinbaseexchange"
 	"dexMmController/internal/exchanges/cex/kraken"
 	"dexMmController/internal/hummingbot"
+	"dexMmController/internal/pretradechecks"
+	lnd "dexMmController/internal/wallethub"
 )
 
 // Repository loads account credentials for CEX operations.
@@ -28,9 +31,23 @@ type Repository interface {
 
 // Service fetches live CEX account data for the trading UI.
 type Service struct {
-	repo Repository
-	hb   *hummingbot.Client
-	cfg  accounthealth.Config
+	repo       Repository
+	hb         *hummingbot.Client
+	cfg        accounthealth.Config
+	bidChecker *pretradechecks.BidChecker
+	lnd        *lnd.Client
+}
+
+// WithBidChecker attaches the pre-trade checker used by MarketBuyBTC.
+func (s *Service) WithBidChecker(c *pretradechecks.BidChecker) *Service {
+	s.bidChecker = c
+	return s
+}
+
+// WithLND attaches the LND wallet client used by the withdrawal methods.
+func (s *Service) WithLND(c *lnd.Client) *Service {
+	s.lnd = c
+	return s
 }
 
 // NewService creates a CEX account service.
@@ -95,14 +112,44 @@ type HedgePositionsResponse struct {
 
 // SpotOrderResult is the normalized result of a market-buy order placed on a CEX.
 type SpotOrderResult struct {
-	Provider     string          `json:"provider"`
-	Pair         string          `json:"pair"`
-	Side         string          `json:"side"`
-	RequestedBTC float64         `json:"requested_btc"`
-	OrderID      string          `json:"order_id"`
-	Status       string          `json:"status"`
-	SubmittedAt  string          `json:"submitted_at"`
-	Raw          json.RawMessage `json:"raw,omitempty"`
+	Provider     string           `json:"provider"`
+	Pair         string           `json:"pair"`
+	Side         string           `json:"side"`
+	RequestedBTC float64          `json:"requested_btc"`
+	OrderID      string           `json:"order_id"`
+	Status       string           `json:"status"`
+	SubmittedAt  string           `json:"submitted_at"`
+	Execution    *ExecutionDetail `json:"execution,omitempty"`
+	Raw          json.RawMessage  `json:"raw,omitempty"`
+}
+
+// FeeLine is one normalized fee line item, aggregated by asset.
+type FeeLine struct {
+	Asset  string  `json:"asset"`  // e.g. "EUR", "USD", "BNB"
+	Amount float64 `json:"amount"` // always in Asset units
+}
+
+// ExecutionDetail is the normalized fill/cost/fee summary for a market-buy order,
+// translated from each exchange's native response. AverageRate and FilledFiat are
+// always expressed in the trade's quote currency (fiatCurrency). Fees are reported
+// separately rather than netted into FilledFiat, since the fee asset can diverge
+// from the quote currency (e.g. Binance's BNB fee-discount program).
+type ExecutionDetail struct {
+	// FilledBTC is the executed base-asset (BTC) quantity.
+	FilledBTC float64 `json:"filled_btc"`
+	// AverageRate is the volume-weighted average fill price, quote currency per BTC.
+	AverageRate float64 `json:"average_rate"`
+	// FilledFiat is the total quote-currency cost of the fill (pre-fee).
+	FilledFiat float64 `json:"filled_fiat"`
+	// Fees lists fee line items, summed by asset. Empty if the exchange reported no fee.
+	Fees []FeeLine `json:"fees,omitempty"`
+	// OrderStatus is the exchange's order status, normalized to one of: "filled",
+	// "partially_filled", "open", "canceled", "expired", "unknown".
+	OrderStatus string `json:"order_status"`
+	// PollIncomplete is true when the bounded wait for a terminal order status was
+	// exhausted (or the status lookup itself failed) before fill data could be
+	// confirmed. The fields above are then best-effort/last-seen, not authoritative.
+	PollIncomplete bool `json:"poll_incomplete,omitempty"`
 }
 
 // SpotTrade is a spot market fill from the exchange connector.
@@ -400,12 +447,18 @@ func maxMarketBuyBTC() float64 {
 	return value
 }
 
-// marketBuyPair builds the exchange-native trading pair for buying BTC with fiatCurrency.
-func marketBuyPair(provider, fiatCurrency string) string {
+// normalizeFiat upper-cases fiatCurrency and defaults it to "EUR" when blank.
+func normalizeFiat(fiatCurrency string) string {
 	fiat := strings.ToUpper(strings.TrimSpace(fiatCurrency))
 	if fiat == "" {
 		fiat = "EUR"
 	}
+	return fiat
+}
+
+// marketBuyPair builds the exchange-native trading pair for buying BTC with fiatCurrency.
+func marketBuyPair(provider, fiatCurrency string) string {
+	fiat := normalizeFiat(fiatCurrency)
 	switch strings.ToLower(provider) {
 	case "kraken":
 		return "XBT" + fiat
@@ -416,14 +469,43 @@ func marketBuyPair(provider, fiatCurrency string) string {
 	}
 }
 
+// PreTradeCheck runs all bid-side pre-trade checks to completion (without placing any
+// order) and returns the per-check report so the UI can show exactly which checks pass
+// or fail before the operator confirms the trade. It performs only read-only lookups.
+func (s *Service) PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64) (*pretradechecks.Report, error) {
+	if s.bidChecker == nil {
+		return nil, fmt.Errorf("bid pre-trade checker not configured")
+	}
+	if requiredCapitalEUR <= 0 {
+		return nil, fmt.Errorf("required_capital_eur must be greater than zero")
+	}
+	report := s.bidChecker.Run(ctx, rawProvider, fiatCurrency, requiredCapitalEUR)
+	return &report, nil
+}
+
 // MarketBuyBTC places a market buy order for btcAmount of BTC on the given CEX provider,
 // pairing BTC against fiatCurrency. It is the trade-tracing "Start trade" action.
-func (s *Service) MarketBuyBTC(ctx context.Context, rawProvider string, btcAmount float64, fiatCurrency string) (*SpotOrderResult, error) {
+//
+// requiredCapitalEUR is the total capital the trade needs to complete BOTH legs (the
+// spot notional plus the recommended hedge collateral and security deposit, as computed
+// by dexUnifiedApi's CapitalRequirement for the offer). Before placing the order, the
+// account's available fiat balance is checked against this figure so a trade is never
+// started if it can't also fund the hedge that follows.
+func (s *Service) MarketBuyBTC(ctx context.Context, rawProvider string, btcAmount float64, fiatCurrency string, requiredCapitalEUR float64) (*SpotOrderResult, error) {
 	if btcAmount <= 0 {
 		return nil, fmt.Errorf("btc_amount must be greater than zero")
 	}
 	if cap := maxMarketBuyBTC(); btcAmount > cap {
 		return nil, fmt.Errorf("btc_amount %.8f exceeds the configured per-order cap of %.8f BTC", btcAmount, cap)
+	}
+	if requiredCapitalEUR <= 0 {
+		return nil, fmt.Errorf("required_capital_eur must be greater than zero")
+	}
+	if s.bidChecker == nil {
+		return nil, fmt.Errorf("bid pre-trade checker not configured")
+	}
+	if err := s.bidChecker.RunAll(ctx, rawProvider, fiatCurrency, requiredCapitalEUR); err != nil {
+		return nil, err
 	}
 
 	provider, key, err := s.firstActiveKey(ctx, rawProvider)
@@ -439,6 +521,8 @@ func (s *Service) MarketBuyBTC(ctx context.Context, rawProvider string, btcAmoun
 		SubmittedAt:  time.Now().UTC().Format(time.RFC3339),
 	}
 
+	quoteAsset := normalizeFiat(fiatCurrency)
+
 	switch strings.ToLower(provider) {
 	case "kraken":
 		client := kraken.NewClient(s.cfg.KrakenBaseURL, key.APIKey, key.APISecret)
@@ -451,6 +535,10 @@ func (s *Service) MarketBuyBTC(ctx context.Context, rawProvider string, btcAmoun
 		}
 		result.Status = "submitted"
 		result.Raw, _ = json.Marshal(order)
+		if result.OrderID != "" {
+			exec := s.krakenExecution(ctx, client, result.OrderID, quoteAsset)
+			result.Execution = &exec
+		}
 	case "binance":
 		client := binance.NewClient(s.cfg.BinanceBaseURL, key.APIKey, key.APISecret)
 		order, err := client.MarketBuy(ctx, pair, btcAmount)
@@ -460,6 +548,11 @@ func (s *Service) MarketBuyBTC(ctx context.Context, rawProvider string, btcAmoun
 		result.OrderID = strconv.FormatInt(order.OrderID, 10)
 		result.Status = strings.ToLower(order.Status)
 		result.Raw, _ = json.Marshal(order)
+		exec, execErr := executionFromBinance(*order)
+		if execErr != nil {
+			exec = ExecutionDetail{OrderStatus: "unknown", PollIncomplete: true}
+		}
+		result.Execution = &exec
 	case "coinbase":
 		client := coinbase.NewClient(s.cfg.CoinbaseBaseURL, key.APIKey, key.APISecret)
 		order, err := client.MarketBuy(ctx, pair, btcAmount)
@@ -469,11 +562,306 @@ func (s *Service) MarketBuyBTC(ctx context.Context, rawProvider string, btcAmoun
 		result.OrderID = order.SuccessResponse.OrderID
 		result.Status = "submitted"
 		result.Raw, _ = json.Marshal(order)
+		if result.OrderID != "" {
+			exec := s.coinbaseExecution(ctx, client, result.OrderID, quoteAsset)
+			result.Execution = &exec
+		}
 	default:
 		return nil, fmt.Errorf("market buy is not supported for %s yet", provider)
 	}
 
 	return result, nil
+}
+
+// marketBuyPollMaxAttempts and marketBuyPollDelay bound how long MarketBuyBTC waits
+// for Kraken/Coinbase to report a terminal order status before giving up and
+// returning best-effort (PollIncomplete) execution detail. The order itself has
+// already been placed by this point, so exhausting the budget never fails the
+// overall request.
+const (
+	marketBuyPollMaxAttempts = 5
+	marketBuyPollDelay       = 400 * time.Millisecond
+)
+
+// pollUntilTerminal calls fetch repeatedly (up to maxAttempts times, sleeping delay
+// between attempts and honoring ctx cancellation) until fetch reports a terminal
+// result or the attempt budget is exhausted. exhausted is true when every attempt
+// returned terminal=false without error; err carries the error from the final
+// attempt, if any.
+func pollUntilTerminal(ctx context.Context, maxAttempts int, delay time.Duration, fetch func(ctx context.Context) (terminal bool, err error)) (exhausted bool, err error) {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		terminal, fetchErr := fetch(ctx)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			err = nil
+			if terminal {
+				return false, nil
+			}
+		}
+		if attempt == maxAttempts-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return true, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return true, err
+}
+
+// krakenExecution polls Kraken's QueryOrders for txID until the order reaches a
+// terminal status (or the poll budget is exhausted), then translates whatever was
+// last seen into the common ExecutionDetail schema.
+func (s *Service) krakenExecution(ctx context.Context, client *kraken.Client, txID, quoteAsset string) ExecutionDetail {
+	var last kraken.OrderInfo
+	exhausted, err := pollUntilTerminal(ctx, marketBuyPollMaxAttempts, marketBuyPollDelay, func(ctx context.Context) (bool, error) {
+		orders, err := client.QueryOrders(ctx, txID)
+		if err != nil {
+			return false, err
+		}
+		info, ok := orders[txID]
+		if !ok {
+			return false, fmt.Errorf("kraken: order %s not found in QueryOrders response", txID)
+		}
+		last = info
+		switch strings.ToLower(strings.TrimSpace(info.Status)) {
+		case "closed", "canceled", "expired":
+			return true, nil
+		default:
+			return false, nil
+		}
+	})
+	exec, translateErr := executionFromKraken(last, quoteAsset)
+	if translateErr != nil {
+		exec = ExecutionDetail{OrderStatus: "unknown"}
+	}
+	if exhausted || err != nil {
+		exec.PollIncomplete = true
+	}
+	return exec
+}
+
+// coinbaseExecution polls Coinbase's GetOrder for orderID until the order reaches a
+// terminal status (or the poll budget is exhausted), then translates whatever was
+// last seen into the common ExecutionDetail schema.
+func (s *Service) coinbaseExecution(ctx context.Context, client *coinbase.Client, orderID, quoteAsset string) ExecutionDetail {
+	var last coinbase.Order
+	exhausted, err := pollUntilTerminal(ctx, marketBuyPollMaxAttempts, marketBuyPollDelay, func(ctx context.Context) (bool, error) {
+		order, err := client.GetOrder(ctx, orderID)
+		if err != nil {
+			return false, err
+		}
+		last = *order
+		switch strings.ToUpper(strings.TrimSpace(order.Status)) {
+		case "FILLED", "CANCELLED", "EXPIRED", "FAILED":
+			return true, nil
+		default:
+			return false, nil
+		}
+	})
+	exec, translateErr := executionFromCoinbase(last, quoteAsset)
+	if translateErr != nil {
+		exec = ExecutionDetail{OrderStatus: "unknown"}
+	}
+	if exhausted || err != nil {
+		exec.PollIncomplete = true
+	}
+	return exec
+}
+
+// normalizeOrderStatus maps an exchange-specific order status string to one of the
+// common ExecutionDetail.OrderStatus values: "filled", "partially_filled", "open",
+// "canceled", "expired", or "unknown" for anything not recognized.
+func normalizeOrderStatus(raw string) string {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "CLOSED", "FILLED":
+		return "filled"
+	case "PARTIALLY_FILLED":
+		return "partially_filled"
+	case "OPEN", "PENDING", "NEW":
+		return "open"
+	case "CANCELED", "CANCELLED":
+		return "canceled"
+	case "EXPIRED":
+		return "expired"
+	default:
+		return "unknown"
+	}
+}
+
+// executionFromKraken translates a Kraken QueryOrders result for a single order into
+// the common ExecutionDetail schema. quoteAsset labels the fee line, since Kraken's
+// fee field is always in the pair's quote currency but doesn't carry an asset code.
+func executionFromKraken(order kraken.OrderInfo, quoteAsset string) (ExecutionDetail, error) {
+	volExec, err := parseKrakenFloat(order.VolExec)
+	if err != nil {
+		return ExecutionDetail{}, err
+	}
+	cost, err := parseKrakenFloat(order.Cost)
+	if err != nil {
+		return ExecutionDetail{}, err
+	}
+	price, err := parseKrakenFloat(order.Price)
+	if err != nil {
+		return ExecutionDetail{}, err
+	}
+	fee, err := parseKrakenFloat(order.Fee)
+	if err != nil {
+		return ExecutionDetail{}, err
+	}
+
+	status := normalizeOrderStatus(order.Status)
+	if status == "filled" && volExec == 0 {
+		// "closed" with nothing executed (e.g. rejected-then-closed) isn't a real fill.
+		status = "unknown"
+	}
+
+	exec := ExecutionDetail{
+		FilledBTC:   volExec,
+		AverageRate: price,
+		FilledFiat:  cost,
+		OrderStatus: status,
+	}
+	if fee > 0 {
+		exec.Fees = []FeeLine{{Asset: quoteAsset, Amount: fee}}
+	}
+	return exec, nil
+}
+
+// parseKrakenFloat parses one of Kraken's decimal-string numeric fields, treating an
+// empty string as zero (e.g. for an order that hasn't accrued cost/fee yet).
+func parseKrakenFloat(raw string) (float64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	return strconv.ParseFloat(raw, 64)
+}
+
+// executionFromBinance translates a Binance OrderResponse (with its Fills slice) into
+// the common ExecutionDetail schema. Rate/filled amounts and fees are derived from the
+// same Fills array so they stay internally consistent; if Fills is empty (only possible
+// if Binance ever changes its default response type for market orders), it falls back
+// to the top-level ExecutedQty/CummulativeQuoteQty fields with no fee data.
+func executionFromBinance(order binance.OrderResponse) (ExecutionDetail, error) {
+	status := normalizeOrderStatus(order.Status)
+
+	if len(order.Fills) == 0 {
+		filledBTC, err := strconv.ParseFloat(strings.TrimSpace(order.ExecutedQty), 64)
+		if err != nil {
+			return ExecutionDetail{}, err
+		}
+		filledFiat, err := strconv.ParseFloat(strings.TrimSpace(order.CummulativeQuoteQty), 64)
+		if err != nil {
+			return ExecutionDetail{}, err
+		}
+		var avgRate float64
+		if filledBTC > 0 {
+			avgRate = filledFiat / filledBTC
+		}
+		return ExecutionDetail{
+			FilledBTC:   filledBTC,
+			AverageRate: avgRate,
+			FilledFiat:  filledFiat,
+			OrderStatus: status,
+		}, nil
+	}
+
+	var filledBTC, filledFiat float64
+	feesByAsset := map[string]float64{}
+	for _, fill := range order.Fills {
+		price, err := strconv.ParseFloat(strings.TrimSpace(fill.Price), 64)
+		if err != nil {
+			return ExecutionDetail{}, err
+		}
+		qty, err := strconv.ParseFloat(strings.TrimSpace(fill.Qty), 64)
+		if err != nil {
+			return ExecutionDetail{}, err
+		}
+		commission, err := strconv.ParseFloat(strings.TrimSpace(fill.Commission), 64)
+		if err != nil {
+			return ExecutionDetail{}, err
+		}
+		filledBTC += qty
+		filledFiat += price * qty
+		if commission != 0 {
+			asset := strings.ToUpper(strings.TrimSpace(fill.CommissionAsset))
+			feesByAsset[asset] += commission
+		}
+	}
+
+	var avgRate float64
+	if filledBTC > 0 {
+		avgRate = filledFiat / filledBTC
+	}
+	return ExecutionDetail{
+		FilledBTC:   filledBTC,
+		AverageRate: avgRate,
+		FilledFiat:  filledFiat,
+		Fees:        feeLinesFromMap(feesByAsset),
+		OrderStatus: status,
+	}, nil
+}
+
+// executionFromCoinbase translates a Coinbase GetOrder result into the common
+// ExecutionDetail schema. quoteAsset labels the fee line, since Coinbase's total_fees
+// is unlabeled (always the quote currency for a market_market_ioc spot buy). FilledFiat
+// is recomputed from rate*size rather than read from the version-dependent filled_value
+// field.
+func executionFromCoinbase(order coinbase.Order, quoteAsset string) (ExecutionDetail, error) {
+	avgRate, err := parseCoinbaseFloat(order.AverageFilledPrice)
+	if err != nil {
+		return ExecutionDetail{}, err
+	}
+	filledBTC, err := parseCoinbaseFloat(order.FilledSize)
+	if err != nil {
+		return ExecutionDetail{}, err
+	}
+	fee, err := parseCoinbaseFloat(order.TotalFees)
+	if err != nil {
+		return ExecutionDetail{}, err
+	}
+
+	exec := ExecutionDetail{
+		FilledBTC:   filledBTC,
+		AverageRate: avgRate,
+		FilledFiat:  avgRate * filledBTC,
+		OrderStatus: normalizeOrderStatus(order.Status),
+	}
+	if fee > 0 {
+		exec.Fees = []FeeLine{{Asset: quoteAsset, Amount: fee}}
+	}
+	return exec, nil
+}
+
+// parseCoinbaseFloat parses one of Coinbase's decimal-string numeric fields, treating
+// an empty string as zero.
+func parseCoinbaseFloat(raw string) (float64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	return strconv.ParseFloat(raw, 64)
+}
+
+// feeLinesFromMap turns an asset->amount fee total map into a sorted []FeeLine, for
+// deterministic output (test and UI rendering both benefit from stable ordering).
+func feeLinesFromMap(feesByAsset map[string]float64) []FeeLine {
+	if len(feesByAsset) == 0 {
+		return nil
+	}
+	assets := make([]string, 0, len(feesByAsset))
+	for asset := range feesByAsset {
+		assets = append(assets, asset)
+	}
+	sort.Strings(assets)
+	lines := make([]FeeLine, 0, len(assets))
+	for _, asset := range assets {
+		lines = append(lines, FeeLine{Asset: asset, Amount: feesByAsset[asset]})
+	}
+	return lines
 }
 
 const defaultMaxHedgeBTC = 1.0
@@ -827,6 +1215,85 @@ func isBitcoinAsset(asset string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// WhitelistedLNDWithdrawAddress returns the first on-chain address that appears in
+// both the LND wallet and the CEX's whitelisted withdrawal addresses. This is the
+// address that must be used for the CEX withdrawal — a freshly generated address
+// would be unknown to the CEX whitelist and the withdrawal would be rejected.
+func (s *Service) WhitelistedLNDWithdrawAddress(ctx context.Context, rawProvider string) (string, error) {
+	if s.lnd == nil {
+		return "", fmt.Errorf("LND wallet not available; cannot determine whitelisted withdrawal address")
+	}
+	provider, err := accounthealth.CanonicalProvider(rawProvider)
+	if err != nil {
+		return "", err
+	}
+
+	walletProps, err := s.lnd.ListWalletAddresses(ctx)
+	if err != nil {
+		return "", fmt.Errorf("fetching LND wallet addresses: %w", err)
+	}
+	walletSet := make(map[string]struct{}, len(walletProps))
+	for _, p := range walletProps {
+		walletSet[strings.ToLower(p.Address)] = struct{}{}
+	}
+
+	addrs, err := s.WithdrawalAddresses(ctx, provider)
+	if err != nil {
+		return "", fmt.Errorf("fetching %s withdrawal whitelist: %w", provider, err)
+	}
+	for _, a := range addrs {
+		if !a.Whitelisted {
+			continue
+		}
+		if _, ok := walletSet[strings.ToLower(a.Address)]; ok {
+			return a.Address, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"no whitelisted %s withdrawal address matches the current LND wallet; add an LND on-chain address to the %s withdrawal whitelist before trading",
+		provider, provider,
+	)
+}
+
+// WithdrawSpotToLND initiates an on-chain BTC withdrawal from the CEX to the given
+// LND wallet address. lndAddress must already be on the CEX's withdrawal whitelist —
+// use WhitelistedLNDWithdrawAddress to obtain it. amountBTC is the net BTC to
+// withdraw (typically SpotOrderResult.Execution.FilledBTC). Binance only for now.
+func (s *Service) WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress string) (*lnd.WithdrawFromExchangeResult, error) {
+	if amountBTC <= 0 {
+		return nil, fmt.Errorf("withdraw amount must be greater than zero")
+	}
+	if strings.TrimSpace(lndAddress) == "" {
+		return nil, fmt.Errorf("lnd address is required")
+	}
+	if s.lnd == nil {
+		return nil, fmt.Errorf("LND wallet not available")
+	}
+
+	provider, key, err := s.firstActiveKey(ctx, rawProvider)
+	if err != nil {
+		return nil, err
+	}
+
+	amount := strconv.FormatFloat(amountBTC, 'f', 8, 64)
+	clientRequestID := fmt.Sprintf("tradeflow-%s-%d", provider, time.Now().UnixMilli())
+
+	switch strings.ToLower(provider) {
+	case "binance":
+		client := binance.NewClient(s.cfg.BinanceBaseURL, key.APIKey, key.APISecret)
+		bridge := lnd.NewWalletExchangeBridge(s.lnd, lnd.NewBinanceBridge(client))
+		return bridge.WithdrawFromExchangeToLND(ctx, lnd.WithdrawFromExchangeRequest{
+			Coin:            "BTC",
+			Network:         "BTC",
+			Amount:          amount,
+			LNDDestination:  lndAddress,
+			ClientRequestID: clientRequestID,
+		})
+	default:
+		return nil, fmt.Errorf("CEX→LND withdrawal not yet supported for %s", provider)
 	}
 }
 

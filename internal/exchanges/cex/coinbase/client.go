@@ -252,6 +252,33 @@ func (c *Client) MarketBuy(ctx context.Context, productID string, baseSizeBTC fl
 	return &resp, nil
 }
 
+// Order is a Coinbase Advanced Trade order resource, as returned by GetOrder.
+type Order struct {
+	// OrderID is the exchange-assigned order id.
+	OrderID string `json:"order_id"`
+	// Status is the order status: "OPEN", "FILLED", "CANCELLED", "EXPIRED", "FAILED".
+	Status string `json:"status"`
+	// AverageFilledPrice is the volume-weighted average fill price, as a decimal string.
+	AverageFilledPrice string `json:"average_filled_price"`
+	// FilledSize is the filled base-asset (BTC) quantity, as a decimal string.
+	FilledSize string `json:"filled_size"`
+	// TotalFees is the total fee charged, in quote currency, as a decimal string.
+	TotalFees string `json:"total_fees"`
+	// NumberOfFills is the number of fills that made up the order, as a decimal string.
+	NumberOfFills string `json:"number_of_fills"`
+}
+
+// GetOrder retrieves the current status and fill details for a single order.
+func (c *Client) GetOrder(ctx context.Context, orderID string) (*Order, error) {
+	var resp struct {
+		Order Order `json:"order"`
+	}
+	if err := c.getJSON(ctx, http.MethodGet, "/api/v3/brokerage/orders/historical/"+url.PathEscape(orderID), nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp.Order, nil
+}
+
 func (c *Client) getJSON(ctx context.Context, method, path string, body io.Reader, dest any) error {
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {

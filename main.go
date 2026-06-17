@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -19,14 +20,21 @@ import (
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
+	"dexMmController/internal/exchanges/cex"
+	"dexMmController/internal/exchanges/cex/binance"
+	"dexMmController/internal/exchanges/cex/coinbase"
+	"dexMmController/internal/exchanges/cex/kraken"
 	"dexMmController/internal/exchanges/dex/bisq"
 	"dexMmController/internal/exchanges/dex/hodlhodl"
 	"dexMmController/internal/exchanges/dex/robosats"
 	"dexMmController/internal/healthcheck"
+	"dexMmController/internal/hedgestream"
 	"dexMmController/internal/hummingbot"
 	"dexMmController/internal/lndhealth"
 	"dexMmController/internal/openclaw"
 	"dexMmController/internal/premiumoffers"
+	"dexMmController/internal/pretradechecks"
+	"dexMmController/internal/tradeflow"
 	lnd "dexMmController/internal/wallethub"
 )
 
@@ -155,12 +163,78 @@ func main() {
 		RobosatsBaseURL:         robosatsURL,
 		TorProxyURL:             torProxyURL,
 	})
+	bidChecker := pretradechecks.NewBidChecker(
+		pretradechecks.BalanceFetcherFunc(func(ctx context.Context, provider, currency string) (float64, error) {
+			b, err := cexAccountService.Balances(ctx, provider)
+			if err != nil {
+				return 0, err
+			}
+			for _, e := range b.Fiat {
+				if strings.EqualFold(e.Asset, currency) {
+					return e.Available, nil
+				}
+			}
+			return 0, nil
+		}),
+		pretradechecks.WhitelistFetcherFunc(func(ctx context.Context, provider string) ([]string, error) {
+			addrs, err := cexAccountService.WithdrawalAddresses(ctx, provider)
+			if err != nil {
+				return nil, err
+			}
+			var out []string
+			for _, a := range addrs {
+				if a.Whitelisted {
+					out = append(out, a.Address)
+				}
+			}
+			return out, nil
+		}),
+		pretradechecks.PermissionCheckerFunc(func(ctx context.Context, provider string) (map[string]string, error) {
+			keys, err := repo.GetActiveAPIKeysForProvider(ctx, provider)
+			if err != nil {
+				return nil, err
+			}
+			// Merge permissions from all active keys: "granted" beats everything else.
+			merged := map[string]string{}
+			for _, key := range keys {
+				if len(key.Permissions) == 0 {
+					continue
+				}
+				var perms map[string]string
+				if err := json.Unmarshal(key.Permissions, &perms); err != nil {
+					continue
+				}
+				for perm, status := range perms {
+					if merged[perm] == "" || status == "granted" {
+						merged[perm] = status
+					}
+				}
+			}
+			return merged, nil
+		}),
+	)
+	cexAccountService.WithBidChecker(bidChecker)
 	lndHealthChecker := lndhealth.NewChecker(repo, nil, lndhealth.Config{
 		ExtendedMasterKeyFile: lndExtendedMasterKeyFile,
+	})
+	// hedgeStreamManager multiplexes each futures venue's live position feed to any
+	// number of WebSocket subscribers. Sources reuse the futures clients' env-var
+	// credentials (same as OpenHedge); each is started lazily on first subscriber.
+	hedgeStreamManager := hedgestream.NewManager(map[string]hedgestream.SourceFunc{
+		"kraken_futures": func(ctx context.Context) (<-chan cex.HedgePositionUpdate, error) {
+			return kraken.NewFuturesClient().StreamPositions(ctx)
+		},
+		"binance_futures": func(ctx context.Context) (<-chan cex.HedgePositionUpdate, error) {
+			return binance.NewFuturesClient().StreamPositions(ctx)
+		},
+		"coinbase_futures": func(ctx context.Context) (<-chan cex.HedgePositionUpdate, error) {
+			return coinbase.NewFuturesClient().StreamPositions(ctx)
+		},
 	})
 	apiServer := api.NewServer(apiAddr, repo).
 		WithAccountHealth(exchangeAccountHealth).
 		WithCexAccount(cexAccountService).
+		WithHedgeStream(hedgeStreamManager).
 		WithLNDHealth(lndHealthChecker)
 
 	// lndInit creates (or restores) the LND wallet using the password stored in the
@@ -203,6 +277,19 @@ func main() {
 
 		apiServer.WithLNDWallet(lndClient)
 		lndHealthChecker.SetClient(lndClient)
+		bidChecker.SetWallet(pretradechecks.WalletSourceFunc(func(ctx context.Context) ([]string, error) {
+			props, err := lndClient.ListWalletAddresses(ctx)
+			if err != nil {
+				return nil, err
+			}
+			addrs := make([]string, len(props))
+			for i, p := range props {
+				addrs[i] = p.Address
+			}
+			return addrs, nil
+		}))
+		cexAccountService.WithLND(lndClient)
+		_ = tradeflow.New(cexAccountService)
 		// Periodic backup must outlive the request, so use the long-lived app context.
 		lndBackupOnce.Do(func() {
 			go runPeriodicLNDChannelBackup(ctx, lndBackupInterval, repo, lndClient, int64(lndAccount.ID))

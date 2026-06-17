@@ -13,9 +13,10 @@ import (
 
 // spotBuyRequest is the JSON body for POST /api/cex/spot-buy.
 type spotBuyRequest struct {
-	Provider     string  `json:"provider"`
-	BTCAmount    float64 `json:"btc_amount"`
-	FiatCurrency string  `json:"fiat_currency"`
+	Provider           string  `json:"provider"`
+	BTCAmount          float64 `json:"btc_amount"`
+	FiatCurrency       string  `json:"fiat_currency"`
+	RequiredCapitalEUR float64 `json:"required_capital_eur"`
 }
 
 func (s *Server) handleCexSpotBuy(w http.ResponseWriter, r *http.Request) {
@@ -43,13 +44,61 @@ func (s *Server) handleCexSpotBuy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("btc_amount must be greater than zero"))
 		return
 	}
+	if req.RequiredCapitalEUR <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital_eur must be greater than zero"))
+		return
+	}
 
-	result, err := s.cexAccount.MarketBuyBTC(r.Context(), provider, req.BTCAmount, req.FiatCurrency)
+	result, err := s.cexAccount.MarketBuyBTC(r.Context(), provider, req.BTCAmount, req.FiatCurrency, req.RequiredCapitalEUR)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// preTradeCheckRequest is the JSON body for POST /api/cex/pre-trade-check.
+type preTradeCheckRequest struct {
+	Provider           string  `json:"provider"`
+	FiatCurrency       string  `json:"fiat_currency"`
+	RequiredCapitalEUR float64 `json:"required_capital_eur"`
+}
+
+// handleCexPreTradeCheck runs all bid-side pre-trade checks (read-only) and reports
+// the per-check results, so the UI can show what passes/fails before the operator
+// confirms a market buy. It places no order.
+func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) {
+	if s.cexAccount == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("cex account service is not configured"))
+		return
+	}
+
+	var req preTradeCheckRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	provider := strings.TrimSpace(req.Provider)
+	if provider == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("provider is required"))
+		return
+	}
+	canonical, err := accounthealth.CanonicalProvider(provider)
+	if err != nil || !accounthealth.IsCEXProvider(canonical) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(accounthealth.SupportedCEXProviders(), ", ")))
+		return
+	}
+	if req.RequiredCapitalEUR <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital_eur must be greater than zero"))
+		return
+	}
+
+	report, err := s.cexAccount.PreTradeCheck(r.Context(), provider, req.FiatCurrency, req.RequiredCapitalEUR)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 // hedgeOpenRequest is the JSON body for POST /api/cex/hedge-open.

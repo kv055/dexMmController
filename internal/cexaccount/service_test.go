@@ -3,11 +3,14 @@ package cexaccount
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"dexMmController/internal/db"
+	"dexMmController/internal/exchanges/cex/binance"
 	"dexMmController/internal/exchanges/cex/coinbase"
+	"dexMmController/internal/exchanges/cex/kraken"
 )
 
 func TestHedgePositionFromTransactionActiveVsPast(t *testing.T) {
@@ -75,11 +78,19 @@ func TestMaxMarketBuyBTCDefault(t *testing.T) {
 func TestMarketBuyBTCRejectsInvalidAmounts(t *testing.T) {
 	t.Setenv("MAX_MARKET_BUY_BTC", "1.0")
 	svc := &Service{}
-	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 0, "EUR"); err == nil {
+	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 0, "EUR", 100); err == nil {
 		t.Fatal("expected error for zero amount")
 	}
-	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 5, "EUR"); err == nil {
+	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 5, "EUR", 100); err == nil {
 		t.Fatal("expected error for amount over cap")
+	}
+}
+
+func TestMarketBuyBTCRequiresCapitalRequirement(t *testing.T) {
+	t.Setenv("MAX_MARKET_BUY_BTC", "1.0")
+	svc := &Service{}
+	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 0.01, "EUR", 0); err == nil {
+		t.Fatal("expected error when required_capital_eur is not provided")
 	}
 }
 
@@ -102,6 +113,221 @@ func TestBalancesFromCoinbase(t *testing.T) {
 	if len(resp.Fiat) != 1 || resp.Fiat[0].Asset != "EUR" {
 		t.Fatalf("fiat balances = %#v, want EUR only", resp.Fiat)
 	}
+}
+
+func TestNormalizeOrderStatus(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{"closed", "filled"},
+		{"FILLED", "filled"},
+		{"PARTIALLY_FILLED", "partially_filled"},
+		{"open", "open"},
+		{"pending", "open"},
+		{"NEW", "open"},
+		{"canceled", "canceled"},
+		{"CANCELLED", "canceled"},
+		{"expired", "expired"},
+		{"something-else", "unknown"},
+		{"", "unknown"},
+	}
+	for _, c := range cases {
+		if got := normalizeOrderStatus(c.raw); got != c.want {
+			t.Fatalf("normalizeOrderStatus(%q) = %q, want %q", c.raw, got, c.want)
+		}
+	}
+}
+
+func TestExecutionFromKraken(t *testing.T) {
+	exec, err := executionFromKraken(kraken.OrderInfo{
+		Status:  "closed",
+		VolExec: "0.01000000",
+		Cost:    "650.00",
+		Fee:     "1.04",
+		Price:   "65000.00",
+	}, "EUR")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exec.FilledBTC != 0.01 || exec.AverageRate != 65000.00 || exec.FilledFiat != 650.00 {
+		t.Fatalf("unexpected execution: %#v", exec)
+	}
+	if len(exec.Fees) != 1 || exec.Fees[0] != (FeeLine{Asset: "EUR", Amount: 1.04}) {
+		t.Fatalf("unexpected fees: %#v", exec.Fees)
+	}
+	if exec.OrderStatus != "filled" {
+		t.Fatalf("order status = %q, want filled", exec.OrderStatus)
+	}
+
+	// Zero fee should produce no fee lines at all.
+	zeroFee, err := executionFromKraken(kraken.OrderInfo{
+		Status: "closed", VolExec: "0.01", Cost: "650.00", Fee: "0", Price: "65000.00",
+	}, "EUR")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(zeroFee.Fees) != 0 {
+		t.Fatalf("expected no fee lines, got %#v", zeroFee.Fees)
+	}
+
+	// "closed" with nothing executed is not a real fill.
+	rejected, err := executionFromKraken(kraken.OrderInfo{
+		Status: "closed", VolExec: "0", Cost: "0", Fee: "0", Price: "0",
+	}, "EUR")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rejected.OrderStatus != "unknown" {
+		t.Fatalf("order status = %q, want unknown for closed-but-unfilled order", rejected.OrderStatus)
+	}
+
+	if _, err := executionFromKraken(kraken.OrderInfo{Price: "not-a-number"}, "EUR"); err == nil {
+		t.Fatal("expected error for malformed price")
+	}
+}
+
+func TestExecutionFromBinance(t *testing.T) {
+	order := binance.OrderResponse{
+		Status: "FILLED",
+		Fills: []binance.OrderFill{
+			{Price: "65000.00", Qty: "0.005", Commission: "0.0001", CommissionAsset: "BNB"},
+			{Price: "65010.00", Qty: "0.005", Commission: "0.0001", CommissionAsset: "BNB"},
+			{Price: "65000.00", Qty: "0.002", Commission: "0.10", CommissionAsset: "EUR"},
+		},
+	}
+	exec, err := executionFromBinance(order)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantBTC := 0.005 + 0.005 + 0.002
+	if abs(exec.FilledBTC-wantBTC) > 1e-9 {
+		t.Fatalf("filled btc = %v, want %v", exec.FilledBTC, wantBTC)
+	}
+	wantFiat := 65000.00*0.005 + 65010.00*0.005 + 65000.00*0.002
+	if abs(exec.FilledFiat-wantFiat) > 1e-6 {
+		t.Fatalf("filled fiat = %v, want %v", exec.FilledFiat, wantFiat)
+	}
+	if len(exec.Fees) != 2 {
+		t.Fatalf("expected fees aggregated by asset, got %#v", exec.Fees)
+	}
+	if exec.Fees[0].Asset != "BNB" || abs(exec.Fees[0].Amount-0.0002) > 1e-9 {
+		t.Fatalf("unexpected BNB fee line: %#v", exec.Fees[0])
+	}
+	if exec.Fees[1].Asset != "EUR" || abs(exec.Fees[1].Amount-0.10) > 1e-9 {
+		t.Fatalf("unexpected EUR fee line: %#v", exec.Fees[1])
+	}
+	if exec.OrderStatus != "filled" {
+		t.Fatalf("order status = %q, want filled", exec.OrderStatus)
+	}
+
+	// Fallback path when Fills is empty.
+	fallback, err := executionFromBinance(binance.OrderResponse{
+		Status: "FILLED", ExecutedQty: "0.01", CummulativeQuoteQty: "650.00",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fallback.FilledBTC != 0.01 || fallback.FilledFiat != 650.00 || fallback.AverageRate != 65000.00 {
+		t.Fatalf("unexpected fallback execution: %#v", fallback)
+	}
+	if len(fallback.Fees) != 0 {
+		t.Fatalf("expected no fees in fallback path, got %#v", fallback.Fees)
+	}
+}
+
+func TestExecutionFromCoinbase(t *testing.T) {
+	exec, err := executionFromCoinbase(coinbase.Order{
+		Status:             "FILLED",
+		AverageFilledPrice: "65000.00",
+		FilledSize:         "0.01",
+		TotalFees:          "3.25",
+	}, "EUR")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exec.FilledBTC != 0.01 || exec.AverageRate != 65000.00 {
+		t.Fatalf("unexpected execution: %#v", exec)
+	}
+	if abs(exec.FilledFiat-650.00) > 1e-9 {
+		t.Fatalf("filled fiat = %v, want 650.00 (recomputed from rate*size)", exec.FilledFiat)
+	}
+	if len(exec.Fees) != 1 || exec.Fees[0] != (FeeLine{Asset: "EUR", Amount: 3.25}) {
+		t.Fatalf("unexpected fees: %#v", exec.Fees)
+	}
+	if exec.OrderStatus != "filled" {
+		t.Fatalf("order status = %q, want filled", exec.OrderStatus)
+	}
+
+	if _, err := executionFromCoinbase(coinbase.Order{AverageFilledPrice: "nope"}, "EUR"); err == nil {
+		t.Fatal("expected error for malformed average_filled_price")
+	}
+}
+
+func TestPollUntilTerminalImmediateTerminal(t *testing.T) {
+	calls := 0
+	exhausted, err := pollUntilTerminal(context.Background(), 5, time.Millisecond, func(ctx context.Context) (bool, error) {
+		calls++
+		return true, nil
+	})
+	if err != nil || exhausted {
+		t.Fatalf("exhausted=%v err=%v, want exhausted=false err=nil", exhausted, err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1 (should stop at first terminal result)", calls)
+	}
+}
+
+func TestPollUntilTerminalExhausts(t *testing.T) {
+	calls := 0
+	exhausted, err := pollUntilTerminal(context.Background(), 3, time.Millisecond, func(ctx context.Context) (bool, error) {
+		calls++
+		return false, nil
+	})
+	if err != nil || !exhausted {
+		t.Fatalf("exhausted=%v err=%v, want exhausted=true err=nil", exhausted, err)
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3 (maxAttempts)", calls)
+	}
+}
+
+func TestPollUntilTerminalErrorOnFinalAttempt(t *testing.T) {
+	calls := 0
+	wantErr := errors.New("boom")
+	exhausted, err := pollUntilTerminal(context.Background(), 2, time.Millisecond, func(ctx context.Context) (bool, error) {
+		calls++
+		if calls == 2 {
+			return false, wantErr
+		}
+		return false, nil
+	})
+	if !exhausted || !errors.Is(err, wantErr) {
+		t.Fatalf("exhausted=%v err=%v, want exhausted=true err=%v", exhausted, err, wantErr)
+	}
+}
+
+func TestPollUntilTerminalRespectsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	calls := 0
+	exhausted, err := pollUntilTerminal(ctx, 5, 50*time.Millisecond, func(ctx context.Context) (bool, error) {
+		calls++
+		return false, nil
+	})
+	if !exhausted || !errors.Is(err, context.Canceled) {
+		t.Fatalf("exhausted=%v err=%v, want exhausted=true err=context.Canceled", exhausted, err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1 (should stop after first attempt once ctx is canceled)", calls)
+	}
+}
+
+func abs(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func TestBalancesFromKraken(t *testing.T) {

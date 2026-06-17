@@ -365,6 +365,38 @@ func (c *Client) MarketBuy(ctx context.Context, pair string, volumeBTC float64) 
 	return &resp.Result, nil
 }
 
+// OrderInfo is a single order's status/fill details, as returned by QueryOrders.
+type OrderInfo struct {
+	// Status is the order status: "pending", "open", "closed", "canceled", "expired".
+	Status string `json:"status"`
+	// Vol is the requested order volume (base asset, BTC), as a decimal string.
+	Vol string `json:"vol"`
+	// VolExec is the executed volume (base asset, BTC), as a decimal string.
+	VolExec string `json:"vol_exec"`
+	// Cost is the total quote-currency cost of the fill, as a decimal string.
+	Cost string `json:"cost"`
+	// Fee is the total fee charged, in quote currency, as a decimal string.
+	Fee string `json:"fee"`
+	// Price is the volume-weighted average fill price, as a decimal string.
+	Price string `json:"price"`
+}
+
+// QueryOrders retrieves order status/fill details for the given transaction id.
+// This is the same endpoint Kraken uses for both still-open and recently-closed
+// orders (closed orders remain queryable here for roughly 50 hours), so polling
+// the tx id returned by AddOrder until its status flips to "closed" is enough to
+// retrieve the executed price/cost/fee for a market order just placed.
+func (c *Client) QueryOrders(ctx context.Context, txID string) (map[string]OrderInfo, error) {
+	form := url.Values{}
+	form.Set("txid", txID)
+
+	var resp apiEnvelope[map[string]OrderInfo]
+	if err := c.privateRequest(ctx, "/0/private/QueryOrders", form, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
+}
+
 // ValidateOrderPermission probes whether the key may place orders by submitting an
 // AddOrder with validate=true. Kraken validates the order WITHOUT placing it, so no
 // funds are spent. A nil error means the key has order-creation permission; a
@@ -505,6 +537,10 @@ func krakenAPIError(path string, out any) error {
 			return fmt.Errorf("kraken: %s: %s", path, strings.Join(envelope.Error, ", "))
 		}
 	case *apiEnvelope[AddOrderResult]:
+		if len(envelope.Error) > 0 {
+			return fmt.Errorf("kraken: %s: %s", path, strings.Join(envelope.Error, ", "))
+		}
+	case *apiEnvelope[map[string]OrderInfo]:
 		if len(envelope.Error) > 0 {
 			return fmt.Errorf("kraken: %s: %s", path, strings.Join(envelope.Error, ", "))
 		}

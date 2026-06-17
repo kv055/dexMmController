@@ -324,6 +324,21 @@ func (c *Client) ApplyWithdraw(ctx context.Context, req WithdrawRequest) (*Withd
 	return &resp, nil
 }
 
+// OrderFill is a single fill (partial execution) within a Binance order response.
+type OrderFill struct {
+	// Price is the fill price, as a decimal string.
+	Price string `json:"price"`
+	// Qty is the filled base-asset quantity for this fill, as a decimal string.
+	Qty string `json:"qty"`
+	// Commission is the fee charged for this fill, as a decimal string.
+	Commission string `json:"commission"`
+	// CommissionAsset is the asset the fee was charged in (may differ from the
+	// quote currency, e.g. "BNB" when the fee-discount program is active).
+	CommissionAsset string `json:"commissionAsset"`
+	// TradeID is the exchange-assigned trade id for this fill.
+	TradeID int64 `json:"tradeId"`
+}
+
 // OrderResponse is the result of a Binance spot order placement.
 type OrderResponse struct {
 	// Symbol is the trading symbol the order was placed on.
@@ -336,6 +351,9 @@ type OrderResponse struct {
 	ExecutedQty string `json:"executedQty"`
 	// CummulativeQuoteQty is the filled quote-asset amount (spelling per Binance API).
 	CummulativeQuoteQty string `json:"cummulativeQuoteQty"`
+	// Fills lists the individual executions that made up this order. Present for
+	// MARKET orders, which use Binance's default FULL response type.
+	Fills []OrderFill `json:"fills"`
 }
 
 // MarketBuy places a market buy order for quantityBTC of the base asset on symbol (e.g. "BTCEUR").
