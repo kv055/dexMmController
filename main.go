@@ -20,6 +20,8 @@ import (
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
+	"dexMmController/internal/dexoffer"
+	"dexMmController/internal/dexrelay"
 	"dexMmController/internal/exchanges/cex"
 	"dexMmController/internal/exchanges/cex/binance"
 	"dexMmController/internal/exchanges/cex/coinbase"
@@ -68,6 +70,7 @@ func main() {
 	lndRecoveryWindow := envOr("LND_RECOVERY_WINDOW", "")
 	lndExtendedMasterKeyBirthdayTimestamp := envOr("LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP", "")
 	accountHealthInterval := parseAccountHealthInterval(envOr("ACCOUNT_HEALTH_INTERVAL", ""))
+	healthcheckInterval := parseAccountHealthInterval(envOr("HEALTHCHECK_INTERVAL", "30s"))
 	lndBackupInterval := parseLNDBackupInterval(envOr("LND_BACKUP_INTERVAL", ""), accountHealthInterval)
 
 	// Graceful shutdown context for long-running stream.
@@ -144,8 +147,9 @@ func main() {
 		ProxyURL:  torProxyURL,
 	})
 
-	// ── HealthChecker ─────────────────────────────────────────────────────────
+	// ── HealthChecker + dexrelay ──────────────────────────────────────────────
 	hc := healthcheck.NewHealthChecker(repo, claw, hb, btc, hh)
+	dexTaker := dexoffer.NewTaker(repo, bq, hh, rs)
 	exchangeAccountHealth := accounthealth.NewChecker(repo, accounthealth.Config{
 		HodlHodlBaseURL: hhBaseURL,
 		BinanceBaseURL:  binanceBaseURL,
@@ -214,6 +218,7 @@ func main() {
 		}),
 	)
 	cexAccountService.WithBidChecker(bidChecker)
+	dexRelayWorker := dexrelay.NewWorker(repo, cexAccountService, btc, dexTaker)
 	lndHealthChecker := lndhealth.NewChecker(repo, nil, lndhealth.Config{
 		ExtendedMasterKeyFile: lndExtendedMasterKeyFile,
 	})
@@ -231,9 +236,11 @@ func main() {
 			return coinbase.NewFuturesClient().StreamPositions(ctx)
 		},
 	})
+	tradeFlow := tradeflow.New(cexAccountService)
 	apiServer := api.NewServer(apiAddr, repo).
 		WithAccountHealth(exchangeAccountHealth).
 		WithCexAccount(cexAccountService).
+		WithTradeFlow(tradeFlow).
 		WithHedgeStream(hedgeStreamManager).
 		WithLNDHealth(lndHealthChecker)
 
@@ -289,7 +296,7 @@ func main() {
 			return addrs, nil
 		}))
 		cexAccountService.WithLND(lndClient)
-		_ = tradeflow.New(cexAccountService)
+		dexRelayWorker.SetLND(dexrelay.LNDAdapter{Client: lndClient})
 		// Periodic backup must outlive the request, so use the long-lived app context.
 		lndBackupOnce.Do(func() {
 			go runPeriodicLNDChannelBackup(ctx, lndBackupInterval, repo, lndClient, int64(lndAccount.ID))
@@ -315,12 +322,9 @@ func main() {
 		log.Println("LND wallet password not set; skipping wallet bootstrap — create it from the UI")
 	}
 
-	// ── Run healthcheck once ──────────────────────────────────────────────────
-	log.Println("running healthcheck")
-	if err := hc.Run(context.Background()); err != nil {
-		log.Fatalf("healthcheck failed: %v", err)
-	}
-	log.Println("healthcheck complete")
+	// ── Periodic healthcheck + dexrelay ─────────────────────────────────────────
+	go hc.RunPeriodic(ctx, healthcheckInterval)
+	go dexRelayWorker.RunPeriodic(ctx, healthcheckInterval)
 
 	lndHealthChecker.RunAndLog(ctx)
 	go lndHealthChecker.RunPeriodic(ctx, accountHealthInterval)

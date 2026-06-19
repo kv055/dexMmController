@@ -25,6 +25,7 @@ type Server struct {
 	repo          *db.TransactionRepository
 	accountHealth accountHealthChecker
 	cexAccount    *cexaccount.Service
+	tradeFlow     TradeFlowRunner
 	hedgeStream   *hedgestream.Manager
 	lndHealth     lndWalletHealthChecker
 
@@ -127,8 +128,8 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/cex/hedge-positions", s.handleCexHedgePositions)
 	mux.HandleFunc("GET /api/cex/spot-trades", s.handleCexSpotTrades)
 	mux.HandleFunc("POST /api/cex/pre-trade-check", s.handleCexPreTradeCheck)
-	mux.HandleFunc("POST /api/cex/spot-buy", s.handleCexSpotBuy)
-	mux.HandleFunc("POST /api/cex/hedge-open", s.handleCexHedgeOpen)
+	mux.HandleFunc("POST /api/cex/tradeflow", s.handleCexTradeflow)
+	mux.HandleFunc("GET /api/cex/withdrawal-track", s.handleCexWithdrawalTrack)
 	mux.HandleFunc("GET /ws/cex/hedge-stream", s.handleCexHedgeStream)
 
 	server := &http.Server{

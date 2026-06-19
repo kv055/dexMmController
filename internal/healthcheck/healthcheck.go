@@ -2,8 +2,8 @@ package healthcheck
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"dexMmController/internal/bitcoin"
@@ -26,6 +26,26 @@ type HealthChecker struct {
 // NewHealthChecker creates a health checker.
 func NewHealthChecker(repo *db.TransactionRepository, oc *openclaw.Client, hb *hummingbot.Client, btc *bitcoin.NetworkDataFetcher, hh *hodlhodl.Client) *HealthChecker {
 	return &HealthChecker{repo: repo, openclaw: oc, hummingbot: hb, btc: btc, hodlhodl: hh}
+}
+
+// RunPeriodic executes healthcheck on interval until ctx is cancelled.
+func (h *HealthChecker) RunPeriodic(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		if err := h.Run(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("healthcheck: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // Run finds all incomplete transactions and runs a status-specific verification
@@ -123,76 +143,57 @@ func (h *HealthChecker) verifyCexTradeSuccessful(ctx context.Context, tx *db.Tra
 	return h.repo.UpdateTransaction(tx)
 }
 
-// verifyCexCryptoWithdrawalInitiated checks whether the on-chain withdrawal
-// has been confirmed by the CEX.
-//
-// TODO: the Hummingbot Backend API (v1.0.1) has no withdrawal endpoint.
-// Implement once the API exposes withdrawal history.
-// Only use in worst case scenario when verifyCexCryptoWithdrawalArrived fails
-// to detect the transaction on chain (confirmed or unconfirmed).
+// verifyCexCryptoWithdrawalInitiated is handled by dexrelay for bid tradeflow rows.
 func (h *HealthChecker) verifyCexCryptoWithdrawalInitiated(_ context.Context, _ *db.Transaction) error {
 	return nil
 }
 
-// verifyCexCryptoWithdrawalArrived checks whether the BTC withdrawn from the
-// CEX has arrived at the DEX wallet (tx.DexBtcAddress) by querying the
-// confirmed on-chain balance via mempool.space. The expected amount is read
-// from tx.CexBitcoinAmount. A 1 % tolerance is applied to absorb miner fees.
-// Advances to StatusCexCryptoWithdrawalArrived once the balance matches.
-func (h *HealthChecker) verifyCexCryptoWithdrawalArrived(ctx context.Context, tx *db.Transaction) error {
-	if tx.DexBtcAddress == "" {
-		return fmt.Errorf("verifyCexCryptoWithdrawalArrived: tx %d has no DexBtcAddress set", tx.ID)
-	}
-
-	balance, err := h.btc.FetchAddressBalance(ctx, tx.DexBtcAddress)
-	if err != nil {
-		return fmt.Errorf("verifyCexCryptoWithdrawalArrived: %w", err)
-	}
-
-	const tolerance = 0.99
-	if balance < tx.CexBitcoinAmount*tolerance {
-		// Withdrawal not yet confirmed on-chain — retry on next cycle.
-		return nil
-	}
-
-	tx.Status = db.StatusCexCryptoWithdrawalArrived
-	return h.repo.UpdateTransaction(tx)
+// verifyCexCryptoWithdrawalArrived is handled by dexrelay (confirmation + relay).
+func (h *HealthChecker) verifyCexCryptoWithdrawalArrived(_ context.Context, _ *db.Transaction) error {
+	return nil
 }
 
-// dexOfferID extracts the offer_id from the DexOfferCreation JSON blob.
+// dexOfferID extracts the offer_id from DexOfferCreation (execution or selected_offer).
 func dexOfferID(tx *db.Transaction) (string, error) {
-	var info struct {
-		OfferID    string `json:"offer_id"`
-		ContractID string `json:"contract_id"`
-	}
-	if err := json.Unmarshal(tx.DexOfferCreation, &info); err != nil {
+	meta, err := db.ParseDexOfferCreation(tx.DexOfferCreation)
+	if err != nil {
 		return "", fmt.Errorf("failed to parse DexOfferCreation: %w", err)
 	}
-	if info.OfferID == "" {
+	id := meta.OfferID()
+	if id == "" {
 		return "", fmt.Errorf("DexOfferCreation has no offer_id for tx %d", tx.ID)
 	}
-	return info.OfferID, nil
+	return id, nil
 }
 
-// dexContractID extracts the contract_id from the DexOfferCreation JSON blob.
+// dexContractID extracts contract/trade/position id from DexOfferCreation.execution.
 func dexContractID(tx *db.Transaction) (string, error) {
-	var info struct {
-		ContractID string `json:"contract_id"`
-	}
-	if err := json.Unmarshal(tx.DexOfferCreation, &info); err != nil {
+	meta, err := db.ParseDexOfferCreation(tx.DexOfferCreation)
+	if err != nil {
 		return "", fmt.Errorf("failed to parse DexOfferCreation: %w", err)
 	}
-	if info.ContractID == "" {
+	id := meta.ContractID()
+	if id == "" {
 		return "", fmt.Errorf("DexOfferCreation has no contract_id for tx %d", tx.ID)
 	}
-	return info.ContractID, nil
+	return id, nil
 }
 
-// verifyDexPositionOpen checks the DEX (tx.Dex) to confirm the offer is still
-// live. Advances to DexPositionTaken if a counterparty has already matched.
+// verifyDexPositionOpen confirms the DEX contract is active after LND→DEX relay.
 func (h *HealthChecker) verifyDexPositionOpen(ctx context.Context, tx *db.Transaction) error {
 	switch tx.Dex {
 	case db.DexHodlHodl:
+		if contractID, err := dexContractID(tx); err == nil && contractID != "" {
+			active, err := h.hodlhodl.ContractHasCounterparty(ctx, contractID)
+			if err != nil {
+				return fmt.Errorf("verifyDexPositionOpen: %w", err)
+			}
+			if active {
+				tx.Status = db.StatusDexPositionTaken
+				return h.repo.UpdateTransaction(tx)
+			}
+			return nil
+		}
 		offerID, err := dexOfferID(tx)
 		if err != nil {
 			return fmt.Errorf("verifyDexPositionOpen: %w", err)
@@ -202,12 +203,11 @@ func (h *HealthChecker) verifyDexPositionOpen(ctx context.Context, tx *db.Transa
 			return fmt.Errorf("verifyDexPositionOpen: %w", err)
 		}
 		if !live {
-			// Offer no longer active — likely taken by a counterparty.
 			tx.Status = db.StatusDexPositionTaken
 			return h.repo.UpdateTransaction(tx)
 		}
 	case db.DexBisq, db.DexRoboSats:
-		// TODO: implement Bisq / RoboSats offer polling
+		// TODO: implement Bisq / RoboSats contract polling
 	default:
 		return fmt.Errorf("verifyDexPositionOpen: unknown DEX %q", tx.Dex)
 	}

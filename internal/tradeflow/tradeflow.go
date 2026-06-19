@@ -17,7 +17,7 @@ import (
 type Order struct {
 	// Provider is the CEX to trade on, e.g. "binance".
 	Provider string
-	// MarketSide is "bid" (we buy BTC on CEX) — only bid is handled this session.
+	// MarketSide is "bid" (buy BTC on CEX) or "ask" (sell BTC on CEX).
 	MarketSide string
 	// BTCAmount is the spot buy size in BTC.
 	BTCAmount float64
@@ -34,35 +34,35 @@ type Order struct {
 	HedgeNotionalBTC float64
 	// Leverage is the leverage to use on the hedge (Binance only; ignored by others).
 	Leverage float64
+
+	// OfferID is the DEX-native offer id to fund after CEX→LND withdrawal confirms.
+	OfferID string
+	// Dex is the DEX venue slug, e.g. "hodlhodl".
+	Dex string
+	// FiatAmount is the fiat notional for TakeOffer (HodlHodl).
+	FiatAmount float64
+	// TransactionID optionally updates an existing transaction row instead of creating one.
+	TransactionID uint
+	// SelectedOffer is an optional JSON snapshot of the chosen offer from the UI.
+	SelectedOffer []byte
 }
 
-// Result bundles the outcomes of all three steps in the CEX→wallet trade cycle.
+// Result bundles the outcomes of all steps in the CEX→wallet trade cycle.
 type Result struct {
-	SpotBuy    SpotBuyResult
-	Hedge      HedgeResult
-	Withdrawal WithdrawalResult
-}
-
-// SpotBuyResult is the trade-relevant subset of the spot order response.
-type SpotBuyResult struct {
-	OrderID     string  `json:"order_id"`
-	Status      string  `json:"status"`
-	FilledBTC   float64 `json:"filled_btc"`
-	AverageRate float64 `json:"average_rate"`
-}
-
-// HedgeResult is the trade-relevant subset of the hedge open response.
-type HedgeResult struct {
-	Venue   string `json:"venue"`
-	OrderID string `json:"order_id"`
-	Status  string `json:"status"`
+	SpotBuy       *cexaccount.SpotOrderResult `json:"spot_buy"`
+	Hedge         *cexaccount.HedgeOpenResult `json:"hedge"`
+	Withdrawal    WithdrawalResult            `json:"withdrawal"`
+	TransactionID uint                        `json:"transaction_id,omitempty"`
 }
 
 // WithdrawalResult is the trade-relevant subset of the withdrawal response.
 type WithdrawalResult struct {
-	WithdrawalID  string  `json:"withdrawal_id"`
-	WalletAddress string  `json:"wallet_address"`
-	AmountBTC     float64 `json:"amount_btc"`
+	Provider        string  `json:"provider"`
+	WithdrawalID    string  `json:"withdrawal_id"`
+	ClientRequestID string  `json:"client_request_id,omitempty"`
+	WalletAddress   string  `json:"wallet_address"`
+	AmountBTC       float64 `json:"amount_btc"`
+	CexStatus       string  `json:"cex_status,omitempty"`
 }
 
 // Service is the subset of cexaccount.Service used by TradeFlow.
@@ -73,8 +73,7 @@ type Service interface {
 	WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress string) (*lnd.WithdrawFromExchangeResult, error)
 }
 
-// TradeFlow orchestrates the CEX→LND wallet leg of a DEX bid trade:
-// pre-trade checks → spot buy → hedge → withdraw bought BTC to LND wallet.
+// TradeFlow orchestrates the CEX trade leg of a DEX arbitrage cycle.
 type TradeFlow struct {
 	svc Service
 }
@@ -84,14 +83,25 @@ func New(svc Service) *TradeFlow {
 	return &TradeFlow{svc: svc}
 }
 
-// Run executes the full bid-side trade cycle for the given order. It stops at the
-// first failure and returns a descriptive error. On success it returns the bundled
-// results of all three steps.
+// Run executes the trade cycle for the given order. It stops at the first failure
+// and returns a descriptive error. On success it returns the bundled results.
 func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 	if err := validate(order); err != nil {
 		return nil, err
 	}
 
+	switch strings.ToLower(strings.TrimSpace(order.MarketSide)) {
+	case "bid":
+		return tf.runBid(ctx, order)
+	case "ask":
+		return tf.runAsk(ctx, order)
+	default:
+		return nil, fmt.Errorf("tradeflow: unsupported market side %q", order.MarketSide)
+	}
+}
+
+// runBid executes the bid-side cycle: pre-trade checks → spot buy → hedge → withdraw.
+func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	slog.Info("tradeflow: starting bid-side cycle",
 		"provider", order.Provider,
 		"btc_amount", order.BTCAmount,
@@ -128,10 +138,8 @@ func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 		return nil, fmt.Errorf("tradeflow: spot buy failed: %w", err)
 	}
 	filledBTC := order.BTCAmount
-	var avgRate float64
 	if spot.Execution != nil {
 		filledBTC = spot.Execution.FilledBTC
-		avgRate = spot.Execution.AverageRate
 	}
 	slog.Info("tradeflow: spot buy submitted",
 		"order_id", spot.OrderID,
@@ -139,7 +147,7 @@ func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 		"filled_btc", filledBTC,
 	)
 
-	// Step 3: open short hedge position.
+	// Step 3: open hedge position.
 	hedge, err := tf.svc.OpenHedge(ctx, order.HedgeVenue, order.HedgeSide, order.HedgeNotionalBTC, order.Leverage)
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: hedge open failed (spot already placed, order_id=%s): %w", spot.OrderID, err)
@@ -162,28 +170,31 @@ func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 	)
 
 	return &Result{
-		SpotBuy: SpotBuyResult{
-			OrderID:     spot.OrderID,
-			Status:      spot.Status,
-			FilledBTC:   filledBTC,
-			AverageRate: avgRate,
-		},
-		Hedge: HedgeResult{
-			Venue:   hedge.Venue,
-			OrderID: hedge.OrderID,
-			Status:  hedge.Status,
-		},
+		SpotBuy: spot,
+		Hedge:   hedge,
 		Withdrawal: WithdrawalResult{
-			WithdrawalID:  wd.WithdrawalID,
-			WalletAddress: wd.WalletAddress,
-			AmountBTC:     filledBTC,
+			Provider:        order.Provider,
+			WithdrawalID:    wd.WithdrawalID,
+			ClientRequestID: wd.ClientRequestID,
+			WalletAddress:   wd.WalletAddress,
+			AmountBTC:       filledBTC,
+			CexStatus:       "submitted",
 		},
 	}, nil
 }
 
+// runAsk will execute the ask-side cycle (sell BTC on CEX, long hedge, deposit to CEX).
+// Planned pre-trade checks: API key permissions, sufficient CEX capital for the long
+// hedge (and security deposit when the offer requires one). Whitelist/LND withdrawal
+// checks are not needed on the ask path.
+func (tf *TradeFlow) runAsk(_ context.Context, _ Order) (*Result, error) {
+	return nil, fmt.Errorf("tradeflow: ask-side trade cycle is not implemented yet")
+}
+
 func validate(o Order) error {
-	if strings.ToLower(strings.TrimSpace(o.MarketSide)) != "bid" {
-		return fmt.Errorf("tradeflow: only market side \"bid\" is supported, got %q", o.MarketSide)
+	side := strings.ToLower(strings.TrimSpace(o.MarketSide))
+	if side != "bid" && side != "ask" {
+		return fmt.Errorf("tradeflow: market_side must be \"bid\" or \"ask\", got %q", o.MarketSide)
 	}
 	if strings.TrimSpace(o.Provider) == "" {
 		return fmt.Errorf("tradeflow: provider is required")

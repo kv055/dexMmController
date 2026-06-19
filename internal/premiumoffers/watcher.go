@@ -9,11 +9,11 @@ import (
 	"log"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"dexMmController/internal/db"
+	"dexMmController/internal/dexoffer"
 	"dexMmController/internal/exchanges/dex/bisq"
 	"dexMmController/internal/exchanges/dex/hodlhodl"
 	"dexMmController/internal/exchanges/dex/robosats"
@@ -30,9 +30,7 @@ const (
 // Watcher represents a watcher.
 type Watcher struct {
 	repo                *db.TransactionRepository
-	bisq                *bisq.Client
-	hodlhodl            *hodlhodl.Client
-	robosats            *robosats.Client
+	taker               *dexoffer.Taker
 	url                 string
 	netProfitThreshold  float64
 	minQualifiedOffers  int
@@ -81,9 +79,7 @@ func NewWatcher(
 ) *Watcher {
 	return &Watcher{
 		repo:               repo,
-		bisq:               bisqClient,
-		hodlhodl:           hodlhodlClient,
-		robosats:           robosatsClient,
+		taker:              dexoffer.NewTaker(repo, bisqClient, hodlhodlClient, robosatsClient),
 		url:                streamURL,
 		netProfitThreshold: defaultNetProfitThreshold,
 		minQualifiedOffers: defaultMinQualifiedOffers,
@@ -353,110 +349,26 @@ func (w *Watcher) takeBestOffer(ctx context.Context, tx *db.Transaction, offers 
 	if selected.OfferID == nil || *selected.OfferID == "" {
 		return errorsPayload(tx, "selected offer has no offer_id")
 	}
-
-	var result map[string]any
-	var dexAddress string
-	var err error
-
-	switch inferDexPlatform(selected.Exchange) {
-	case db.DexHodlHodl:
-		result, dexAddress, err = w.takeHodlHodlOffer(ctx, selected)
-	case db.DexBisq:
-		result, dexAddress, err = w.takeBisqOffer(ctx, selected)
-	case db.DexRoboSats:
-		result, dexAddress, err = w.takeRoboSatsOffer(ctx, selected)
-	default:
-		err = fmt.Errorf("unsupported DEX exchange %q", selected.Exchange)
+	if w.taker == nil {
+		return fmt.Errorf("DEX taker is not configured")
 	}
+
+	takeResult, err := w.taker.Take(ctx, dexoffer.OfferInput{
+		Exchange:   selected.Exchange,
+		OfferID:    *selected.OfferID,
+		FiatAmount: offerFiatAmount(selected),
+		BTCAmount:  offerBTCAmount(selected),
+	})
 	if err != nil {
 		_ = w.updateExecutionPayload(tx, selected, nil, err)
 		return err
 	}
 
+	dexAddress := takeResult.DepositAddress
 	if dexAddress != "" {
 		tx.DexBtcAddress = dexAddress
 	}
-	return w.updateExecutionPayload(tx, selected, result, nil)
-}
-
-func (w *Watcher) takeHodlHodlOffer(ctx context.Context, offer Offer) (map[string]any, string, error) {
-	if w.hodlhodl == nil {
-		return nil, "", fmt.Errorf("hodlhodl client is not configured")
-	}
-	fiatAmount := strconv.FormatFloat(offerFiatAmount(offer), 'f', 2, 64)
-	escrowAddress, contract, err := w.hodlhodl.TakeOffer(ctx, *offer.OfferID, fiatAmount)
-	if err != nil {
-		return nil, "", err
-	}
-
-	return map[string]any{
-		"exchange":       "hodlhodl",
-		"offer_id":       offer.OfferID,
-		"fiat_amount":    fiatAmount,
-		"escrow_address": escrowAddress,
-		"contract_id":    contract.ID,
-		"contract":       contract,
-	}, escrowAddress, nil
-}
-
-func (w *Watcher) takeBisqOffer(ctx context.Context, offer Offer) (map[string]any, string, error) {
-	if w.bisq == nil {
-		return nil, "", fmt.Errorf("bisq client is not configured")
-	}
-
-	params := bisq.TakeOfferParams{
-		AmountSats: btcToSats(offerBTCAmount(offer)),
-	}
-	trade, err := w.bisq.TakeOffer(ctx, *offer.OfferID, params)
-	if err != nil {
-		return nil, "", err
-	}
-
-	return map[string]any{
-		"exchange":       "bisq",
-		"offer_id":       offer.OfferID,
-		"trade_id":       trade.TradeID,
-		"trade":          trade,
-		"requested_sats": params.AmountSats,
-	}, "", nil
-}
-
-func (w *Watcher) takeRoboSatsOffer(ctx context.Context, offer Offer) (map[string]any, string, error) {
-	if w.robosats == nil {
-		return nil, "", fmt.Errorf("robosats client is not configured")
-	}
-
-	client := w.robosats
-	if token, err := w.latestRoboSatsToken(ctx); err != nil {
-		log.Printf("failed to load latest Robosats token from database; using configured client token: %v", err)
-	} else if token != "" {
-		client = w.robosats.WithAuthToken(token)
-	}
-
-	position, err := client.TakeOffer(ctx, *offer.OfferID)
-	if err != nil {
-		return nil, "", err
-	}
-
-	return map[string]any{
-		"exchange":    "robosats",
-		"offer_id":    offer.OfferID,
-		"position_id": position.ID,
-		"position":    position,
-	}, "", nil
-}
-
-func (w *Watcher) latestRoboSatsToken(ctx context.Context) (string, error) {
-	keys, err := w.repo.GetActiveAPIKeysForProvider(ctx, "Robosats")
-	if err != nil {
-		return "", err
-	}
-	for _, key := range keys {
-		if token := strings.TrimSpace(key.APIKey); token != "" {
-			return token, nil
-		}
-	}
-	return "", nil
+	return w.updateExecutionPayload(tx, selected, takeResult.Execution, nil)
 }
 
 func (w *Watcher) updateExecutionPayload(tx *db.Transaction, selected Offer, result map[string]any, executionErr error) error {
@@ -506,13 +418,6 @@ func offerBTCAmount(offer Offer) float64 {
 		return *offer.BTCMin
 	}
 	return 0
-}
-
-func btcToSats(amount float64) uint64 {
-	if amount <= 0 {
-		return 0
-	}
-	return uint64(amount * 100_000_000)
 }
 
 func errorsPayload(tx *db.Transaction, message string) error {

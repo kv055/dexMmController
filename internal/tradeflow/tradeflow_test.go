@@ -3,6 +3,7 @@ package tradeflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"dexMmController/internal/cexaccount"
@@ -81,8 +82,9 @@ func happyFake() *fakeService {
 			Status:  "filled",
 		},
 		withdrawResult: &lnd.WithdrawFromExchangeResult{
-			WithdrawalID:  "wd-789",
-			WalletAddress: "bc1qtest",
+			WithdrawalID:    "wd-789",
+			WalletAddress:   "bc1qtest",
+			ClientRequestID: "tradeflow-binance-1",
 		},
 	}
 }
@@ -99,8 +101,8 @@ func TestRun_HappyPath(t *testing.T) {
 	if result.SpotBuy.OrderID != "spot-123" {
 		t.Errorf("spot order_id: want spot-123, got %s", result.SpotBuy.OrderID)
 	}
-	if result.SpotBuy.FilledBTC != 0.00999 {
-		t.Errorf("filled_btc: want 0.00999, got %f", result.SpotBuy.FilledBTC)
+	if result.SpotBuy.Execution == nil || result.SpotBuy.Execution.FilledBTC != 0.00999 {
+		t.Errorf("filled_btc: want 0.00999, got %+v", result.SpotBuy.Execution)
 	}
 	if result.Hedge.OrderID != "hedge-456" {
 		t.Errorf("hedge order_id: want hedge-456, got %s", result.Hedge.OrderID)
@@ -110,6 +112,15 @@ func TestRun_HappyPath(t *testing.T) {
 	}
 	if result.Withdrawal.AmountBTC != 0.00999 {
 		t.Errorf("withdrawal amount should equal FilledBTC (0.00999), got %f", result.Withdrawal.AmountBTC)
+	}
+	if result.Withdrawal.Provider != "binance" {
+		t.Errorf("withdrawal provider: want binance, got %s", result.Withdrawal.Provider)
+	}
+	if result.Withdrawal.CexStatus != "submitted" {
+		t.Errorf("withdrawal cex_status: want submitted, got %s", result.Withdrawal.CexStatus)
+	}
+	if result.Withdrawal.ClientRequestID != "tradeflow-binance-1" {
+		t.Errorf("client_request_id: want tradeflow-binance-1, got %s", result.Withdrawal.ClientRequestID)
 	}
 
 	// All four service calls must have been made exactly once.
@@ -261,12 +272,24 @@ func (c *captureWithdrawService) WithdrawSpotToLND(_ context.Context, _ string, 
 	return c.fakeService.withdrawResult, c.fakeService.withdrawErr
 }
 
-func TestRun_NonBidSideRejected(t *testing.T) {
+func TestRun_AskSideNotImplemented(t *testing.T) {
 	o := validOrder()
 	o.MarketSide = "ask"
 	_, err := New(&fakeService{}).Run(context.Background(), o)
 	if err == nil {
-		t.Fatal("expected error for non-bid market side")
+		t.Fatal("expected error for ask market side")
+	}
+	if !strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("expected not-implemented error, got: %v", err)
+	}
+}
+
+func TestRun_UnsupportedMarketSideRejected(t *testing.T) {
+	o := validOrder()
+	o.MarketSide = "unknown"
+	_, err := New(&fakeService{}).Run(context.Background(), o)
+	if err == nil {
+		t.Fatal("expected error for unsupported market side")
 	}
 }
 

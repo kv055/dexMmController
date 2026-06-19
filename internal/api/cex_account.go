@@ -8,24 +8,41 @@ import (
 	"strings"
 
 	"dexMmController/internal/accounthealth"
+	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/cexaccount"
+	"dexMmController/internal/tradeflow"
 )
 
-// spotBuyRequest is the JSON body for POST /api/cex/spot-buy.
-type spotBuyRequest struct {
-	Provider           string  `json:"provider"`
-	BTCAmount          float64 `json:"btc_amount"`
-	FiatCurrency       string  `json:"fiat_currency"`
-	RequiredCapitalEUR float64 `json:"required_capital_eur"`
+// TradeFlowRunner executes a full bid-side CEX trade cycle.
+type TradeFlowRunner interface {
+	Run(ctx context.Context, order tradeflow.Order) (*tradeflow.Result, error)
 }
 
-func (s *Server) handleCexSpotBuy(w http.ResponseWriter, r *http.Request) {
-	if s.cexAccount == nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("cex account service is not configured"))
+// tradeflowRequest is the JSON body for POST /api/cex/tradeflow.
+type tradeflowRequest struct {
+	Provider           string          `json:"provider"`
+	MarketSide         string          `json:"market_side"`
+	BTCAmount          float64         `json:"btc_amount"`
+	FiatCurrency       string          `json:"fiat_currency"`
+	RequiredCapitalEUR float64         `json:"required_capital_eur"`
+	HedgeVenue         string          `json:"hedge_venue"`
+	HedgeSide          string          `json:"hedge_side"`
+	HedgeNotionalBTC   float64         `json:"hedge_notional_btc"`
+	Leverage           float64         `json:"leverage"`
+	OfferID            string          `json:"offer_id"`
+	Dex                string          `json:"dex"`
+	FiatAmount         float64         `json:"fiat_amount"`
+	TransactionID      uint            `json:"transaction_id,omitempty"`
+	SelectedOffer      json.RawMessage `json:"selected_offer,omitempty"`
+}
+
+func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
+	if s.tradeFlow == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("tradeflow is not configured"))
 		return
 	}
 
-	var req spotBuyRequest
+	var req tradeflowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
@@ -48,11 +65,63 @@ func (s *Server) handleCexSpotBuy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital_eur must be greater than zero"))
 		return
 	}
+	if strings.TrimSpace(req.HedgeVenue) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("hedge_venue is required"))
+		return
+	}
+	if req.HedgeNotionalBTC <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("hedge_notional_btc must be greater than zero"))
+		return
+	}
+	marketSide := strings.TrimSpace(req.MarketSide)
+	if marketSide == "" {
+		marketSide = "bid"
+	}
 
-	result, err := s.cexAccount.MarketBuyBTC(r.Context(), provider, req.BTCAmount, req.FiatCurrency, req.RequiredCapitalEUR)
+	result, err := s.tradeFlow.Run(r.Context(), tradeflow.Order{
+		Provider:           provider,
+		MarketSide:         marketSide,
+		BTCAmount:          req.BTCAmount,
+		FiatCurrency:       req.FiatCurrency,
+		RequiredCapitalEUR: req.RequiredCapitalEUR,
+		HedgeVenue:         req.HedgeVenue,
+		HedgeSide:          req.HedgeSide,
+		HedgeNotionalBTC:   req.HedgeNotionalBTC,
+		Leverage:           req.Leverage,
+		OfferID:            strings.TrimSpace(req.OfferID),
+		Dex:                strings.TrimSpace(req.Dex),
+		FiatAmount:         req.FiatAmount,
+		TransactionID:      req.TransactionID,
+		SelectedOffer:      req.SelectedOffer,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
+	}
+
+	if strings.TrimSpace(req.OfferID) != "" && strings.TrimSpace(req.Dex) != "" {
+		order := tradeflow.Order{
+			Provider:           provider,
+			MarketSide:         marketSide,
+			BTCAmount:          req.BTCAmount,
+			FiatCurrency:       req.FiatCurrency,
+			RequiredCapitalEUR: req.RequiredCapitalEUR,
+			HedgeVenue:         req.HedgeVenue,
+			HedgeSide:          req.HedgeSide,
+			HedgeNotionalBTC:   req.HedgeNotionalBTC,
+			Leverage:           req.Leverage,
+			OfferID:            strings.TrimSpace(req.OfferID),
+			Dex:                strings.TrimSpace(req.Dex),
+			FiatAmount:         req.FiatAmount,
+			TransactionID:      req.TransactionID,
+			SelectedOffer:      req.SelectedOffer,
+		}
+		txID, persistErr := tradeflow.PersistBidResult(r.Context(), s.repo, order, result, result.Withdrawal.WalletAddress)
+		if persistErr != nil {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("tradeflow succeeded but failed to persist transaction: %w", persistErr))
+			return
+		}
+		result.TransactionID = txID
 	}
 	writeJSON(w, http.StatusOK, result)
 }
@@ -101,45 +170,15 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, report)
 }
 
-// hedgeOpenRequest is the JSON body for POST /api/cex/hedge-open.
-type hedgeOpenRequest struct {
-	Venue       string  `json:"venue"`
-	Side        string  `json:"side"`
-	BTCNotional float64 `json:"btc_notional"`
-	Leverage    float64 `json:"leverage"`
-}
-
-func (s *Server) handleCexHedgeOpen(w http.ResponseWriter, r *http.Request) {
-	if s.cexAccount == nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("cex account service is not configured"))
-		return
-	}
-
-	var req hedgeOpenRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
-		return
-	}
-	if strings.TrimSpace(req.Venue) == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("venue is required"))
-		return
-	}
-	if req.BTCNotional <= 0 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("btc_notional must be greater than zero"))
-		return
-	}
-
-	result, err := s.cexAccount.OpenHedge(r.Context(), req.Venue, req.Side, req.BTCNotional, req.Leverage)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
-}
-
 // WithCexAccount attaches the CEX account overview service.
 func (s *Server) WithCexAccount(service *cexaccount.Service) *Server {
 	s.cexAccount = service
+	return s
+}
+
+// WithTradeFlow attaches the bid-side trade orchestrator.
+func (s *Server) WithTradeFlow(runner TradeFlowRunner) *Server {
+	s.tradeFlow = runner
 	return s
 }
 
@@ -203,4 +242,54 @@ func (s *Server) handleCexProviderRequest(
 		return
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+// withdrawalTrackResponse merges CEX withdrawal status with optional mempool tx data.
+type withdrawalTrackResponse struct {
+	cexaccount.WithdrawalStatus
+	Mempool *bitcoin.TxStatus `json:"mempool,omitempty"`
+}
+
+func (s *Server) handleCexWithdrawalTrack(w http.ResponseWriter, r *http.Request) {
+	if s.cexAccount == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("cex account service is not configured"))
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
+	if provider == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("provider query parameter is required"))
+		return
+	}
+	canonical, err := accounthealth.CanonicalProvider(provider)
+	if err != nil || !accounthealth.IsCEXProvider(canonical) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(accounthealth.SupportedCEXProviders(), ", ")))
+		return
+	}
+
+	withdrawalID := strings.TrimSpace(r.URL.Query().Get("withdrawal_id"))
+	if withdrawalID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("withdrawal_id query parameter is required"))
+		return
+	}
+	clientRequestID := strings.TrimSpace(r.URL.Query().Get("client_request_id"))
+
+	status, err := s.cexAccount.GetWithdrawalStatus(r.Context(), provider, withdrawalID, clientRequestID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+
+	resp := withdrawalTrackResponse{WithdrawalStatus: *status}
+	if status.TxHash != "" {
+		fetcher := bitcoin.NewNetworkDataFetcher()
+		if tx, txErr := fetcher.FetchTransaction(r.Context(), status.TxHash); txErr == nil {
+			resp.Mempool = tx
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

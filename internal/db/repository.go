@@ -214,6 +214,23 @@ func (r *TransactionRepository) ListTransactions(filters TransactionFilters) ([]
 	return transactions, total, nil
 }
 
+// GetTransactionsByStatuses returns transactions matching any of the given statuses.
+// When direction is non-empty, results are limited to that direction (BUY/SELL).
+func (r *TransactionRepository) GetTransactionsByStatuses(statuses []TransactionStatus, direction string) ([]Transaction, error) {
+	if len(statuses) == 0 {
+		return nil, nil
+	}
+	var transactions []Transaction
+	query := r.db.Where("status IN ?", statuses)
+	if dir := strings.TrimSpace(direction); dir != "" {
+		query = query.Where("direction = ?", strings.ToUpper(dir))
+	}
+	if err := query.Order("created_at ASC").Find(&transactions).Error; err != nil {
+		return nil, fmt.Errorf("failed to get transactions by statuses: %w", err)
+	}
+	return transactions, nil
+}
+
 // GetTransactionsByDirection retrieves transactions filtered by direction (BUY/SELL)
 func (r *TransactionRepository) GetTransactionsByDirection(direction string) ([]Transaction, error) {
 	var transactions []Transaction

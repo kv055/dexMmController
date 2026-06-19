@@ -159,6 +159,8 @@ type WithdrawFromExchangeRequest struct {
 	LNDDestination string
 	// ClientRequestID is the client request id value for the withdraw from exchange request.
 	ClientRequestID string
+	// AddressTag carries exchange-specific destination metadata (Kraken withdrawal key).
+	AddressTag string
 	// GenerateNewLNDAdress is the generate new lndadress value for the withdraw from exchange request.
 	GenerateNewLNDAdress bool
 }
@@ -231,6 +233,7 @@ func (b *WalletExchangeBridge) WithdrawFromExchangeToLND(ctx context.Context, re
 		Network:         req.Network,
 		Address:         address,
 		Amount:          req.Amount,
+		AddressTag:      req.AddressTag,
 		ClientRequestID: req.ClientRequestID,
 	})
 	if err != nil {

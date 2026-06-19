@@ -1262,7 +1262,7 @@ func (s *Service) WhitelistedLNDWithdrawAddress(ctx context.Context, rawProvider
 // WithdrawSpotToLND initiates an on-chain BTC withdrawal from the CEX to the given
 // LND wallet address. lndAddress must already be on the CEX's withdrawal whitelist —
 // use WhitelistedLNDWithdrawAddress to obtain it. amountBTC is the net BTC to
-// withdraw (typically SpotOrderResult.Execution.FilledBTC). Binance only for now.
+// withdraw (typically SpotOrderResult.Execution.FilledBTC).
 func (s *Service) WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress string) (*lnd.WithdrawFromExchangeResult, error) {
 	if amountBTC <= 0 {
 		return nil, fmt.Errorf("withdraw amount must be greater than zero")
@@ -1293,9 +1293,62 @@ func (s *Service) WithdrawSpotToLND(ctx context.Context, rawProvider string, amo
 			LNDDestination:  lndAddress,
 			ClientRequestID: clientRequestID,
 		})
+	case "kraken":
+		client := kraken.NewClient(s.cfg.KrakenBaseURL, key.APIKey, key.APISecret)
+		rows, err := client.GetWithdrawAddresses(ctx, "XBT")
+		if err != nil {
+			return nil, fmt.Errorf("kraken: list withdrawal addresses: %w", err)
+		}
+		withdrawKey, err := krakenWithdrawKeyForAddress(rows, lndAddress)
+		if err != nil {
+			return nil, err
+		}
+		bridge := lnd.NewWalletExchangeBridge(s.lnd, lnd.NewKrakenBridge(
+			client,
+			map[string]string{"XBT": "Bitcoin"},
+			nil,
+			nil,
+			nil,
+		))
+		return bridge.WithdrawFromExchangeToLND(ctx, lnd.WithdrawFromExchangeRequest{
+			Coin:            "XBT",
+			Network:         "Bitcoin",
+			Amount:          amount,
+			LNDDestination:  lndAddress,
+			ClientRequestID: clientRequestID,
+			AddressTag:      withdrawKey,
+		})
 	default:
 		return nil, fmt.Errorf("CEX→LND withdrawal not yet supported for %s", provider)
 	}
+}
+
+func krakenWithdrawKeyForAddress(rows []kraken.WithdrawAddress, lndAddress string) (string, error) {
+	target := strings.ToLower(strings.TrimSpace(lndAddress))
+	if target == "" {
+		return "", fmt.Errorf("kraken: lnd address is required")
+	}
+	var key string
+	var matches int
+	for _, row := range rows {
+		if !row.Verified || strings.TrimSpace(row.Address) == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(row.Address), target) {
+			matches++
+			key = strings.TrimSpace(row.Key)
+		}
+	}
+	if matches == 0 {
+		return "", fmt.Errorf("kraken: no verified withdrawal address matches %q", lndAddress)
+	}
+	if matches > 1 {
+		return "", fmt.Errorf("kraken: ambiguous withdrawal keys for address %q", lndAddress)
+	}
+	if key == "" {
+		return "", fmt.Errorf("kraken: withdrawal key missing for address %q", lndAddress)
+	}
+	return key, nil
 }
 
 func isFiatAsset(asset string) bool {
