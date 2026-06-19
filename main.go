@@ -31,7 +31,6 @@ import (
 	"dexMmController/internal/exchanges/dex/robosats"
 	"dexMmController/internal/healthcheck"
 	"dexMmController/internal/hedgestream"
-	"dexMmController/internal/hummingbot"
 	"dexMmController/internal/lndhealth"
 	"dexMmController/internal/openclaw"
 	"dexMmController/internal/premiumoffers"
@@ -44,9 +43,6 @@ func main() {
 	// ── Config ────────────────────────────────────────────────────────────────
 	databaseURL := envOr("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/dexarb?sslmode=disable")
 	openclawURL := envOr("OPENCLAW_URL", "")
-	hbURL := envOr("HUMMINGBOT_URL", "http://localhost:8000")
-	hbUser := envOr("HUMMINGBOT_USERNAME", "admin")
-	hbPass := mustEnv("HUMMINGBOT_PASSWORD")
 	hhAPIKey := envOr("HODLHODL_API_KEY", "")
 	hhBaseURL := envOr("HODLHODL_URL", "")
 	binanceBaseURL := envOr("BINANCE_API_BASE_URL", "")
@@ -126,9 +122,6 @@ func main() {
 	}
 	defer func() { _ = claw.Close() }()
 
-	// ── Hummingbot ────────────────────────────────────────────────────────────
-	hb := hummingbot.NewClient(hbURL, hbUser, hbPass)
-
 	// ── Bitcoin ───────────────────────────────────────────────────────────────
 	btc := bitcoin.NewNetworkDataFetcher()
 
@@ -148,7 +141,7 @@ func main() {
 	})
 
 	// ── HealthChecker + dexrelay ──────────────────────────────────────────────
-	hc := healthcheck.NewHealthChecker(repo, claw, hb, btc, hh)
+	hc := healthcheck.NewHealthChecker(repo, claw, btc, hh)
 	dexTaker := dexoffer.NewTaker(repo, bq, hh, rs)
 	exchangeAccountHealth := accounthealth.NewChecker(repo, accounthealth.Config{
 		HodlHodlBaseURL: hhBaseURL,
@@ -158,7 +151,7 @@ func main() {
 		RobosatsBaseURL: robosatsURL,
 		TorProxyURL:     torProxyURL,
 	})
-	cexAccountService := cexaccount.NewService(repo, hb, accounthealth.Config{
+	cexAccountService := cexaccount.NewService(repo, accounthealth.Config{
 		HodlHodlBaseURL:         hhBaseURL,
 		BinanceBaseURL:          binanceBaseURL,
 		KrakenBaseURL:           krakenBaseURL,

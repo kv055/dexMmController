@@ -18,7 +18,6 @@ import (
 	"dexMmController/internal/exchanges/cex/coinbase"
 	"dexMmController/internal/exchanges/cex/coinbaseexchange"
 	"dexMmController/internal/exchanges/cex/kraken"
-	"dexMmController/internal/hummingbot"
 	"dexMmController/internal/pretradechecks"
 	lnd "dexMmController/internal/wallethub"
 )
@@ -32,7 +31,6 @@ type Repository interface {
 // Service fetches live CEX account data for the trading UI.
 type Service struct {
 	repo       Repository
-	hb         *hummingbot.Client
 	cfg        accounthealth.Config
 	bidChecker *pretradechecks.BidChecker
 	lnd        *lnd.Client
@@ -51,8 +49,8 @@ func (s *Service) WithLND(c *lnd.Client) *Service {
 }
 
 // NewService creates a CEX account service.
-func NewService(repo Repository, hb *hummingbot.Client, cfg accounthealth.Config) *Service {
-	return &Service{repo: repo, hb: hb, cfg: cfg}
+func NewService(repo Repository, cfg accounthealth.Config) *Service {
+	return &Service{repo: repo, cfg: cfg}
 }
 
 // DepositAddress is a deposit destination on a CEX.
@@ -355,10 +353,7 @@ func (s *Service) Balances(ctx context.Context, rawProvider string) (*BalancesRe
 		}
 		return balancesFromCoinbase(accounts), nil
 	default:
-		if s.hb == nil {
-			return nil, errors.New("hummingbot client is not configured")
-		}
-		return balancesFromHummingbot(ctx, s.hb, provider)
+		return nil, fmt.Errorf("balances not supported for provider %q", provider)
 	}
 }
 
@@ -392,43 +387,8 @@ func (s *Service) HedgePositions(ctx context.Context, rawProvider string) (*Hedg
 }
 
 // SpotTrades returns recent spot market fills for the provider.
-func (s *Service) SpotTrades(ctx context.Context, rawProvider string, limit int) ([]SpotTrade, error) {
-	provider, err := accounthealth.CanonicalProvider(rawProvider)
-	if err != nil {
-		return nil, err
-	}
-	if s.hb == nil {
-		return nil, errors.New("hummingbot client is not configured")
-	}
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 500 {
-		limit = 500
-	}
-
-	trades, err := s.hb.Trades(ctx, hummingbot.TradeFilterRequest{
-		ConnectorNames: []string{provider},
-		Limit:          limit,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]SpotTrade, 0, len(trades))
-	for _, trade := range trades {
-		out = append(out, SpotTrade{
-			TradeID:     trade.TradeID,
-			TradingPair: trade.TradingPair,
-			TradeType:   trade.TradeType,
-			Price:       trade.Price,
-			Amount:      trade.Amount,
-			Fee:         trade.Fee,
-			FeeAsset:    trade.FeeCurrency,
-			Timestamp:   time.UnixMilli(trade.Timestamp).UTC().Format(time.RFC3339),
-		})
-	}
-	return out, nil
+func (s *Service) SpotTrades(_ context.Context, _ string, _ int) ([]SpotTrade, error) {
+	return nil, errors.New("spot trades listing is not supported (hummingbot removed)")
 }
 
 // defaultMaxMarketBuyBTC is the fallback per-order cap when MAX_MARKET_BUY_BTC is unset.
@@ -1113,48 +1073,6 @@ func balancesFromKraken(balances kraken.Balance) *BalancesResponse {
 	return resp
 }
 
-func balancesFromHummingbot(ctx context.Context, client *hummingbot.Client, provider string) (*BalancesResponse, error) {
-	state, err := client.PortfolioState(ctx, hummingbot.PortfolioStateRequest{
-		ConnectorNames: []string{provider},
-		SkipGateway:    true,
-		Refresh:        true,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	resp := &BalancesResponse{
-		Fiat:   []AssetBalance{},
-		Source: "hummingbot",
-	}
-	for _, connectors := range state {
-		for connName, tokens := range connectors {
-			if !strings.EqualFold(connName, provider) {
-				continue
-			}
-			for _, token := range tokens {
-				if token.Total <= 0 && token.Available <= 0 {
-					continue
-				}
-				entry := AssetBalance{
-					Asset:     token.Token,
-					Available: token.Available,
-					Total:     token.Total,
-					USDValue:  token.USDValue,
-				}
-				if isBitcoinAsset(token.Token) {
-					copy := entry
-					resp.Bitcoin = &copy
-					continue
-				}
-				if isFiatAsset(token.Token) {
-					resp.Fiat = append(resp.Fiat, entry)
-				}
-			}
-		}
-	}
-	return resp, nil
-}
 
 func hedgePositionFromTransaction(tx db.Transaction) HedgePosition {
 	position := HedgePosition{

@@ -20,7 +20,7 @@ func TestHandleCexWithdrawalTrackNotConfigured(t *testing.T) {
 }
 
 func TestHandleCexWithdrawalTrackRequiresProvider(t *testing.T) {
-	s := (&Server{}).WithCexAccount(cexaccount.NewService(nil, nil, accounthealthConfig()))
+	s := (&Server{}).WithCexAccount(cexaccount.NewService(nil, accounthealthConfig()))
 	req := httptest.NewRequest(http.MethodGet, "/api/cex/withdrawal-track?withdrawal_id=wd-1", nil)
 	rec := httptest.NewRecorder()
 	s.handleCexWithdrawalTrack(rec, req)
@@ -30,7 +30,7 @@ func TestHandleCexWithdrawalTrackRequiresProvider(t *testing.T) {
 }
 
 func TestHandleCexWithdrawalTrackRequiresWithdrawalID(t *testing.T) {
-	s := (&Server{}).WithCexAccount(cexaccount.NewService(nil, nil, accounthealthConfig()))
+	s := (&Server{}).WithCexAccount(cexaccount.NewService(nil, accounthealthConfig()))
 	req := httptest.NewRequest(http.MethodGet, "/api/cex/withdrawal-track?provider=binance", nil)
 	rec := httptest.NewRecorder()
 	s.handleCexWithdrawalTrack(rec, req)

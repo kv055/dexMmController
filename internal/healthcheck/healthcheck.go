@@ -9,23 +9,21 @@ import (
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/db"
 	"dexMmController/internal/exchanges/dex/hodlhodl"
-	"dexMmController/internal/hummingbot"
 	"dexMmController/internal/openclaw"
 )
 
 // HealthChecker queries the DB for incomplete transactions and verifies their
 // actual state against external systems, advancing the status where appropriate.
 type HealthChecker struct {
-	repo       *db.TransactionRepository
-	openclaw   *openclaw.Client
-	hummingbot *hummingbot.Client
-	btc        *bitcoin.NetworkDataFetcher
-	hodlhodl   *hodlhodl.Client
+	repo     *db.TransactionRepository
+	openclaw *openclaw.Client
+	btc      *bitcoin.NetworkDataFetcher
+	hodlhodl *hodlhodl.Client
 }
 
 // NewHealthChecker creates a health checker.
-func NewHealthChecker(repo *db.TransactionRepository, oc *openclaw.Client, hb *hummingbot.Client, btc *bitcoin.NetworkDataFetcher, hh *hodlhodl.Client) *HealthChecker {
-	return &HealthChecker{repo: repo, openclaw: oc, hummingbot: hb, btc: btc, hodlhodl: hh}
+func NewHealthChecker(repo *db.TransactionRepository, oc *openclaw.Client, btc *bitcoin.NetworkDataFetcher, hh *hodlhodl.Client) *HealthChecker {
+	return &HealthChecker{repo: repo, openclaw: oc, btc: btc, hodlhodl: hh}
 }
 
 // RunPeriodic executes healthcheck on interval until ctx is cancelled.
@@ -92,55 +90,9 @@ func (h *HealthChecker) verify(ctx context.Context, tx *db.Transaction) error {
 	}
 }
 
-// verifyCexTradeSuccessful confirms that a BTC buy trade occurred on the CEX
-// after the fiat deposit arrived and that a positive BTC balance is now
-// visible. If both conditions hold the transaction is advanced to
-// StatusCexTradeSuccessful.
-func (h *HealthChecker) verifyCexTradeSuccessful(ctx context.Context, tx *db.Transaction) error {
-	// 1. Fetch all trades recorded for this connector.
-	trades, err := h.hummingbot.TradesForExchange(ctx, string(tx.Cex))
-	if err != nil {
-		return fmt.Errorf("verifyCexTradeSuccessful: failed to fetch trades: %w", err)
-	}
-
-	// 2. Look for a BTC buy trade that:
-	//    a) is on the expected trading pair (e.g. "BTC-EUR")
-	//    b) occurred after the fiat deposit arrived at the CEX
-	//    c) consumed at least 99 % of the expected fiat amount
-	//       (allowing 1 % for fees / slippage)
-	tradingPair := "BTC-" + tx.FiatCurrency
-	fiatArrivedMs := tx.TransferFiatToCexArrivalTime.UnixMilli()
-	const tolerance = 0.99
-
-	found := false
-	for i := range trades {
-		t := &trades[i]
-		if t.TradingPair != tradingPair || t.TradeType != "BUY" {
-			continue
-		}
-		if t.Timestamp < fiatArrivedMs {
-			continue
-		}
-		if t.Price*t.Amount >= tx.FiatAmount*tolerance {
-			found = true
-			break
-		}
-	}
-	if !found {
-		// Trade not yet visible — stay in current status and retry later.
-		return nil
-	}
-
-	// 3. Confirm that a positive BTC balance is now present on the exchange.
-	btcBalance, err := h.hummingbot.BalanceForExchange(ctx, string(tx.Cex), "BTC")
-	if err != nil || btcBalance.Available <= 0 {
-		// Balance not yet reflected — wait for the next healthcheck cycle.
-		return nil
-	}
-
-	// All checks passed — advance to trade-successful status.
-	tx.Status = db.StatusCexTradeSuccessful
-	return h.repo.UpdateTransaction(tx)
+// verifyCexTradeSuccessful is handled by the tradeflow orchestrator for bid rows.
+func (h *HealthChecker) verifyCexTradeSuccessful(_ context.Context, _ *db.Transaction) error {
+	return nil
 }
 
 // verifyCexCryptoWithdrawalInitiated is handled by dexrelay for bid tradeflow rows.
@@ -295,18 +247,7 @@ func (h *HealthChecker) verifyFiatToCexInitiated(ctx context.Context, tx *db.Tra
 	return nil
 }
 
-// verifyFiatToCexArrived confirms the fiat balance on the CEX is at least the
-// expected amount. Uses tx.FiatCurrency and tx.Cex from the DB to identify
-// which asset and exchange to query via Hummingbot.
-func (h *HealthChecker) verifyFiatToCexArrived(ctx context.Context, tx *db.Transaction) error {
-	balance, err := h.hummingbot.BalanceForExchange(ctx, string(tx.Cex), tx.FiatCurrency)
-	if err != nil {
-		// Balance endpoint returned nothing for this asset — fiat not visible yet.
-		return nil
-	}
-	if balance.Available >= tx.FiatAmount {
-		tx.Status = db.StatusFiatToCexArrived
-		return h.repo.UpdateTransaction(tx)
-	}
+// verifyFiatToCexArrived is handled by the tradeflow orchestrator for bid rows.
+func (h *HealthChecker) verifyFiatToCexArrived(_ context.Context, _ *db.Transaction) error {
 	return nil
 }
