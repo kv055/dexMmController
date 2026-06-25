@@ -1,4 +1,4 @@
-package pretradechecks
+package cexaccount
 
 import "strings"
 

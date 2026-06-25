@@ -1,4 +1,4 @@
-package dexoffer
+package dexaccount
 
 import (
 	"context"
@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"dexMmController/internal/db"
-	"dexMmController/internal/exchanges/dex/bisq"
-	"dexMmController/internal/exchanges/dex/hodlhodl"
-	"dexMmController/internal/exchanges/dex/robosats"
+	"dexMmController/internal/exchangeconnectors/dex/bisq"
+	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
+	"dexMmController/internal/exchangeconnectors/dex/robosats"
 )
 
 const (
@@ -69,7 +69,7 @@ type TakeResult struct {
 func (t *Taker) Take(ctx context.Context, in OfferInput) (*TakeResult, error) {
 	offerID := strings.TrimSpace(in.OfferID)
 	if offerID == "" {
-		return nil, fmt.Errorf("dexoffer: offer_id is required")
+		return nil, fmt.Errorf("dexaccount: offer_id is required")
 	}
 
 	switch db.DexPlatformFromSlug(in.Exchange) {
@@ -80,22 +80,22 @@ func (t *Taker) Take(ctx context.Context, in OfferInput) (*TakeResult, error) {
 	case db.DexRoboSats:
 		return t.takeRoboSats(ctx, offerID)
 	default:
-		return nil, fmt.Errorf("dexoffer: unsupported exchange %q", in.Exchange)
+		return nil, fmt.Errorf("dexaccount: unsupported exchange %q", in.Exchange)
 	}
 }
 
 // ResolveDeposit polls trade/position APIs until an on-chain address or LN invoice is available.
 func (t *Taker) ResolveDeposit(ctx context.Context, exchange string, execution map[string]any) (address, invoice string, err error) {
 	if execution == nil {
-		return "", "", fmt.Errorf("dexoffer: execution payload is required")
+		return "", "", fmt.Errorf("dexaccount: execution payload is required")
 	}
-	if addr := stringField(execution, "escrow_address"); addr != "" {
+	if addr := StringField(execution, "escrow_address"); addr != "" {
 		return addr, "", nil
 	}
-	if addr := stringField(execution, "deposit_address"); addr != "" {
+	if addr := StringField(execution, "deposit_address"); addr != "" {
 		return addr, "", nil
 	}
-	if inv := stringField(execution, "invoice"); inv != "" {
+	if inv := StringField(execution, "invoice"); inv != "" {
 		return "", inv, nil
 	}
 
@@ -126,7 +126,7 @@ func (t *Taker) ResolveDeposit(ctx context.Context, exchange string, execution m
 		case <-time.After(depositPollInterval):
 		}
 	}
-	return "", "", fmt.Errorf("dexoffer: deposit destination not available for %s after %s", exchange, depositPollTimeout)
+	return "", "", fmt.Errorf("dexaccount: deposit destination not available for %s after %s", exchange, depositPollTimeout)
 }
 
 func (t *Taker) takeHodlHodl(ctx context.Context, offerID string, fiatAmount float64) (*TakeResult, error) {
@@ -155,7 +155,7 @@ func (t *Taker) takeBisq(ctx context.Context, offerID string, btcAmount float64)
 	if t.bisq == nil {
 		return nil, fmt.Errorf("bisq client is not configured")
 	}
-	params := bisq.TakeOfferParams{AmountSats: btcToSats(btcAmount)}
+	params := bisq.TakeOfferParams{AmountSats: uint64(BTCToSats(btcAmount))}
 	trade, err := t.bisq.TakeOffer(ctx, offerID, params)
 	if err != nil {
 		return nil, err
@@ -177,7 +177,7 @@ func (t *Taker) takeRoboSats(ctx context.Context, offerID string) (*TakeResult, 
 	}
 	client := t.robosats
 	if token, err := t.latestRoboSatsToken(ctx); err != nil {
-		log.Printf("dexoffer: failed to load Robosats token from database; using configured client token: %v", err)
+		log.Printf("dexaccount: failed to load Robosats token from database; using configured client token: %v", err)
 	} else if token != "" {
 		client = t.robosats.WithAuthToken(token)
 	}
@@ -201,7 +201,7 @@ func (t *Taker) takeRoboSats(ctx context.Context, offerID string) (*TakeResult, 
 }
 
 func (t *Taker) pollRoboSatsDeposit(ctx context.Context, execution map[string]any) (string, string, error) {
-	positionID := stringField(execution, "position_id")
+	positionID := StringField(execution, "position_id")
 	if positionID == "" {
 		return "", "", fmt.Errorf("robosats: position_id missing from execution")
 	}
@@ -218,7 +218,7 @@ func (t *Taker) pollRoboSatsDeposit(ctx context.Context, execution map[string]an
 }
 
 func (t *Taker) pollBisqDeposit(ctx context.Context, execution map[string]any) (string, string, error) {
-	tradeID := stringField(execution, "trade_id")
+	tradeID := StringField(execution, "trade_id")
 	if tradeID == "" {
 		return "", "", fmt.Errorf("bisq: trade_id missing from execution")
 	}
@@ -254,46 +254,18 @@ func extractRoboSatsDeposit(position *robosats.Position) (address, invoice strin
 		var raw map[string]any
 		if err := json.Unmarshal(position.Raw, &raw); err == nil {
 			for _, key := range []string{"bond_invoice", "invoice", "bolt11", "ln_invoice", "payout_invoice"} {
-				if inv := stringField(raw, key); strings.HasPrefix(strings.ToLower(inv), "ln") || strings.HasPrefix(inv, "lntb") {
+				if inv := StringField(raw, key); strings.HasPrefix(strings.ToLower(inv), "ln") || strings.HasPrefix(inv, "lntb") {
 					return "", inv
 				}
 			}
 			for _, key := range []string{"escrow_address", "deposit_address", "address", "bond_address"} {
-				if addr := stringField(raw, key); looksLikeOnChainAddress(addr) {
+				if addr := StringField(raw, key); LooksLikeOnChainAddress(addr) {
 					return addr, ""
 				}
 			}
 		}
 	}
 	return "", ""
-}
-
-func looksLikeOnChainAddress(addr string) bool {
-	addr = strings.TrimSpace(addr)
-	return strings.HasPrefix(addr, "bc1") || strings.HasPrefix(addr, "1") || strings.HasPrefix(addr, "3") || strings.HasPrefix(addr, "tb1")
-}
-
-func btcToSats(amount float64) uint64 {
-	if amount <= 0 {
-		return 0
-	}
-	return uint64(amount * 100_000_000)
-}
-
-func stringField(m map[string]any, key string) string {
-	if m == nil {
-		return ""
-	}
-	v, ok := m[key]
-	if !ok || v == nil {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	default:
-		return strings.TrimSpace(fmt.Sprint(t))
-	}
 }
 
 // DefaultSatPerVbyte is the conservative on-chain fee rate used for LND→DEX relay.

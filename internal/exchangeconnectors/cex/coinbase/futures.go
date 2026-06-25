@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/exchanges/cex"
+	"dexMmController/internal/exchangeconnectors/cex"
 )
 
 const defaultINTXBaseURL = "https://api.international.coinbase.com"
@@ -98,6 +98,14 @@ func (c *FuturesClient) PlaceOrder(ctx context.Context, instrument, side string,
 		Status:     strings.ToLower(resp.Order.Status),
 		Raw:        rawResp,
 	}, nil
+}
+
+// CurrentPosition fetches the live BTC-PERP position synchronously (a one-shot of
+// the same signed REST call the position stream polls). Used as an idempotency
+// guard after a hedge attempt errors: it answers "did my order actually open?"
+// A flat/absent position yields Side:"flat".
+func (c *FuturesClient) CurrentPosition(ctx context.Context) (cex.HedgePositionUpdate, error) {
+	return c.fetchPosition(ctx)
 }
 
 type coinbaseINTXPortfoliosResponse struct {

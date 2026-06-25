@@ -3,7 +3,7 @@ package binance
 import (
 	"context"
 
-	"dexMmController/internal/exchanges/cex"
+	"dexMmController/internal/exchangeconnectors/cex"
 
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"

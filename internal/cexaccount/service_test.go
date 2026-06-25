@@ -8,10 +8,45 @@ import (
 	"time"
 
 	"dexMmController/internal/db"
-	"dexMmController/internal/exchanges/cex/binance"
-	"dexMmController/internal/exchanges/cex/coinbase"
-	"dexMmController/internal/exchanges/cex/kraken"
+	"dexMmController/internal/exchangeconnectors/cex/binance"
+	"dexMmController/internal/exchangeconnectors/cex/coinbase"
+	"dexMmController/internal/exchangeconnectors/cex/kraken"
 )
+
+func TestCanonicalProvider(t *testing.T) {
+	tests := map[string]string{
+		"kraken":    "Kraken",
+		"BINANCE":   "Binance",
+		"coinbase":  "Coinbase",
+		"hodl hodl": "HodlHodl",
+		"HodlHodl":  "HodlHodl",
+		"robosats":  "Robosats",
+		"RoboSats":  "Robosats",
+	}
+	for input, want := range tests {
+		got, err := CanonicalProvider(input)
+		if err != nil {
+			t.Fatalf("CanonicalProvider(%q): %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("CanonicalProvider(%q) = %q, want %q", input, got, want)
+		}
+	}
+	if _, err := CanonicalProvider("Bisq"); !errors.Is(err, ErrUnsupportedProvider) {
+		t.Fatalf("CanonicalProvider(Bisq) error = %v, want ErrUnsupportedProvider", err)
+	}
+}
+
+func TestParseIntervalDefaultIsTenMinutes(t *testing.T) {
+	for _, raw := range []string{"", "nope", "-1s", "0s"} {
+		if got := ParseInterval(raw); got != 10*time.Minute {
+			t.Fatalf("ParseInterval(%q) = %s, want 10m", raw, got)
+		}
+	}
+	if got := ParseInterval("30s"); got != 30*time.Second {
+		t.Fatalf("ParseInterval(30s) = %s, want 30s", got)
+	}
+}
 
 func TestHedgePositionFromTransactionActiveVsPast(t *testing.T) {
 	openDetails, _ := json.Marshal(map[string]string{

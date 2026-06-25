@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"dexMmController/internal/db"
-	"dexMmController/internal/dexoffer"
-	"dexMmController/internal/exchanges/dex/bisq"
-	"dexMmController/internal/exchanges/dex/hodlhodl"
-	"dexMmController/internal/exchanges/dex/robosats"
+	"dexMmController/internal/dexaccount"
+	"dexMmController/internal/exchangeconnectors/dex/bisq"
+	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
+	"dexMmController/internal/exchangeconnectors/dex/robosats"
 
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
@@ -30,7 +30,7 @@ const (
 // Watcher represents a watcher.
 type Watcher struct {
 	repo                *db.TransactionRepository
-	taker               *dexoffer.Taker
+	taker               *dexaccount.Taker
 	url                 string
 	netProfitThreshold  float64
 	minQualifiedOffers  int
@@ -79,7 +79,7 @@ func NewWatcher(
 ) *Watcher {
 	return &Watcher{
 		repo:               repo,
-		taker:              dexoffer.NewTaker(repo, bisqClient, hodlhodlClient, robosatsClient),
+		taker:              dexaccount.NewTaker(repo, bisqClient, hodlhodlClient, robosatsClient),
 		url:                streamURL,
 		netProfitThreshold: defaultNetProfitThreshold,
 		minQualifiedOffers: defaultMinQualifiedOffers,
@@ -353,7 +353,7 @@ func (w *Watcher) takeBestOffer(ctx context.Context, tx *db.Transaction, offers 
 		return fmt.Errorf("DEX taker is not configured")
 	}
 
-	takeResult, err := w.taker.Take(ctx, dexoffer.OfferInput{
+	takeResult, err := w.taker.Take(ctx, dexaccount.OfferInput{
 		Exchange:   selected.Exchange,
 		OfferID:    *selected.OfferID,
 		FiatAmount: offerFiatAmount(selected),

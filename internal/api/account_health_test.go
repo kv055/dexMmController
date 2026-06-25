@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/accounthealth"
+	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/lndhealth"
 )
@@ -16,9 +16,9 @@ type fakeAccountHealthChecker struct {
 	calledProvider string
 }
 
-func (f *fakeAccountHealthChecker) CheckProvider(_ context.Context, provider string) (accounthealth.Result, error) {
+func (f *fakeAccountHealthChecker) CheckProvider(_ context.Context, provider string) (cexaccount.HealthResult, error) {
 	f.calledProvider = provider
-	return accounthealth.Result{
+	return cexaccount.HealthResult{
 		Provider:  "Kraken",
 		Status:    "healthy",
 		Healthy:   true,

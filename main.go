@@ -20,21 +20,20 @@ import (
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
-	"dexMmController/internal/dexoffer"
+	"dexMmController/internal/dexaccount"
 	"dexMmController/internal/dexrelay"
-	"dexMmController/internal/exchanges/cex"
-	"dexMmController/internal/exchanges/cex/binance"
-	"dexMmController/internal/exchanges/cex/coinbase"
-	"dexMmController/internal/exchanges/cex/kraken"
-	"dexMmController/internal/exchanges/dex/bisq"
-	"dexMmController/internal/exchanges/dex/hodlhodl"
-	"dexMmController/internal/exchanges/dex/robosats"
+	"dexMmController/internal/exchangeconnectors/cex"
+	"dexMmController/internal/exchangeconnectors/cex/binance"
+	"dexMmController/internal/exchangeconnectors/cex/coinbase"
+	"dexMmController/internal/exchangeconnectors/cex/kraken"
+	"dexMmController/internal/exchangeconnectors/dex/bisq"
+	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
+	"dexMmController/internal/exchangeconnectors/dex/robosats"
 	"dexMmController/internal/healthcheck"
 	"dexMmController/internal/hedgestream"
 	"dexMmController/internal/lndhealth"
 	"dexMmController/internal/openclaw"
 	"dexMmController/internal/premiumoffers"
-	"dexMmController/internal/pretradechecks"
 	"dexMmController/internal/tradeflow"
 	lnd "dexMmController/internal/wallethub"
 )
@@ -142,8 +141,8 @@ func main() {
 
 	// ── HealthChecker + dexrelay ──────────────────────────────────────────────
 	hc := healthcheck.NewHealthChecker(repo, claw, btc, hh)
-	dexTaker := dexoffer.NewTaker(repo, bq, hh, rs)
-	exchangeAccountHealth := accounthealth.NewChecker(repo, accounthealth.Config{
+	dexTaker := dexaccount.NewTaker(repo, bq, hh, rs)
+	exchangeAccountHealth := accounthealth.NewChecker(repo, cexaccount.Config{
 		HodlHodlBaseURL: hhBaseURL,
 		BinanceBaseURL:  binanceBaseURL,
 		KrakenBaseURL:   krakenBaseURL,
@@ -151,7 +150,7 @@ func main() {
 		RobosatsBaseURL: robosatsURL,
 		TorProxyURL:     torProxyURL,
 	})
-	cexAccountService := cexaccount.NewService(repo, accounthealth.Config{
+	cexAccountService := cexaccount.NewService(repo, cexaccount.Config{
 		HodlHodlBaseURL:         hhBaseURL,
 		BinanceBaseURL:          binanceBaseURL,
 		KrakenBaseURL:           krakenBaseURL,
@@ -160,8 +159,8 @@ func main() {
 		RobosatsBaseURL:         robosatsURL,
 		TorProxyURL:             torProxyURL,
 	})
-	bidChecker := pretradechecks.NewBidChecker(
-		pretradechecks.BalanceFetcherFunc(func(ctx context.Context, provider, currency string) (float64, error) {
+	bidChecker := cexaccount.NewBidChecker(
+		cexaccount.BalanceFetcherFunc(func(ctx context.Context, provider, currency string) (float64, error) {
 			b, err := cexAccountService.Balances(ctx, provider)
 			if err != nil {
 				return 0, err
@@ -173,7 +172,7 @@ func main() {
 			}
 			return 0, nil
 		}),
-		pretradechecks.WhitelistFetcherFunc(func(ctx context.Context, provider string) ([]string, error) {
+		cexaccount.WhitelistFetcherFunc(func(ctx context.Context, provider string) ([]string, error) {
 			addrs, err := cexAccountService.WithdrawalAddresses(ctx, provider)
 			if err != nil {
 				return nil, err
@@ -186,7 +185,7 @@ func main() {
 			}
 			return out, nil
 		}),
-		pretradechecks.PermissionCheckerFunc(func(ctx context.Context, provider string) (map[string]string, error) {
+		cexaccount.PermissionCheckerFunc(func(ctx context.Context, provider string) (map[string]string, error) {
 			keys, err := repo.GetActiveAPIKeysForProvider(ctx, provider)
 			if err != nil {
 				return nil, err
@@ -229,7 +228,7 @@ func main() {
 			return coinbase.NewFuturesClient().StreamPositions(ctx)
 		},
 	})
-	tradeFlow := tradeflow.New(cexAccountService)
+	tradeFlow := tradeflow.New(cexAccountService, repo)
 	apiServer := api.NewServer(apiAddr, repo).
 		WithAccountHealth(exchangeAccountHealth).
 		WithCexAccount(cexAccountService).
@@ -277,7 +276,7 @@ func main() {
 
 		apiServer.WithLNDWallet(lndClient)
 		lndHealthChecker.SetClient(lndClient)
-		bidChecker.SetWallet(pretradechecks.WalletSourceFunc(func(ctx context.Context) ([]string, error) {
+		bidChecker.SetWallet(cexaccount.WalletSourceFunc(func(ctx context.Context) ([]string, error) {
 			props, err := lndClient.ListWalletAddresses(ctx)
 			if err != nil {
 				return nil, err

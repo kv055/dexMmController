@@ -3,7 +3,7 @@ package cexaccount
 import (
 	"testing"
 
-	"dexMmController/internal/exchanges/cex/kraken"
+	"dexMmController/internal/exchangeconnectors/cex/kraken"
 )
 
 func TestKrakenWithdrawKeyForAddress(t *testing.T) {

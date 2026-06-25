@@ -1,19 +1,10 @@
-package pretradechecks
+package cexaccount
 
 import (
 	"context"
 	"fmt"
 	"strings"
 	"sync"
-)
-
-// Canonical permission names and status values — mirrors accounthealth constants so
-// this package stays self-contained with no import of accounthealth.
-const (
-	permSpotTrading    = "spot_trading"
-	permHedgePositions = "hedge_positions"
-	permGranted        = "granted"
-	permUnsupported    = "unsupported"
 )
 
 // BidChecker runs all pre-trade checks for the bid side (buying BTC on a CEX).
@@ -40,30 +31,22 @@ func (c *BidChecker) SetWallet(ws WalletSource) {
 
 // CheckResult is the outcome of a single named pre-trade check.
 type CheckResult struct {
-	// Name is the stable machine identifier (e.g. "permissions").
-	Name string `json:"name"`
-	// Label is the human-readable check name (e.g. "API key permissions").
-	Label string `json:"label"`
-	// Passed is true when the check succeeded.
-	Passed bool `json:"passed"`
-	// Message carries the failure detail (or evaluation error) when Passed is false.
+	Name    string `json:"name"`
+	Label   string `json:"label"`
+	Passed  bool   `json:"passed"`
 	Message string `json:"message,omitempty"`
 }
 
 // Report is the full result of running every pre-trade check. OK is true only when
 // every check passed.
 type Report struct {
-	OK     bool          `json:"ok"`
-	Checks []CheckResult `json:"checks"`
-	// LNDWithdrawAddress is the LND on-chain address whitelisted on the CEX for
-	// post-trade withdrawal. Set when the withdrawal-whitelist check passes.
-	LNDWithdrawAddress string `json:"lnd_withdraw_address,omitempty"`
+	OK                 bool          `json:"ok"`
+	Checks             []CheckResult `json:"checks"`
+	LNDWithdrawAddress string        `json:"lnd_withdraw_address,omitempty"`
 }
 
 // Run executes every pre-trade check to completion — it never short-circuits on the
-// first failure — and returns a per-check Report. A check that cannot be evaluated
-// (an infrastructure error fetching balances, permissions, etc.) is reported as a
-// failed check, since the trade's safety can't be confirmed without it.
+// first failure — and returns a per-check Report.
 func (c *BidChecker) Run(ctx context.Context, provider, currency string, requiredCapital float64) Report {
 	checks := []struct {
 		name, label string
@@ -98,9 +81,8 @@ func (c *BidChecker) Run(ctx context.Context, provider, currency string, require
 	return report
 }
 
-// RunAll runs every check to completion (via Run) and returns an aggregated error
-// listing all failures, or nil when all checks pass. It is the gate used by the
-// actual market-buy path so a buy is never placed while any check is failing.
+// RunAll runs every check and returns an aggregated error listing all failures,
+// or nil when all checks pass.
 func (c *BidChecker) RunAll(ctx context.Context, provider, currency string, requiredCapital float64) error {
 	report := c.Run(ctx, provider, currency, requiredCapital)
 	if report.OK {
@@ -115,8 +97,6 @@ func (c *BidChecker) RunAll(ctx context.Context, provider, currency string, requ
 	return fmt.Errorf("pre-trade checks failed: %s", strings.Join(msgs, "; "))
 }
 
-// checkPermissions reads the cached CEX API key permission state from the DB and verifies
-// that spot trading is granted and hedge positions are not explicitly denied.
 func (c *BidChecker) checkPermissions(ctx context.Context, provider string) error {
 	perms, err := c.permissions.CEXPermissions(ctx, provider)
 	if err != nil {
@@ -126,16 +106,14 @@ func (c *BidChecker) checkPermissions(ctx context.Context, provider string) erro
 		return fmt.Errorf("no permission data available for %s; run the account health check first", provider)
 	}
 
-	if perms[permSpotTrading] != permGranted {
+	if perms[PermSpotTrading] != PermGranted {
 		return fmt.Errorf(
 			"pre-trade check failed: %s API key does not have spot trading permission (status: %q); check account health",
-			provider, perms[permSpotTrading],
+			provider, perms[PermSpotTrading],
 		)
 	}
 
-	// hedge_positions = "unsupported" is acceptable — Kraken and Coinbase use separate
-	// API keys for futures; only an explicit "denied" blocks the trade.
-	if hedgeStatus := perms[permHedgePositions]; hedgeStatus != permGranted && hedgeStatus != permUnsupported {
+	if hedgeStatus := perms[PermHedgePositions]; hedgeStatus != PermGranted && hedgeStatus != PermUnsupported {
 		return fmt.Errorf(
 			"pre-trade check failed: %s API key does not have hedge position permission (status: %q); check account health",
 			provider, hedgeStatus,
@@ -145,8 +123,6 @@ func (c *BidChecker) checkPermissions(ctx context.Context, provider string) erro
 	return nil
 }
 
-// checkCapital verifies the provider account holds enough fiat to cover the total capital
-// requirement (spot notional + hedge collateral + security deposit).
 func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string, required float64) error {
 	available, err := c.balance.FiatAvailable(ctx, provider, currency)
 	if err != nil {
@@ -165,9 +141,6 @@ func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string
 	return nil
 }
 
-// checkWhitelist verifies the provider's whitelisted withdrawal addresses contain at
-// least one address from the current LND wallet, ensuring funds can be returned after
-// the trade. It returns the matched LND wallet address when one exists.
 func (c *BidChecker) checkWhitelist(ctx context.Context, provider string) (string, error) {
 	c.walletMu.RLock()
 	wallet := c.wallet

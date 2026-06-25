@@ -12,13 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/accounthealth"
 	"dexMmController/internal/db"
-	"dexMmController/internal/exchanges/cex/binance"
-	"dexMmController/internal/exchanges/cex/coinbase"
-	"dexMmController/internal/exchanges/cex/coinbaseexchange"
-	"dexMmController/internal/exchanges/cex/kraken"
-	"dexMmController/internal/pretradechecks"
+	"dexMmController/internal/exchangeconnectors/cex"
+	"dexMmController/internal/exchangeconnectors/cex/binance"
+	"dexMmController/internal/exchangeconnectors/cex/coinbase"
+	"dexMmController/internal/exchangeconnectors/cex/coinbaseexchange"
+	"dexMmController/internal/exchangeconnectors/cex/kraken"
 	lnd "dexMmController/internal/wallethub"
 )
 
@@ -31,13 +30,13 @@ type Repository interface {
 // Service fetches live CEX account data for the trading UI.
 type Service struct {
 	repo       Repository
-	cfg        accounthealth.Config
-	bidChecker *pretradechecks.BidChecker
+	cfg        Config
+	bidChecker *BidChecker
 	lnd        *lnd.Client
 }
 
 // WithBidChecker attaches the pre-trade checker used by MarketBuyBTC.
-func (s *Service) WithBidChecker(c *pretradechecks.BidChecker) *Service {
+func (s *Service) WithBidChecker(c *BidChecker) *Service {
 	s.bidChecker = c
 	return s
 }
@@ -49,7 +48,7 @@ func (s *Service) WithLND(c *lnd.Client) *Service {
 }
 
 // NewService creates a CEX account service.
-func NewService(repo Repository, cfg accounthealth.Config) *Service {
+func NewService(repo Repository, cfg Config) *Service {
 	return &Service{repo: repo, cfg: cfg}
 }
 
@@ -359,7 +358,7 @@ func (s *Service) Balances(ctx context.Context, rawProvider string) (*BalancesRe
 
 // HedgePositions returns active and past hedge positions from MM transactions.
 func (s *Service) HedgePositions(ctx context.Context, rawProvider string) (*HedgePositionsResponse, error) {
-	provider, err := accounthealth.CanonicalProvider(rawProvider)
+	provider, err := CanonicalProvider(rawProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -432,7 +431,7 @@ func marketBuyPair(provider, fiatCurrency string) string {
 // PreTradeCheck runs all bid-side pre-trade checks to completion (without placing any
 // order) and returns the per-check report so the UI can show exactly which checks pass
 // or fail before the operator confirms the trade. It performs only read-only lookups.
-func (s *Service) PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64) (*pretradechecks.Report, error) {
+func (s *Service) PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64) (*Report, error) {
 	if s.bidChecker == nil {
 		return nil, fmt.Errorf("bid pre-trade checker not configured")
 	}
@@ -925,8 +924,49 @@ func (s *Service) OpenHedge(ctx context.Context, venue, side string, btcNotional
 	return result, nil
 }
 
+// HedgeSnapshot is the live, exchange-sourced state of the hedge instrument on a
+// venue. Unlike HedgePositions (which reads our own DB), this reflects the venue's
+// own books — so it can detect a position our records don't yet know about.
+type HedgeSnapshot struct {
+	Venue   string  `json:"venue"`
+	Side    string  `json:"side"` // long|short|flat
+	SizeBTC float64 `json:"size_btc"`
+}
+
+// LiveHedgePosition queries the venue directly for the current hedge position.
+// It is the idempotency guard for OpenHedge retries: after a hedge attempt errors,
+// callers compare the live position against what they tried to open to decide
+// whether the order actually filled (don't retry) or not (safe to retry).
+func (s *Service) LiveHedgePosition(ctx context.Context, venue string) (*HedgeSnapshot, error) {
+	venue = strings.ToLower(strings.TrimSpace(venue))
+	if !supportedHedgeVenues[venue] {
+		return nil, fmt.Errorf("unsupported hedge venue %q", venue)
+	}
+
+	var (
+		update cex.HedgePositionUpdate
+		err    error
+	)
+	switch venue {
+	case "kraken_futures":
+		update, err = kraken.NewFuturesClient().CurrentPosition(ctx)
+	case "coinbase_futures":
+		update, err = coinbase.NewFuturesClient().CurrentPosition(ctx)
+	case "binance_futures":
+		update, err = binance.NewFuturesClient().CurrentPosition(ctx)
+	}
+	if err != nil {
+		return nil, err
+	}
+	side := strings.ToLower(strings.TrimSpace(update.Side))
+	if side == "" {
+		side = "flat"
+	}
+	return &HedgeSnapshot{Venue: venue, Side: side, SizeBTC: update.SizeBTC}, nil
+}
+
 func (s *Service) firstActiveKey(ctx context.Context, rawProvider string) (string, db.APIKey, error) {
-	provider, err := accounthealth.CanonicalProvider(rawProvider)
+	provider, err := CanonicalProvider(rawProvider)
 	if err != nil {
 		return "", db.APIKey{}, err
 	}
@@ -948,7 +988,7 @@ func (s *Service) firstActiveKey(ctx context.Context, rawProvider string) (strin
 // Coinbase Exchange (address book) credentials are key+secret+passphrase, distinct from
 // the CDP/Advanced Trade keys (no passphrase) used for deposits and balances.
 func (s *Service) firstActiveKeyWithPassphrase(ctx context.Context, rawProvider string) (string, db.APIKey, error) {
-	provider, err := accounthealth.CanonicalProvider(rawProvider)
+	provider, err := CanonicalProvider(rawProvider)
 	if err != nil {
 		return "", db.APIKey{}, err
 	}
@@ -1144,7 +1184,7 @@ func (s *Service) WhitelistedLNDWithdrawAddress(ctx context.Context, rawProvider
 	if s.lnd == nil {
 		return "", fmt.Errorf("LND wallet not available; cannot determine whitelisted withdrawal address")
 	}
-	provider, err := accounthealth.CanonicalProvider(rawProvider)
+	provider, err := CanonicalProvider(rawProvider)
 	if err != nil {
 		return "", err
 	}
@@ -1168,7 +1208,7 @@ func (s *Service) WhitelistedLNDWithdrawAddress(ctx context.Context, rawProvider
 			cexAddrs = append(cexAddrs, a.Address)
 		}
 	}
-	if matched := pretradechecks.MatchWhitelistedLNDAddress(walletAddrs, cexAddrs); matched != "" {
+	if matched := MatchWhitelistedLNDAddress(walletAddrs, cexAddrs); matched != "" {
 		return matched, nil
 	}
 	return "", fmt.Errorf(
@@ -1181,7 +1221,7 @@ func (s *Service) WhitelistedLNDWithdrawAddress(ctx context.Context, rawProvider
 // LND wallet address. lndAddress must already be on the CEX's withdrawal whitelist —
 // use WhitelistedLNDWithdrawAddress to obtain it. amountBTC is the net BTC to
 // withdraw (typically SpotOrderResult.Execution.FilledBTC).
-func (s *Service) WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress string) (*lnd.WithdrawFromExchangeResult, error) {
+func (s *Service) WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress, clientRequestID string) (*lnd.WithdrawFromExchangeResult, error) {
 	if amountBTC <= 0 {
 		return nil, fmt.Errorf("withdraw amount must be greater than zero")
 	}
@@ -1198,7 +1238,12 @@ func (s *Service) WithdrawSpotToLND(ctx context.Context, rawProvider string, amo
 	}
 
 	amount := strconv.FormatFloat(amountBTC, 'f', 8, 64)
-	clientRequestID := fmt.Sprintf("tradeflow-%s-%d", provider, time.Now().UnixMilli())
+	// A stable, caller-supplied key makes the withdrawal idempotent across retries
+	// (Binance keys on withdrawOrderId). Fall back to a time-based id for ad-hoc callers.
+	clientRequestID = strings.TrimSpace(clientRequestID)
+	if clientRequestID == "" {
+		clientRequestID = fmt.Sprintf("tradeflow-%s-%d", provider, time.Now().UnixMilli())
+	}
 
 	switch strings.ToLower(provider) {
 	case "binance":

@@ -8,7 +8,7 @@ import (
 
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/db"
-	"dexMmController/internal/exchanges/dex/hodlhodl"
+	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
 	"dexMmController/internal/openclaw"
 )
 

@@ -3,7 +3,7 @@ package lnd
 import (
 	"context"
 
-	"dexMmController/internal/exchanges/cex/binance"
+	"dexMmController/internal/exchangeconnectors/cex/binance"
 )
 
 // BinanceBridge represents a binance bridge.

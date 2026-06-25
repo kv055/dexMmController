@@ -1,23 +1,25 @@
-package accounthealth
+package accounthealth_test
 
 import (
 	"context"
 	"crypto/ecdsa"
+	"fmt"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"dexMmController/internal/accounthealth"
+	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
-	"dexMmController/internal/exchanges/dex/robosats"
+	"dexMmController/internal/exchangeconnectors/dex/robosats"
 )
 
 type fakeRepo struct {
@@ -35,7 +37,7 @@ type fakeRepo struct {
 
 func (f *fakeRepo) GetAccountByProvider(_ context.Context, provider string) (*db.Account, error) {
 	if f.accountProvider != provider {
-		return nil, errors.New("not found")
+		return nil, fmt.Errorf("not found")
 	}
 	return &db.Account{Provider: provider}, nil
 }
@@ -62,44 +64,9 @@ func (f *fakeRepo) UpdateAccountHealthCheckedAt(_ context.Context, provider stri
 	return f.checkedAt, nil
 }
 
-func TestCanonicalProvider(t *testing.T) {
-	tests := map[string]string{
-		"kraken":    "Kraken",
-		"BINANCE":   "Binance",
-		"coinbase":  "Coinbase",
-		"hodl hodl": "HodlHodl",
-		"HodlHodl":  "HodlHodl",
-		"robosats":  "Robosats",
-		"RoboSats":  "Robosats",
-	}
-	for input, want := range tests {
-		got, err := CanonicalProvider(input)
-		if err != nil {
-			t.Fatalf("CanonicalProvider(%q): %v", input, err)
-		}
-		if got != want {
-			t.Fatalf("CanonicalProvider(%q) = %q, want %q", input, got, want)
-		}
-	}
-	if _, err := CanonicalProvider("Bisq"); !errors.Is(err, ErrUnsupportedProvider) {
-		t.Fatalf("CanonicalProvider(Bisq) error = %v, want ErrUnsupportedProvider", err)
-	}
-}
-
-func TestParseIntervalDefaultIsTenMinutes(t *testing.T) {
-	for _, raw := range []string{"", "nope", "-1s", "0s"} {
-		if got := ParseInterval(raw); got != 10*time.Minute {
-			t.Fatalf("ParseInterval(%q) = %s, want 10m", raw, got)
-		}
-	}
-	if got := ParseInterval("30s"); got != 30*time.Second {
-		t.Fatalf("ParseInterval(30s) = %s, want 30s", got)
-	}
-}
-
 func TestCheckProviderNoActiveKeysMarksUnhealthy(t *testing.T) {
 	repo := &fakeRepo{accountProvider: "Kraken"}
-	checker := NewChecker(repo, Config{})
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{})
 	result, err := checker.CheckProvider(context.Background(), "kraken")
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
@@ -117,7 +84,7 @@ func TestCheckProviderMissingSecretMarksUnhealthy(t *testing.T) {
 		accountProvider: "Binance",
 		keys:            []db.APIKey{{ID: 7, APIKey: "key", IsActive: true}},
 	}
-	checker := NewChecker(repo, Config{})
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{})
 	result, err := checker.CheckProvider(context.Background(), "binance")
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
@@ -132,7 +99,7 @@ func TestCheckProviderMissingSecretMarksUnhealthy(t *testing.T) {
 
 func TestCheckProviderRobosatsNoActiveTokenMarksUnhealthy(t *testing.T) {
 	repo := &fakeRepo{accountProvider: "Robosats"}
-	checker := NewChecker(repo, Config{})
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{})
 	result, err := checker.CheckProvider(context.Background(), "robosats")
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
@@ -150,7 +117,7 @@ func TestCheckProviderRobosatsEmptyTokenMarksUnhealthy(t *testing.T) {
 		accountProvider: "Robosats",
 		keys:            []db.APIKey{{ID: 7, IsActive: true}},
 	}
-	checker := NewChecker(repo, Config{})
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{})
 	result, err := checker.CheckProvider(context.Background(), "robosats")
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
@@ -173,7 +140,7 @@ func TestCheckProviderRobosatsDoesNotRequireSecret(t *testing.T) {
 		accountProvider: "Robosats",
 		keys:            []db.APIKey{{ID: 7, APIKey: "robot-token", IsActive: true}},
 	}
-	checker := NewChecker(repo, Config{RobosatsBaseURL: srv.URL})
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{RobosatsBaseURL: srv.URL})
 	result, err := checker.CheckProvider(context.Background(), "robosats")
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
@@ -187,10 +154,10 @@ func TestCheckProviderRobosatsDoesNotRequireSecret(t *testing.T) {
 	if repo.updatedProvider != "Robosats" || !repo.updatedHealthy {
 		t.Fatalf("updated provider=%q healthy=%v, want Robosats true", repo.updatedProvider, repo.updatedHealthy)
 	}
-	if len(result.Keys) != 1 || result.Keys[0].Permissions["robot"] != PermGranted {
+	if len(result.Keys) != 1 || result.Keys[0].Permissions["robot"] != cexaccount.PermGranted {
 		t.Fatalf("result keys = %+v, want robot permission", result.Keys)
 	}
-	if len(repo.permissionUpdates) != 1 || repo.permissionUpdates[0].permissions["robot"] != PermGranted {
+	if len(repo.permissionUpdates) != 1 || repo.permissionUpdates[0].permissions["robot"] != cexaccount.PermGranted {
 		t.Fatalf("permission updates = %+v, want robot permission persisted", repo.permissionUpdates)
 	}
 }
@@ -218,7 +185,7 @@ func TestCheckProviderHodlHodlValidatesAPIAndSignatureKey(t *testing.T) {
 			IsActive:  true,
 		}},
 	}
-	checker := NewChecker(repo, Config{HodlHodlBaseURL: srv.URL})
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{HodlHodlBaseURL: srv.URL})
 	result, err := checker.CheckProvider(context.Background(), "hodlhodl")
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
@@ -229,7 +196,7 @@ func TestCheckProviderHodlHodlValidatesAPIAndSignatureKey(t *testing.T) {
 	if len(result.Keys) != 1 {
 		t.Fatalf("result keys = %+v, want one key result", result.Keys)
 	}
-	if result.Keys[0].Permissions["api_key"] != PermGranted || result.Keys[0].Permissions["signature_key"] != PermGranted {
+	if result.Keys[0].Permissions["api_key"] != cexaccount.PermGranted || result.Keys[0].Permissions["signature_key"] != cexaccount.PermGranted {
 		t.Fatalf("permissions = %+v, want api_key and signature_key", result.Keys[0].Permissions)
 	}
 	if len(repo.permissionUpdates) != 1 {
@@ -242,7 +209,7 @@ func TestCheckProviderHodlHodlMissingSignatureMarksUnhealthy(t *testing.T) {
 		accountProvider: "HodlHodl",
 		keys:            []db.APIKey{{ID: 9, APIKey: "hh-api-key", IsActive: true}},
 	}
-	checker := NewChecker(repo, Config{})
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{})
 	result, err := checker.CheckProvider(context.Background(), "hodlhodl")
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
@@ -271,7 +238,7 @@ func TestCheckProviderBinanceCanonicalPermissions(t *testing.T) {
 		accountProvider: "Binance",
 		keys:            []db.APIKey{{ID: 3, APIKey: "k", APISecret: "s", IsActive: true}},
 	}
-	checker := NewChecker(repo, Config{BinanceBaseURL: srv.URL})
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{BinanceBaseURL: srv.URL})
 	result, err := checker.CheckProvider(context.Background(), "binance")
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
@@ -280,8 +247,8 @@ func TestCheckProviderBinanceCanonicalPermissions(t *testing.T) {
 		t.Fatalf("result = %+v, want healthy with one key", result)
 	}
 	perms := result.Keys[0].Permissions
-	if perms[PermSpotTrading] != PermGranted || perms[PermReadBalances] != PermGranted ||
-		perms[PermWithdraw] != PermDenied || perms[PermHedgePositions] != PermGranted {
+	if perms[cexaccount.PermSpotTrading] != cexaccount.PermGranted || perms[cexaccount.PermReadBalances] != cexaccount.PermGranted ||
+		perms[cexaccount.PermWithdraw] != cexaccount.PermDenied || perms[cexaccount.PermHedgePositions] != cexaccount.PermGranted {
 		t.Fatalf("permissions = %+v", perms)
 	}
 }
@@ -291,7 +258,7 @@ func TestCheckProviderKrakenProbesPermissions(t *testing.T) {
 		switch r.URL.Path {
 		case "/0/private/Balance":
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": map[string]string{"XXBT": "0.1"}})
-		case "/0/private/AddOrder": // validate-only spot probe — key lacks order permission
+		case "/0/private/AddOrder":
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{"EGeneral:Permission denied"}, "result": map[string]any{}})
 		case "/0/private/WithdrawMethods":
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": []map[string]any{{"method": "Bitcoin"}}})
@@ -305,7 +272,7 @@ func TestCheckProviderKrakenProbesPermissions(t *testing.T) {
 		accountProvider: "Kraken",
 		keys:            []db.APIKey{{ID: 5, APIKey: "k", APISecret: base64.StdEncoding.EncodeToString([]byte("secret")), IsActive: true}},
 	}
-	checker := NewChecker(repo, Config{KrakenBaseURL: srv.URL})
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{KrakenBaseURL: srv.URL})
 	result, err := checker.CheckProvider(context.Background(), "kraken")
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
@@ -314,8 +281,8 @@ func TestCheckProviderKrakenProbesPermissions(t *testing.T) {
 		t.Fatalf("result = %+v, want healthy with one key", result)
 	}
 	perms := result.Keys[0].Permissions
-	if perms[PermReadBalances] != PermGranted || perms[PermSpotTrading] != PermDenied ||
-		perms[PermWithdraw] != PermGranted || perms[PermHedgePositions] != PermUnsupported {
+	if perms[cexaccount.PermReadBalances] != cexaccount.PermGranted || perms[cexaccount.PermSpotTrading] != cexaccount.PermDenied ||
+		perms[cexaccount.PermWithdraw] != cexaccount.PermGranted || perms[cexaccount.PermHedgePositions] != cexaccount.PermUnsupported {
 		t.Fatalf("permissions = %+v", perms)
 	}
 }
@@ -333,7 +300,7 @@ func TestCheckProviderCoinbaseHedgeUnsupported(t *testing.T) {
 		accountProvider: "Coinbase",
 		keys:            []db.APIKey{{ID: 4, APIKey: "organizations/org/apiKeys/key", APISecret: testECPrivateKeyPEM(t), IsActive: true}},
 	}
-	checker := NewChecker(repo, Config{CoinbaseBaseURL: srv.URL})
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{CoinbaseBaseURL: srv.URL})
 	result, err := checker.CheckProvider(context.Background(), "coinbase")
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
@@ -342,8 +309,8 @@ func TestCheckProviderCoinbaseHedgeUnsupported(t *testing.T) {
 		t.Fatalf("result = %+v, want healthy with one key", result)
 	}
 	perms := result.Keys[0].Permissions
-	if perms[PermSpotTrading] != PermGranted || perms[PermReadBalances] != PermGranted ||
-		perms[PermWithdraw] != PermDenied || perms[PermHedgePositions] != PermUnsupported {
+	if perms[cexaccount.PermSpotTrading] != cexaccount.PermGranted || perms[cexaccount.PermReadBalances] != cexaccount.PermGranted ||
+		perms[cexaccount.PermWithdraw] != cexaccount.PermDenied || perms[cexaccount.PermHedgePositions] != cexaccount.PermUnsupported {
 		t.Fatalf("permissions = %+v", perms)
 	}
 }
@@ -371,7 +338,7 @@ func TestCheckProviderRobosatsBadStatusMarksUnhealthy(t *testing.T) {
 		accountProvider: "Robosats",
 		keys:            []db.APIKey{{ID: 7, APIKey: "robot-token", IsActive: true}},
 	}
-	checker := NewChecker(repo, Config{RobosatsBaseURL: srv.URL})
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{RobosatsBaseURL: srv.URL})
 	result, err := checker.CheckProvider(context.Background(), "robosats")
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)

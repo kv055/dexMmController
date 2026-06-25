@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"dexMmController/internal/accounthealth"
 	"dexMmController/internal/cexaccount"
 )
 
@@ -39,6 +38,6 @@ func TestHandleCexWithdrawalTrackRequiresWithdrawalID(t *testing.T) {
 	}
 }
 
-func accounthealthConfig() accounthealth.Config {
-	return accounthealth.Config{}
+func accounthealthConfig() cexaccount.Config {
+	return cexaccount.Config{}
 }

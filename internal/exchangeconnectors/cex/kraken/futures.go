@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/exchanges/cex"
+	"dexMmController/internal/exchangeconnectors/cex"
 )
 
 const defaultFuturesBaseURL = "https://futures.kraken.com"
@@ -144,6 +144,96 @@ func (c *FuturesClient) fetchMarkPrice(ctx context.Context, symbol string) (floa
 		return 0, fmt.Errorf("mark price is zero or negative")
 	}
 	return out.Tickers[0].MarkPrice, nil
+}
+
+// krakenOpenPositionsResponse is the relevant subset of /openpositions.
+type krakenOpenPositionsResponse struct {
+	Result        string `json:"result"`
+	Error         string `json:"error"`
+	OpenPositions []struct {
+		Side     string  `json:"side"`
+		Symbol   string  `json:"symbol"`
+		Price    float64 `json:"price"`
+		Size     float64 `json:"size"`
+		FillTime string  `json:"fillTime"`
+	} `json:"openPositions"`
+}
+
+// CurrentPosition fetches the live PI_XBTUSD position synchronously via the signed
+// /openpositions REST endpoint. Used as an idempotency guard after a hedge attempt
+// errors: it answers "did my order actually open?" The Kraken Futures REST reports
+// position size in USD contracts, so BTC size is derived as size/price. A
+// flat/absent position yields Side:"flat".
+func (c *FuturesClient) CurrentPosition(ctx context.Context) (cex.HedgePositionUpdate, error) {
+	path := "/derivatives/api/v3/openpositions"
+	nonce := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	raw, err := c.signedGet(ctx, path, nonce)
+	if err != nil {
+		return cex.HedgePositionUpdate{}, fmt.Errorf("kraken futures openpositions: %w", err)
+	}
+
+	var resp krakenOpenPositionsResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return cex.HedgePositionUpdate{}, fmt.Errorf("kraken futures openpositions decode: %w", err)
+	}
+	if resp.Result != "success" {
+		return cex.HedgePositionUpdate{}, fmt.Errorf("kraken futures openpositions: result=%q error=%q", resp.Result, resp.Error)
+	}
+
+	update := cex.HedgePositionUpdate{
+		Venue:      "kraken_futures",
+		Instrument: hedgeInstrument,
+		Side:       "flat",
+		Currency:   "USD",
+		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
+		Connected:  true,
+	}
+	for _, pos := range resp.OpenPositions {
+		if !strings.EqualFold(pos.Symbol, hedgeInstrument) {
+			continue
+		}
+		update.Side = strings.ToLower(strings.TrimSpace(pos.Side))
+		update.EntryPrice = pos.Price
+		if pos.Price > 0 {
+			update.SizeBTC = absFloat(pos.Size / pos.Price)
+		}
+		return update, nil
+	}
+	return update, nil
+}
+
+func (c *FuturesClient) signedGet(ctx context.Context, path, nonce string) ([]byte, error) {
+	// Kraken Futures signs sha256(postData + nonce + path); a GET has empty postData.
+	hash := sha256.Sum256([]byte("" + nonce + path))
+	secretBytes, err := base64.StdEncoding.DecodeString(c.apiSecret)
+	if err != nil {
+		return nil, fmt.Errorf("decode api secret: %w", err)
+	}
+	mac := hmac.New(sha512.New, secretBytes)
+	mac.Write(hash[:])
+	sig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("APIKey", c.apiKey)
+	req.Header.Set("Nonce", nonce)
+	req.Header.Set("Authent", sig)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return raw, nil
 }
 
 type krakenSendOrderResponse struct {

@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"strings"
 	"time"
 
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
-	"dexMmController/internal/dexoffer"
+	"dexMmController/internal/dexaccount"
 )
 
 // Worker advances bid-side tradeflow part 2: confirm CEX→LND withdrawal, take offer, relay to DEX.
@@ -20,8 +19,8 @@ type Worker struct {
 	repo      *db.TransactionRepository
 	cex       *cexaccount.Service
 	btc       *bitcoin.NetworkDataFetcher
-	taker     *dexoffer.Taker
-	lnd       dexoffer.LNDRelay
+	taker     *dexaccount.Taker
+	lnd       dexaccount.LNDRelay
 	satPerVb  int64
 }
 
@@ -30,19 +29,19 @@ func NewWorker(
 	repo *db.TransactionRepository,
 	cex *cexaccount.Service,
 	btc *bitcoin.NetworkDataFetcher,
-	taker *dexoffer.Taker,
+	taker *dexaccount.Taker,
 ) *Worker {
 	return &Worker{
 		repo:     repo,
 		cex:      cex,
 		btc:      btc,
 		taker:    taker,
-		satPerVb: dexoffer.DefaultSatPerVbyte(),
+		satPerVb: dexaccount.DefaultSatPerVbyte(),
 	}
 }
 
 // SetLND wires the live LND client used for on-chain/LN relay. Safe to call after wallet init.
-func (w *Worker) SetLND(client dexoffer.LNDRelay) {
+func (w *Worker) SetLND(client dexaccount.LNDRelay) {
 	w.lnd = client
 }
 
@@ -183,7 +182,7 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	}
 
 	if meta.Execution == nil {
-		takeResult, takeErr := w.taker.Take(ctx, dexoffer.OfferInput{
+		takeResult, takeErr := w.taker.Take(ctx, dexaccount.OfferInput{
 			Exchange:   exchange,
 			OfferID:    offerID,
 			FiatAmount: tx.FiatAmount,
@@ -225,7 +224,7 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		}
 	}
 
-	amountSat := btcToSats(tx.CexBitcoinAmount)
+	amountSat := dexaccount.BTCToSats(tx.CexBitcoinAmount)
 	if amountSat <= 0 {
 		return fmt.Errorf("invalid relay amount")
 	}
@@ -273,13 +272,6 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	return w.repo.UpdateTransaction(tx)
 }
 
-func btcToSats(btc float64) int64 {
-	if btc <= 0 {
-		return 0
-	}
-	return int64(math.Round(btc * 1e8))
-}
-
 func stringFromSelectedOffer(raw json.RawMessage, field string) string {
 	if len(raw) == 0 {
 		return ""
@@ -288,14 +280,5 @@ func stringFromSelectedOffer(raw json.RawMessage, field string) string {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return ""
 	}
-	v, ok := m[field]
-	if !ok || v == nil {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	default:
-		return strings.TrimSpace(fmt.Sprint(t))
-	}
+	return dexaccount.StringField(m, field)
 }

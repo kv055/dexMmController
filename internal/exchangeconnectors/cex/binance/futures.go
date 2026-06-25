@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/exchanges/cex"
+	"dexMmController/internal/exchangeconnectors/cex"
 )
 
 const defaultFuturesBaseURL = "https://fapi.binance.com"
@@ -97,6 +97,54 @@ type binanceFuturesOrderResponse struct {
 	Status  string `json:"status"`
 }
 
+// binanceFuturesPositionRisk is the relevant subset of a /fapi/v2/positionRisk row.
+type binanceFuturesPositionRisk struct {
+	Symbol      string `json:"symbol"`
+	PositionAmt string `json:"positionAmt"`
+	EntryPrice  string `json:"entryPrice"`
+	UnrealizedP string `json:"unRealizedProfit"`
+	UpdateTime  int64  `json:"updateTime"`
+}
+
+// CurrentPosition fetches the live BTCUSDT futures position synchronously via the
+// signed /fapi/v2/positionRisk REST endpoint. Used as an idempotency guard after a
+// hedge attempt errors: it answers "did my order actually open?" A flat/absent
+// position yields Side:"flat".
+func (c *FuturesClient) CurrentPosition(ctx context.Context) (cex.HedgePositionUpdate, error) {
+	params := url.Values{}
+	params.Set("symbol", hedgeSymbol)
+	raw, err := c.signedGet(ctx, "/fapi/v2/positionRisk", params)
+	if err != nil {
+		return cex.HedgePositionUpdate{}, err
+	}
+
+	var rows []binanceFuturesPositionRisk
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return cex.HedgePositionUpdate{}, fmt.Errorf("binance futures positionRisk decode: %w", err)
+	}
+
+	update := cex.HedgePositionUpdate{
+		Venue:      "binance_futures",
+		Instrument: hedgeSymbol,
+		Side:       "flat",
+		Currency:   "USDT",
+		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
+		Connected:  true,
+	}
+	for _, row := range rows {
+		if !strings.EqualFold(row.Symbol, hedgeSymbol) {
+			continue
+		}
+		amount := parseStringFloat(row.PositionAmt)
+		update.SizeBTC = absFloat(amount)
+		update.Side = sideFromSignedSize(amount)
+		update.EntryPrice = parseStringFloat(row.EntryPrice)
+		update.UnrealizedPnL = parseStringFloat(row.UnrealizedP)
+		return update, nil
+	}
+	return update, nil
+}
+
 type binanceFuturesLeverageResponse struct {
 	Leverage  int    `json:"leverage"`
 	Symbol    string `json:"symbol"`
@@ -120,6 +168,37 @@ func (c *FuturesClient) setLeverage(ctx context.Context, symbol string, leverage
 		return fmt.Errorf("unexpected response: %s", string(raw))
 	}
 	return nil
+}
+
+func (c *FuturesClient) signedGet(ctx context.Context, path string, params url.Values) ([]byte, error) {
+	if params == nil {
+		params = url.Values{}
+	}
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+	queryString := params.Encode()
+	mac := hmac.New(sha256.New, []byte(c.secretKey))
+	mac.Write([]byte(queryString))
+	signed := queryString + "&signature=" + hex.EncodeToString(mac.Sum(nil))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path+"?"+signed, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-MBX-APIKEY", c.apiKey)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return raw, nil
 }
 
 func (c *FuturesClient) signedPost(ctx context.Context, path string, params url.Values) ([]byte, error) {

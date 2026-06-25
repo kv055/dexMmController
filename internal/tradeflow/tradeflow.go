@@ -5,10 +5,22 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/pretradechecks"
 	lnd "dexMmController/internal/wallethub"
+)
+
+// Tunables for the guarded hedge retry. A hedge failure after the spot buy leaves
+// the account holding unhedged BTC, so we retry a few times — but only after
+// confirming with the venue that the failed attempt did not actually open the
+// position (avoiding a double-open from a lost confirmation).
+const (
+	hedgeMaxAttempts = 3
+	hedgeRetryDelay  = 750 * time.Millisecond
+	// hedgeOpenedFraction is how much of the requested notional must appear on the
+	// venue (vs. the pre-attempt baseline) to conclude the order actually filled.
+	hedgeOpenedFraction = 0.9
 )
 
 // Order carries the parameters for a single arbitrage trade cycle. All fields
@@ -67,20 +79,24 @@ type WithdrawalResult struct {
 
 // Service is the subset of cexaccount.Service used by TradeFlow.
 type Service interface {
-	PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64) (*pretradechecks.Report, error)
+	PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64) (*cexaccount.Report, error)
 	MarketBuyBTC(ctx context.Context, rawProvider string, btcAmount float64, fiatCurrency string, requiredCapitalEUR float64) (*cexaccount.SpotOrderResult, error)
 	OpenHedge(ctx context.Context, venue, side string, btcNotional, leverage float64) (*cexaccount.HedgeOpenResult, error)
-	WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress string) (*lnd.WithdrawFromExchangeResult, error)
+	LiveHedgePosition(ctx context.Context, venue string) (*cexaccount.HedgeSnapshot, error)
+	WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress, clientRequestID string) (*lnd.WithdrawFromExchangeResult, error)
 }
 
 // TradeFlow orchestrates the CEX trade leg of a DEX arbitrage cycle.
 type TradeFlow struct {
-	svc Service
+	svc   Service
+	store transactionStore
 }
 
-// New creates a TradeFlow backed by the given CEX service.
-func New(svc Service) *TradeFlow {
-	return &TradeFlow{svc: svc}
+// New creates a TradeFlow backed by the given CEX service and transaction store.
+// store may be nil for callers that don't persist (e.g. some tests); persistence
+// is also skipped when an order carries no offer_id/dex linkage.
+func New(svc Service, store transactionStore) *TradeFlow {
+	return &TradeFlow{svc: svc, store: store}
 }
 
 // Run executes the trade cycle for the given order. It stops at the first failure
@@ -101,6 +117,8 @@ func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 }
 
 // runBid executes the bid-side cycle: pre-trade checks → spot buy → hedge → withdraw.
+// Each irreversible step is persisted immediately after it completes, so a partial
+// cycle is recoverable from the database rather than only existing in this request.
 func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	slog.Info("tradeflow: starting bid-side cycle",
 		"provider", order.Provider,
@@ -132,6 +150,19 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 		"lnd_withdraw_address", lndAddr,
 	)
 
+	// Persistence is enabled only when the order links a DEX offer and a store is
+	// configured; otherwise the flow runs without recording (legacy behaviour).
+	persist := tf.store != nil && strings.TrimSpace(order.OfferID) != "" && strings.TrimSpace(order.Dex) != ""
+
+	var txID uint
+	if persist {
+		txID, err = createTradeflowRow(tf.store, order, lndAddr)
+		if err != nil {
+			return nil, fmt.Errorf("tradeflow: persist tradeflow start: %w", err)
+		}
+		slog.Info("tradeflow: transaction row created", "transaction_id", txID, "status", "CexTradeflowStarted")
+	}
+
 	// Step 2: spot market buy.
 	spot, err := tf.svc.MarketBuyBTC(ctx, order.Provider, order.BTCAmount, order.FiatCurrency, order.RequiredCapitalEUR)
 	if err != nil {
@@ -146,22 +177,51 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 		"status", spot.Status,
 		"filled_btc", filledBTC,
 	)
+	if persist {
+		if err := recordSpotBuy(tf.store, txID, spot, filledBTC); err != nil {
+			return nil, fmt.Errorf("tradeflow: persist spot buy (order_id=%s): %w", spot.OrderID, err)
+		}
+	}
 
-	// Step 3: open hedge position.
-	hedge, err := tf.svc.OpenHedge(ctx, order.HedgeVenue, order.HedgeSide, order.HedgeNotionalBTC, order.Leverage)
+	// Step 3: open hedge with a guarded retry. From here on the spot is filled, so a
+	// hard failure means we hold unhedged BTC — recorded as HedgeFailedNeedsReview.
+	hedge, err := tf.openHedgeWithRetry(ctx, order)
 	if err != nil {
-		return nil, fmt.Errorf("tradeflow: hedge open failed (spot already placed, order_id=%s): %w", spot.OrderID, err)
+		if persist {
+			if perr := markHedgeFailed(tf.store, txID, spot); perr != nil {
+				slog.Error("tradeflow: failed to persist HedgeFailedNeedsReview", "transaction_id", txID, "err", perr)
+			}
+		}
+		slog.Error("tradeflow: HEDGE FAILED after spot fill — account holds unhedged BTC, manual review required",
+			"transaction_id", txID,
+			"spot_order_id", spot.OrderID,
+			"filled_btc", filledBTC,
+			"hedge_venue", order.HedgeVenue,
+			"err", err,
+		)
+		return nil, fmt.Errorf("tradeflow: hedge open failed (spot filled, order_id=%s, needs review): %w", spot.OrderID, err)
 	}
 	slog.Info("tradeflow: hedge opened",
 		"venue", hedge.Venue,
 		"order_id", hedge.OrderID,
 		"status", hedge.Status,
 	)
+	if persist {
+		if err := recordHedge(tf.store, txID, order, spot, hedge); err != nil {
+			return nil, fmt.Errorf("tradeflow: persist hedge: %w", err)
+		}
+	}
 
-	// Step 4: withdraw the net filled BTC to the LND address resolved during pre-trade checks.
-	wd, err := tf.svc.WithdrawSpotToLND(ctx, order.Provider, filledBTC, lndAddr)
+	// Step 4: withdraw the net filled BTC to the LND address resolved during pre-trade
+	// checks. The client request id is derived from the transaction id so a retry is
+	// idempotent at the exchange (no double withdrawal).
+	clientReqID := ""
+	if txID > 0 {
+		clientReqID = fmt.Sprintf("tradeflow-%d", txID)
+	}
+	wd, err := tf.svc.WithdrawSpotToLND(ctx, order.Provider, filledBTC, lndAddr, clientReqID)
 	if err != nil {
-		return nil, fmt.Errorf("tradeflow: withdrawal failed (spot order_id=%s): %w", spot.OrderID, err)
+		return nil, fmt.Errorf("tradeflow: withdrawal failed (spot order_id=%s, hedge open): %w", spot.OrderID, err)
 	}
 	slog.Info("tradeflow: withdrawal initiated",
 		"withdrawal_id", wd.WithdrawalID,
@@ -169,7 +229,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 		"amount_btc", filledBTC,
 	)
 
-	return &Result{
+	result := &Result{
 		SpotBuy: spot,
 		Hedge:   hedge,
 		Withdrawal: WithdrawalResult{
@@ -180,7 +240,81 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 			AmountBTC:       filledBTC,
 			CexStatus:       "submitted",
 		},
-	}, nil
+		TransactionID: txID,
+	}
+
+	if persist {
+		if err := recordWithdrawal(tf.store, txID, order, spot, hedge, result, lndAddr); err != nil {
+			return nil, fmt.Errorf("tradeflow: persist withdrawal: %w", err)
+		}
+	}
+
+	return result, nil
+}
+
+// openHedgeWithRetry opens the hedge, retrying on error. Before each retry it asks
+// the venue whether the failed attempt actually opened the position (a lost
+// confirmation can make a successful open look like a failure); if so it stops
+// rather than opening a second, doubling-up hedge.
+func (tf *TradeFlow) openHedgeWithRetry(ctx context.Context, order Order) (*cexaccount.HedgeOpenResult, error) {
+	side := strings.ToLower(strings.TrimSpace(order.HedgeSide))
+
+	// Baseline: how much is already open on the expected side before we try. A
+	// fresh trade is normally flat, but this also tolerates pre-existing positions.
+	baseline := tf.sideSizeBTC(ctx, order.HedgeVenue, side)
+
+	var lastErr error
+	for attempt := 1; attempt <= hedgeMaxAttempts; attempt++ {
+		hedge, err := tf.svc.OpenHedge(ctx, order.HedgeVenue, order.HedgeSide, order.HedgeNotionalBTC, order.Leverage)
+		if err == nil {
+			return hedge, nil
+		}
+		lastErr = err
+		slog.Warn("tradeflow: hedge attempt failed",
+			"attempt", attempt,
+			"venue", order.HedgeVenue,
+			"err", err,
+		)
+
+		// Did the attempt actually open despite the error? Query the venue directly.
+		snap, perr := tf.svc.LiveHedgePosition(ctx, order.HedgeVenue)
+		if perr != nil {
+			slog.Warn("tradeflow: live hedge position check failed; cannot confirm fill",
+				"venue", order.HedgeVenue, "err", perr)
+		} else if snap.Side == side && (snap.SizeBTC-baseline) >= order.HedgeNotionalBTC*hedgeOpenedFraction {
+			slog.Warn("tradeflow: hedge call errored but venue shows the position is open; treating as success",
+				"venue", order.HedgeVenue,
+				"live_size_btc", snap.SizeBTC,
+				"baseline_btc", baseline,
+				"expected_btc", order.HedgeNotionalBTC,
+			)
+			return &cexaccount.HedgeOpenResult{
+				Venue:       order.HedgeVenue,
+				Side:        side,
+				BTCNotional: snap.SizeBTC - baseline,
+				Status:      "open_detected_after_error",
+			}, nil
+		}
+
+		if attempt < hedgeMaxAttempts {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(hedgeRetryDelay):
+			}
+		}
+	}
+	return nil, fmt.Errorf("hedge open failed after %d attempts: %w", hedgeMaxAttempts, lastErr)
+}
+
+// sideSizeBTC returns the live position size on the given side, or 0 if flat, the
+// side differs, or the venue query fails (best-effort baseline).
+func (tf *TradeFlow) sideSizeBTC(ctx context.Context, venue, side string) float64 {
+	snap, err := tf.svc.LiveHedgePosition(ctx, venue)
+	if err != nil || snap == nil || snap.Side != side {
+		return 0
+	}
+	return snap.SizeBTC
 }
 
 // runAsk will execute the ask-side cycle (sell BTC on CEX, long hedge, deposit to CEX).

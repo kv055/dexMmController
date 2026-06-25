@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/exchanges/cex"
+	"dexMmController/internal/exchangeconnectors/cex"
 )
 
 // fakeSource is a controllable SourceFunc for exercising the manager lifecycle.

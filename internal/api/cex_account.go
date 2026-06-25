@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 
-	"dexMmController/internal/accounthealth"
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/tradeflow"
@@ -52,9 +51,9 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("provider is required"))
 		return
 	}
-	canonical, err := accounthealth.CanonicalProvider(provider)
-	if err != nil || !accounthealth.IsCEXProvider(canonical) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(accounthealth.SupportedCEXProviders(), ", ")))
+	canonical, err := cexaccount.CanonicalProvider(provider)
+	if err != nil || !cexaccount.IsCEXProvider(canonical) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
 		return
 	}
 	if req.BTCAmount <= 0 {
@@ -99,30 +98,8 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(req.OfferID) != "" && strings.TrimSpace(req.Dex) != "" {
-		order := tradeflow.Order{
-			Provider:           provider,
-			MarketSide:         marketSide,
-			BTCAmount:          req.BTCAmount,
-			FiatCurrency:       req.FiatCurrency,
-			RequiredCapitalEUR: req.RequiredCapitalEUR,
-			HedgeVenue:         req.HedgeVenue,
-			HedgeSide:          req.HedgeSide,
-			HedgeNotionalBTC:   req.HedgeNotionalBTC,
-			Leverage:           req.Leverage,
-			OfferID:            strings.TrimSpace(req.OfferID),
-			Dex:                strings.TrimSpace(req.Dex),
-			FiatAmount:         req.FiatAmount,
-			TransactionID:      req.TransactionID,
-			SelectedOffer:      req.SelectedOffer,
-		}
-		txID, persistErr := tradeflow.PersistBidResult(r.Context(), s.repo, order, result, result.Withdrawal.WalletAddress)
-		if persistErr != nil {
-			writeError(w, http.StatusBadGateway, fmt.Errorf("tradeflow succeeded but failed to persist transaction: %w", persistErr))
-			return
-		}
-		result.TransactionID = txID
-	}
+	// TradeFlow persists each step itself (including the transaction id on result);
+	// the handler no longer writes the row after the fact.
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -152,9 +129,9 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Errorf("provider is required"))
 		return
 	}
-	canonical, err := accounthealth.CanonicalProvider(provider)
-	if err != nil || !accounthealth.IsCEXProvider(canonical) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(accounthealth.SupportedCEXProviders(), ", ")))
+	canonical, err := cexaccount.CanonicalProvider(provider)
+	if err != nil || !cexaccount.IsCEXProvider(canonical) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
 		return
 	}
 	if req.RequiredCapitalEUR <= 0 {
@@ -230,9 +207,9 @@ func (s *Server) handleCexProviderRequest(
 		writeError(w, http.StatusBadRequest, fmt.Errorf("provider query parameter is required"))
 		return
 	}
-	canonical, err := accounthealth.CanonicalProvider(provider)
-	if err != nil || !accounthealth.IsCEXProvider(canonical) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(accounthealth.SupportedCEXProviders(), ", ")))
+	canonical, err := cexaccount.CanonicalProvider(provider)
+	if err != nil || !cexaccount.IsCEXProvider(canonical) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
 		return
 	}
 
@@ -265,9 +242,9 @@ func (s *Server) handleCexWithdrawalTrack(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, fmt.Errorf("provider query parameter is required"))
 		return
 	}
-	canonical, err := accounthealth.CanonicalProvider(provider)
-	if err != nil || !accounthealth.IsCEXProvider(canonical) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(accounthealth.SupportedCEXProviders(), ", ")))
+	canonical, err := cexaccount.CanonicalProvider(provider)
+	if err != nil || !cexaccount.IsCEXProvider(canonical) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
 		return
 	}
 

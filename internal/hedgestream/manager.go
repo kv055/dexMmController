@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"sync"
 
-	"dexMmController/internal/exchanges/cex"
+	"dexMmController/internal/exchangeconnectors/cex"
 )
 
 // SourceFunc starts an upstream position feed for one venue and returns a channel of

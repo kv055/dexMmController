@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"dexMmController/internal/accounthealth"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/hedgestream"
@@ -60,7 +59,7 @@ type LNDManagement struct {
 var ErrLNDWalletPasswordMissing = errors.New("LND wallet password is not set; set it under Account → Edit first")
 
 type accountHealthChecker interface {
-	CheckProvider(ctx context.Context, provider string) (accounthealth.Result, error)
+	CheckProvider(ctx context.Context, provider string) (cexaccount.HealthResult, error)
 }
 
 type lndWalletHealthChecker interface {
@@ -166,7 +165,7 @@ type accountHealthResponse struct {
 	Status    string                              `json:"status"`
 	Healthy   bool                                `json:"healthy"`
 	Message   string                              `json:"message"`
-	Keys      []accounthealth.KeyPermissionResult `json:"keys,omitempty"`
+	Keys      []cexaccount.KeyPermissionResult `json:"keys,omitempty"`
 	CheckedAt string                              `json:"checked_at"`
 }
 
@@ -199,8 +198,8 @@ func (s *Server) handleAccountHealthCheck(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("account health checker is not configured"))
 		return
 	}
-	if _, err := accounthealth.CanonicalProvider(provider); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(accounthealth.SupportedProviders(), ", ")))
+	if _, err := cexaccount.CanonicalProvider(provider); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(cexaccount.SupportedProviders(), ", ")))
 		return
 	}
 	result, err := s.accountHealth.CheckProvider(r.Context(), provider)

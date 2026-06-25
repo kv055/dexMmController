@@ -116,6 +116,15 @@ const (
 	StatusFiatToCexInitiated TransactionStatus = "FiatToCexInitiated"
 	// StatusFiatToCexArrived is the status fiat to cex arrived value.
 	StatusFiatToCexArrived TransactionStatus = "FiatToCexArrived"
+	// StatusCexTradeflowStarted marks a bid tradeflow row created before the spot
+	// buy, so the irreversible CEX steps are recoverable rather than only existing
+	// in an in-flight request.
+	StatusCexTradeflowStarted TransactionStatus = "CexTradeflowStarted"
+	// StatusHedgeFailedNeedsReview marks a tradeflow that bought spot but could not
+	// open (or confirm) the hedge after retries — the account holds unhedged BTC and
+	// needs manual reconciliation. Terminal until a human intervenes; happy-path
+	// workers must skip it.
+	StatusHedgeFailedNeedsReview TransactionStatus = "HedgeFailedNeedsReview"
 	// StatusCexTradeSuccessful is the status cex trade successful value.
 	StatusCexTradeSuccessful TransactionStatus = "CexTradeSucessfull"
 	// StatusCexCryptoWithdrawalInitiated is the status cex crypto withdrawal initiated value.

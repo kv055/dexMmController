@@ -1,4 +1,4 @@
-package pretradechecks
+package cexaccount
 
 import "context"
 
@@ -8,7 +8,6 @@ type BalanceFetcher interface {
 }
 
 // WhitelistFetcher returns whitelisted BTC withdrawal addresses for a CEX provider.
-// Only addresses already approved on the exchange are included.
 type WhitelistFetcher interface {
 	WhitelistedBTCAddresses(ctx context.Context, provider string) ([]string, error)
 }
@@ -40,8 +39,6 @@ func (f WalletSourceFunc) OnChainAddresses(ctx context.Context) ([]string, error
 }
 
 // PermissionChecker returns cached CEX API key permissions for a provider.
-// Keys are canonical permission names ("spot_trading", "hedge_positions", …);
-// values are "granted", "denied", or "unsupported".
 type PermissionChecker interface {
 	CEXPermissions(ctx context.Context, provider string) (map[string]string, error)
 }

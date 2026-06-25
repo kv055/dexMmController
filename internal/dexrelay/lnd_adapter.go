@@ -6,7 +6,7 @@ import (
 	lnd "dexMmController/internal/wallethub"
 )
 
-// LNDAdapter wraps wallethub.Client for dexoffer.LNDRelay.
+// LNDAdapter wraps wallethub.Client for dexaccount.LNDRelay.
 type LNDAdapter struct {
 	Client *lnd.Client
 }

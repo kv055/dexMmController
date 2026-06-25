@@ -3,32 +3,41 @@ package tradeflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/pretradechecks"
+	"dexMmController/internal/db"
 	lnd "dexMmController/internal/wallethub"
 )
 
 // fakeService is a controllable Service for unit tests.
 type fakeService struct {
-	preTradeReport *pretradechecks.Report
+	preTradeReport *cexaccount.Report
 	preTradeErr    error
 	spotResult     *cexaccount.SpotOrderResult
 	spotErr        error
 	hedgeResult    *cexaccount.HedgeOpenResult
 	hedgeErr       error
-	withdrawResult *lnd.WithdrawFromExchangeResult
-	withdrawErr    error
+	// hedgeFailFirstN fails the first N OpenHedge attempts, then succeeds.
+	hedgeFailFirstN int
+	withdrawResult  *lnd.WithdrawFromExchangeResult
+	withdrawErr     error
+	// livePositions is returned by successive LiveHedgePosition calls (the last
+	// element repeats once exhausted); nil yields a flat snapshot.
+	livePositions []*cexaccount.HedgeSnapshot
+	liveErr       error
 
-	preTradeCallCount int
-	spotCallCount     int
-	hedgeCallCount    int
-	withdrawCallCount int
+	preTradeCallCount       int
+	spotCallCount           int
+	hedgeCallCount          int
+	withdrawCallCount       int
+	liveCallCount           int
+	lastWithdrawClientReqID string
 }
 
-func (f *fakeService) PreTradeCheck(_ context.Context, _, _ string, _ float64) (*pretradechecks.Report, error) {
+func (f *fakeService) PreTradeCheck(_ context.Context, _, _ string, _ float64) (*cexaccount.Report, error) {
 	f.preTradeCallCount++
 	return f.preTradeReport, f.preTradeErr
 }
@@ -40,12 +49,82 @@ func (f *fakeService) MarketBuyBTC(_ context.Context, _ string, _ float64, _ str
 
 func (f *fakeService) OpenHedge(_ context.Context, _, _ string, _, _ float64) (*cexaccount.HedgeOpenResult, error) {
 	f.hedgeCallCount++
-	return f.hedgeResult, f.hedgeErr
+	if f.hedgeFailFirstN > 0 && f.hedgeCallCount <= f.hedgeFailFirstN {
+		return nil, errors.New("hedge transient error")
+	}
+	if f.hedgeErr != nil {
+		return nil, f.hedgeErr
+	}
+	return f.hedgeResult, nil
 }
 
-func (f *fakeService) WithdrawSpotToLND(_ context.Context, _ string, _ float64, _ string) (*lnd.WithdrawFromExchangeResult, error) {
+func (f *fakeService) LiveHedgePosition(_ context.Context, venue string) (*cexaccount.HedgeSnapshot, error) {
+	idx := f.liveCallCount
+	f.liveCallCount++
+	if f.liveErr != nil {
+		return nil, f.liveErr
+	}
+	if idx < len(f.livePositions) {
+		return f.livePositions[idx], nil
+	}
+	if len(f.livePositions) > 0 {
+		return f.livePositions[len(f.livePositions)-1], nil
+	}
+	return &cexaccount.HedgeSnapshot{Venue: venue, Side: "flat"}, nil
+}
+
+func (f *fakeService) WithdrawSpotToLND(_ context.Context, _ string, _ float64, _, clientRequestID string) (*lnd.WithdrawFromExchangeResult, error) {
 	f.withdrawCallCount++
+	f.lastWithdrawClientReqID = clientRequestID
 	return f.withdrawResult, f.withdrawErr
+}
+
+// fakeStore is an in-memory transactionStore for asserting per-step persistence.
+type fakeStore struct {
+	rows   map[uint]*db.Transaction
+	nextID uint
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{rows: map[uint]*db.Transaction{}}
+}
+
+func (s *fakeStore) CreateTransaction(tx *db.Transaction) error {
+	s.nextID++
+	tx.ID = s.nextID
+	cp := *tx
+	s.rows[tx.ID] = &cp
+	return nil
+}
+
+func (s *fakeStore) GetTransaction(id uint) (*db.Transaction, error) {
+	r, ok := s.rows[id]
+	if !ok {
+		return nil, fmt.Errorf("transaction %d not found", id)
+	}
+	cp := *r
+	return &cp, nil
+}
+
+func (s *fakeStore) UpdateTransaction(tx *db.Transaction) error {
+	if tx.ID == 0 {
+		return errors.New("id required")
+	}
+	cp := *tx
+	s.rows[tx.ID] = &cp
+	return nil
+}
+
+// only returns the single stored row (most persistence tests create exactly one).
+func (s *fakeStore) only(t *testing.T) *db.Transaction {
+	t.Helper()
+	if len(s.rows) != 1 {
+		t.Fatalf("expected exactly 1 stored row, got %d", len(s.rows))
+	}
+	for _, r := range s.rows {
+		return r
+	}
+	return nil
 }
 
 func validOrder() Order {
@@ -62,9 +141,18 @@ func validOrder() Order {
 	}
 }
 
+// persistOrder links a DEX offer so per-step persistence is enabled.
+func persistOrder() Order {
+	o := validOrder()
+	o.OfferID = "offer-1"
+	o.Dex = "hodlhodl"
+	o.FiatAmount = 500
+	return o
+}
+
 func happyFake() *fakeService {
 	return &fakeService{
-		preTradeReport: &pretradechecks.Report{
+		preTradeReport: &cexaccount.Report{
 			OK:                 true,
 			LNDWithdrawAddress: "bc1qtest",
 		},
@@ -91,7 +179,7 @@ func happyFake() *fakeService {
 
 func TestRun_HappyPath(t *testing.T) {
 	svc := happyFake()
-	tf := New(svc)
+	tf := New(svc, nil)
 
 	result, err := tf.Run(context.Background(), validOrder())
 	if err != nil {
@@ -140,14 +228,14 @@ func TestRun_HappyPath(t *testing.T) {
 
 func TestRun_PreTradeCheckFails_ShortCircuits(t *testing.T) {
 	svc := happyFake()
-	svc.preTradeReport = &pretradechecks.Report{
+	svc.preTradeReport = &cexaccount.Report{
 		OK: false,
-		Checks: []pretradechecks.CheckResult{
+		Checks: []cexaccount.CheckResult{
 			{Name: "capital", Passed: false, Message: "insufficient balance"},
 		},
 	}
 
-	_, err := New(svc).Run(context.Background(), validOrder())
+	_, err := New(svc, nil).Run(context.Background(), validOrder())
 	if err == nil {
 		t.Fatal("expected error when pre-trade checks fail")
 	}
@@ -167,7 +255,7 @@ func TestRun_PreTradeCheckError_ShortCircuits(t *testing.T) {
 	svc.preTradeReport = nil
 	svc.preTradeErr = errors.New("db unreachable")
 
-	_, err := New(svc).Run(context.Background(), validOrder())
+	_, err := New(svc, nil).Run(context.Background(), validOrder())
 	if err == nil {
 		t.Fatal("expected error on pre-trade check infrastructure failure")
 	}
@@ -180,7 +268,7 @@ func TestRun_SpotBuyFails_SkipsHedgeAndWithdraw(t *testing.T) {
 	svc := happyFake()
 	svc.spotErr = errors.New("exchange offline")
 
-	_, err := New(svc).Run(context.Background(), validOrder())
+	_, err := New(svc, nil).Run(context.Background(), validOrder())
 	if err == nil {
 		t.Fatal("expected error on spot buy failure")
 	}
@@ -196,12 +284,15 @@ func TestRun_HedgeFails_SkipsWithdraw(t *testing.T) {
 	svc := happyFake()
 	svc.hedgeErr = errors.New("futures API error")
 
-	_, err := New(svc).Run(context.Background(), validOrder())
+	_, err := New(svc, nil).Run(context.Background(), validOrder())
 	if err == nil {
 		t.Fatal("expected error on hedge failure")
 	}
 	if svc.withdrawCallCount != 0 {
 		t.Errorf("withdraw must not be called after hedge failure, called %d times", svc.withdrawCallCount)
+	}
+	if svc.hedgeCallCount != hedgeMaxAttempts {
+		t.Errorf("hedge should be retried %d times, got %d", hedgeMaxAttempts, svc.hedgeCallCount)
 	}
 }
 
@@ -210,7 +301,7 @@ func TestRun_WithdrawUsesPreTradeAddress(t *testing.T) {
 	var capturedAddr string
 	captureService := &captureWithdrawService{fakeService: svc, capturedAddr: &capturedAddr}
 
-	_, err := New(captureService).Run(context.Background(), validOrder())
+	_, err := New(captureService, nil).Run(context.Background(), validOrder())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -221,9 +312,9 @@ func TestRun_WithdrawUsesPreTradeAddress(t *testing.T) {
 
 func TestRun_PreTradeOKWithoutAddress_SkipsWithdraw(t *testing.T) {
 	svc := happyFake()
-	svc.preTradeReport = &pretradechecks.Report{OK: true}
+	svc.preTradeReport = &cexaccount.Report{OK: true}
 
-	_, err := New(svc).Run(context.Background(), validOrder())
+	_, err := New(svc, nil).Run(context.Background(), validOrder())
 	if err == nil {
 		t.Fatal("expected error when pre-trade OK but LNDWithdrawAddress is empty")
 	}
@@ -238,12 +329,10 @@ func TestRun_WithdrawUsesFilledBTC(t *testing.T) {
 
 	var capturedAmount float64
 	svc.withdrawResult = &lnd.WithdrawFromExchangeResult{WithdrawalID: "x", WalletAddress: "bc1q"}
-	origWithdraw := svc.withdrawResult
-	_ = origWithdraw
 
 	// Override withdraw to capture the amount passed.
 	captureService := &captureWithdrawService{fakeService: svc, capturedAmount: &capturedAmount}
-	result, err := New(captureService).Run(context.Background(), validOrder())
+	result, err := New(captureService, nil).Run(context.Background(), validOrder())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -262,7 +351,7 @@ type captureWithdrawService struct {
 	capturedAddr   *string
 }
 
-func (c *captureWithdrawService) WithdrawSpotToLND(_ context.Context, _ string, amountBTC float64, lndAddr string) (*lnd.WithdrawFromExchangeResult, error) {
+func (c *captureWithdrawService) WithdrawSpotToLND(_ context.Context, _ string, amountBTC float64, lndAddr, _ string) (*lnd.WithdrawFromExchangeResult, error) {
 	if c.capturedAmount != nil {
 		*c.capturedAmount = amountBTC
 	}
@@ -275,7 +364,7 @@ func (c *captureWithdrawService) WithdrawSpotToLND(_ context.Context, _ string, 
 func TestRun_AskSideNotImplemented(t *testing.T) {
 	o := validOrder()
 	o.MarketSide = "ask"
-	_, err := New(&fakeService{}).Run(context.Background(), o)
+	_, err := New(&fakeService{}, nil).Run(context.Background(), o)
 	if err == nil {
 		t.Fatal("expected error for ask market side")
 	}
@@ -287,7 +376,7 @@ func TestRun_AskSideNotImplemented(t *testing.T) {
 func TestRun_UnsupportedMarketSideRejected(t *testing.T) {
 	o := validOrder()
 	o.MarketSide = "unknown"
-	_, err := New(&fakeService{}).Run(context.Background(), o)
+	_, err := New(&fakeService{}, nil).Run(context.Background(), o)
 	if err == nil {
 		t.Fatal("expected error for unsupported market side")
 	}
@@ -296,8 +385,122 @@ func TestRun_UnsupportedMarketSideRejected(t *testing.T) {
 func TestRun_ValidationRejectsZeroBTC(t *testing.T) {
 	o := validOrder()
 	o.BTCAmount = 0
-	_, err := New(&fakeService{}).Run(context.Background(), o)
+	_, err := New(&fakeService{}, nil).Run(context.Background(), o)
 	if err == nil {
 		t.Fatal("expected validation error for zero BTCAmount")
+	}
+}
+
+// --- Per-step persistence -------------------------------------------------
+
+func TestRun_Persist_HappyPath_FinalStatus(t *testing.T) {
+	svc := happyFake()
+	store := newFakeStore()
+
+	result, err := New(svc, store).Run(context.Background(), persistOrder())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.TransactionID == 0 {
+		t.Fatal("expected a persisted transaction id on the result")
+	}
+	row := store.only(t)
+	if row.Status != db.StatusCexCryptoWithdrawalInitiated {
+		t.Errorf("final status: want %s, got %s", db.StatusCexCryptoWithdrawalInitiated, row.Status)
+	}
+	if row.CexBitcoinAmount != 0.00999 {
+		t.Errorf("CexBitcoinAmount: want 0.00999, got %f", row.CexBitcoinAmount)
+	}
+	if len(row.CexCounterPositionOpenDetails) == 0 {
+		t.Error("expected hedge open details to be persisted")
+	}
+	// Withdrawal idempotency key must be derived from the transaction id.
+	wantKey := fmt.Sprintf("tradeflow-%d", result.TransactionID)
+	if svc.lastWithdrawClientReqID != wantKey {
+		t.Errorf("withdraw client req id: want %s, got %s", wantKey, svc.lastWithdrawClientReqID)
+	}
+}
+
+func TestRun_Persist_HedgeExhausted_MarksNeedsReview(t *testing.T) {
+	svc := happyFake()
+	svc.hedgeErr = errors.New("futures down") // always fails; live stays flat
+	store := newFakeStore()
+
+	_, err := New(svc, store).Run(context.Background(), persistOrder())
+	if err == nil {
+		t.Fatal("expected error when hedge cannot be opened")
+	}
+	if svc.hedgeCallCount != hedgeMaxAttempts {
+		t.Errorf("hedge attempts: want %d, got %d", hedgeMaxAttempts, svc.hedgeCallCount)
+	}
+	if svc.withdrawCallCount != 0 {
+		t.Errorf("withdraw must not run after hedge failure, called %d", svc.withdrawCallCount)
+	}
+	row := store.only(t)
+	if row.Status != db.StatusHedgeFailedNeedsReview {
+		t.Errorf("status: want %s, got %s", db.StatusHedgeFailedNeedsReview, row.Status)
+	}
+}
+
+func TestRun_Persist_HedgeRetrySucceeds(t *testing.T) {
+	svc := happyFake()
+	svc.hedgeFailFirstN = 1 // first attempt fails, second succeeds
+	store := newFakeStore()
+
+	_, err := New(svc, store).Run(context.Background(), persistOrder())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if svc.hedgeCallCount != 2 {
+		t.Errorf("hedge should succeed on the 2nd attempt, got %d calls", svc.hedgeCallCount)
+	}
+	// LiveHedgePosition is consulted for the baseline and after the failed attempt.
+	if svc.liveCallCount < 2 {
+		t.Errorf("expected live position to be consulted >=2 times, got %d", svc.liveCallCount)
+	}
+	row := store.only(t)
+	if row.Status != db.StatusCexCryptoWithdrawalInitiated {
+		t.Errorf("final status: want %s, got %s", db.StatusCexCryptoWithdrawalInitiated, row.Status)
+	}
+}
+
+func TestRun_Persist_HedgeErrorButPositionOpen_NoDoubleOpen(t *testing.T) {
+	svc := happyFake()
+	svc.hedgeErr = errors.New("lost confirmation") // call errors every time...
+	// ...but the venue reports the short actually opened (baseline flat, then open).
+	svc.livePositions = []*cexaccount.HedgeSnapshot{
+		{Venue: "binance_futures", Side: "flat"},
+		{Venue: "binance_futures", Side: "short", SizeBTC: 0.01},
+	}
+	store := newFakeStore()
+
+	result, err := New(svc, store).Run(context.Background(), persistOrder())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if svc.hedgeCallCount != 1 {
+		t.Errorf("must not re-open hedge once the venue confirms it is open; got %d calls", svc.hedgeCallCount)
+	}
+	if result.Hedge.Status != "open_detected_after_error" {
+		t.Errorf("hedge status: want open_detected_after_error, got %s", result.Hedge.Status)
+	}
+	row := store.only(t)
+	if row.Status != db.StatusCexCryptoWithdrawalInitiated {
+		t.Errorf("final status: want %s, got %s", db.StatusCexCryptoWithdrawalInitiated, row.Status)
+	}
+}
+
+func TestRun_Persist_WithdrawalFails_StaysAtTradeSuccessful(t *testing.T) {
+	svc := happyFake()
+	svc.withdrawErr = errors.New("withdrawal endpoint 500")
+	store := newFakeStore()
+
+	_, err := New(svc, store).Run(context.Background(), persistOrder())
+	if err == nil {
+		t.Fatal("expected error when withdrawal fails")
+	}
+	row := store.only(t)
+	if row.Status != db.StatusCexTradeSuccessful {
+		t.Errorf("status after withdrawal failure: want %s (hedge done, retryable), got %s", db.StatusCexTradeSuccessful, row.Status)
 	}
 }

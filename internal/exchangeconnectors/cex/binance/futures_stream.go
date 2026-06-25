@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/exchanges/cex"
+	"dexMmController/internal/exchangeconnectors/cex"
 )
 
 const (

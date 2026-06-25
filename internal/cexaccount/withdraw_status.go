@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"dexMmController/internal/db"
-	"dexMmController/internal/exchanges/cex/binance"
-	"dexMmController/internal/exchanges/cex/kraken"
+	"dexMmController/internal/exchangeconnectors/cex/binance"
+	"dexMmController/internal/exchangeconnectors/cex/kraken"
 	lnd "dexMmController/internal/wallethub"
 )
 

@@ -1,4 +1,4 @@
-package pretradechecks
+package cexaccount
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-// newTestChecker builds a BidChecker whose sources are driven by the given closures.
 func newTestChecker(
 	balance func() (float64, error),
 	whitelist func() ([]string, error),
@@ -26,7 +25,7 @@ func newTestChecker(
 }
 
 func okPerms() (map[string]string, error) {
-	return map[string]string{permSpotTrading: permGranted, permHedgePositions: permGranted}, nil
+	return map[string]string{PermSpotTrading: PermGranted, PermHedgePositions: PermGranted}, nil
 }
 
 func TestRunAllChecksPass(t *testing.T) {
@@ -53,15 +52,12 @@ func TestRunAllChecksPass(t *testing.T) {
 	}
 }
 
-// TestRunRunsToCompletion is the key behavioural guarantee: even when the FIRST check
-// (permissions) fails, the later checks (capital, whitelist) are still evaluated and
-// reported — the runner does not short-circuit.
 func TestRunRunsToCompletion(t *testing.T) {
 	c := newTestChecker(
-		func() (float64, error) { return 100, nil },                    // capital: 100 < 500 → fail
-		func() ([]string, error) { return []string{"bc1qother"}, nil }, // whitelist: no wallet match → fail
+		func() (float64, error) { return 100, nil },
+		func() ([]string, error) { return []string{"bc1qother"}, nil },
 		func() (map[string]string, error) {
-			return map[string]string{permSpotTrading: "denied"}, nil // permissions → fail
+			return map[string]string{PermSpotTrading: "denied"}, nil
 		},
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
 	)
@@ -91,7 +87,6 @@ func TestRunRunsToCompletion(t *testing.T) {
 }
 
 func TestRunPartialFailureReportsBoth(t *testing.T) {
-	// Permissions + capital pass, whitelist fails. The passing checks must still report.
 	c := newTestChecker(
 		func() (float64, error) { return 1000, nil },
 		func() ([]string, error) { return []string{"bc1qother"}, nil },
@@ -121,22 +116,19 @@ func TestRunAllAggregatesAllFailures(t *testing.T) {
 	c := newTestChecker(
 		func() (float64, error) { return 100, nil },
 		func() ([]string, error) { return []string{"bc1qother"}, nil },
-		func() (map[string]string, error) { return map[string]string{permSpotTrading: "denied"}, nil },
+		func() (map[string]string, error) { return map[string]string{PermSpotTrading: "denied"}, nil },
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
 	)
 	err := c.RunAll(context.Background(), "kraken", "EUR", 500)
 	if err == nil {
 		t.Fatal("expected aggregated error")
 	}
-	// The aggregated error should mention every failure (semicolon-joined).
 	if strings.Count(err.Error(), ";") < 2 {
 		t.Errorf("expected aggregated message of 3 failures, got: %v", err)
 	}
 }
 
 func TestCheckEvaluationErrorReportedAsFailure(t *testing.T) {
-	// An infrastructure error fetching balance must surface as a failed capital check,
-	// not panic or be silently ignored.
 	c := newTestChecker(
 		func() (float64, error) { return 0, fmt.Errorf("exchange unreachable") },
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
