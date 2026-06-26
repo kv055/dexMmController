@@ -34,10 +34,16 @@ func createTradeflowRow(store transactionStore, order Order, lndAddr string) (ui
 		})
 	}
 	now := time.Now().UTC()
+	// Snapshot the order so the recovery worker can rebuild it from the row alone.
+	orderSnapshot, err := json.Marshal(order)
+	if err != nil {
+		return 0, fmt.Errorf("marshal tradeflow order snapshot: %w", err)
+	}
 	meta := db.DexOfferMeta{
 		SelectedOffer:     selectedOffer,
 		LNDReceiveAddress: strings.TrimSpace(lndAddr),
 		TradeflowAt:       &now,
+		TradeflowOrder:    orderSnapshot,
 	}
 	dexOfferJSON, err := db.MarshalDexOfferCreation(meta)
 	if err != nil {
@@ -149,6 +155,10 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 		})
 	}
 	now := time.Now().UTC()
+	orderSnapshot, err := json.Marshal(order)
+	if err != nil {
+		return fmt.Errorf("marshal tradeflow order snapshot: %w", err)
+	}
 	meta := db.DexOfferMeta{
 		SelectedOffer:     selectedOffer,
 		LNDReceiveAddress: strings.TrimSpace(lndAddr),
@@ -157,7 +167,8 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 			ClientRequestID: result.Withdrawal.ClientRequestID,
 			Provider:        result.Withdrawal.Provider,
 		},
-		TradeflowAt: &now,
+		TradeflowAt:    &now,
+		TradeflowOrder: orderSnapshot,
 	}
 	dexOfferJSON, err := db.MarshalDexOfferCreation(meta)
 	if err != nil {

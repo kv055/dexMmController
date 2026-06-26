@@ -3,6 +3,7 @@ package cexaccount
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,142 @@ func (s *Service) GetWithdrawalStatus(ctx context.Context, rawProvider, withdraw
 	default:
 		return nil, fmt.Errorf("withdrawal status not supported for %s", provider)
 	}
+}
+
+// WithdrawalAlreadySent reports whether a BTC withdrawal matching this trade has
+// already gone out, so a recovery retry doesn't double-withdraw. It returns the
+// matched status (non-nil) when one is found, or nil when it is safe to (re)send.
+//
+// Binance is matched exactly by clientRequestID (it stores withdrawOrderId). Kraken
+// has no client key, so it is matched heuristically by destination address + amount
+// within the given lookback window. Records in a cancelled/rejected/failed state do
+// not count as sent (the funds never left), so a retry is allowed.
+func (s *Service) WithdrawalAlreadySent(ctx context.Context, rawProvider, clientRequestID string, amountBTC float64, address string, within time.Duration) (*WithdrawalStatus, error) {
+	provider, key, err := s.firstActiveKey(ctx, rawProvider)
+	if err != nil {
+		return nil, err
+	}
+	if within <= 0 {
+		within = 24 * time.Hour
+	}
+
+	switch strings.ToLower(provider) {
+	case "binance":
+		return s.binanceWithdrawalAlreadySent(ctx, key, clientRequestID, amountBTC, address, within)
+	case "kraken":
+		return s.krakenWithdrawalAlreadySent(ctx, key, amountBTC, address, within)
+	default:
+		return nil, fmt.Errorf("withdrawal lookup not supported for %s", provider)
+	}
+}
+
+func (s *Service) binanceWithdrawalAlreadySent(ctx context.Context, key db.APIKey, clientRequestID string, amountBTC float64, address string, within time.Duration) (*WithdrawalStatus, error) {
+	client := binance.NewClient(s.cfg.BinanceBaseURL, key.APIKey, key.APISecret)
+	bridge := lnd.NewBinanceBridge(client)
+
+	// Exact match by our client request id when available.
+	if strings.TrimSpace(clientRequestID) != "" {
+		recs, err := bridge.GetWithdrawHistory(ctx, lnd.ExchangeWithdrawHistoryParams{
+			Coin:            "BTC",
+			ClientRequestID: strings.TrimSpace(clientRequestID),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("binance: withdraw history: %w", err)
+		}
+		for _, rec := range recs {
+			if binanceWithdrawCountsAsSent(rec.Status) {
+				return binanceWithdrawalStatusFromRecord(rec), nil
+			}
+		}
+	}
+
+	// Fallback: address + amount within the window over recent history.
+	recs, err := bridge.GetWithdrawHistory(ctx, lnd.ExchangeWithdrawHistoryParams{Coin: "BTC"})
+	if err != nil {
+		return nil, fmt.Errorf("binance: withdraw history: %w", err)
+	}
+	for _, rec := range recs {
+		if !binanceWithdrawCountsAsSent(rec.Status) {
+			continue
+		}
+		if addressMatches(rec.Address, address) && amountMatches(rec.Amount, amountBTC) {
+			return binanceWithdrawalStatusFromRecord(rec), nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *Service) krakenWithdrawalAlreadySent(ctx context.Context, key db.APIKey, amountBTC float64, address string, within time.Duration) (*WithdrawalStatus, error) {
+	client := kraken.NewClient(s.cfg.KrakenBaseURL, key.APIKey, key.APISecret)
+	end := time.Now()
+	start := end.Add(-within)
+	records, err := client.GetWithdrawStatus(ctx, kraken.WithdrawStatusRequest{
+		Asset:     "XBT",
+		Method:    "Bitcoin",
+		StartTime: &start,
+		EndTime:   &end,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("kraken: withdraw status: %w", err)
+	}
+	for _, rec := range records {
+		if !krakenWithdrawCountsAsSent(rec.Status) {
+			continue
+		}
+		if addressMatches(rec.Info, address) && amountMatches(rec.Amount, amountBTC) {
+			return &WithdrawalStatus{
+				Provider:      "kraken",
+				WithdrawalID:  rec.RefID,
+				CexStatus:     krakenWithdrawStatusLabel(rec.Status),
+				CexStatusCode: krakenWithdrawStatusCode(rec.Status),
+				TxHash:        strings.TrimSpace(rec.TxID),
+				Address:       rec.Info,
+				AmountBTC:     rec.Amount,
+				UpdatedAt:     time.Unix(rec.Time, 0).UTC().Format(time.RFC3339),
+			}, nil
+		}
+	}
+	return nil, nil
+}
+
+// binanceWithdrawCountsAsSent is false for cancelled(1)/rejected(3)/failed(5), where
+// the funds never left and a retry is safe.
+func binanceWithdrawCountsAsSent(status int) bool {
+	switch status {
+	case 1, 3, 5:
+		return false
+	default:
+		return true
+	}
+}
+
+// krakenWithdrawCountsAsSent is false only for an explicit Failure.
+func krakenWithdrawCountsAsSent(status string) bool {
+	return strings.TrimSpace(status) != "Failure"
+}
+
+func addressMatches(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	return a != "" && a == b
+}
+
+// amountMatches compares a decimal-string amount to a target BTC amount, tolerating
+// small fee/rounding differences.
+func amountMatches(raw string, target float64) bool {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		return false
+	}
+	diff := v - target
+	if diff < 0 {
+		diff = -diff
+	}
+	tol := target * 0.01
+	if tol < 1e-5 {
+		tol = 1e-5
+	}
+	return diff <= tol
 }
 
 func (s *Service) binanceWithdrawalStatus(ctx context.Context, key db.APIKey, withdrawalID, clientRequestID string) (*WithdrawalStatus, error) {

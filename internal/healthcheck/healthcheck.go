@@ -12,18 +12,50 @@ import (
 	"dexMmController/internal/openclaw"
 )
 
+// defaultRecoveryGracePeriod is how long a row must sit in an intermediate tradeflow
+// state before the recovery worker acts on it — long enough that a still-running
+// synchronous TradeFlow.Run cannot be mistaken for an abandoned row.
+const defaultRecoveryGracePeriod = 3 * time.Minute
+
+// TradeflowRecoverer drives stuck/failed tradeflow rows forward. Implemented by
+// *tradeflow.TradeFlow; declared here so healthcheck depends only on what it needs.
+type TradeflowRecoverer interface {
+	ResumeFromTradeflowStarted(ctx context.Context, tx *db.Transaction) error
+	ResumeWithdrawal(ctx context.Context, tx *db.Transaction) error
+	RecoverHedge(ctx context.Context, tx *db.Transaction) error
+}
+
 // HealthChecker queries the DB for incomplete transactions and verifies their
 // actual state against external systems, advancing the status where appropriate.
 type HealthChecker struct {
-	repo     *db.TransactionRepository
-	openclaw *openclaw.Client
-	btc      *bitcoin.NetworkDataFetcher
-	hodlhodl *hodlhodl.Client
+	repo                *db.TransactionRepository
+	openclaw            *openclaw.Client
+	btc                 *bitcoin.NetworkDataFetcher
+	hodlhodl            *hodlhodl.Client
+	recoverer           TradeflowRecoverer
+	recoveryGracePeriod time.Duration
 }
 
-// NewHealthChecker creates a health checker.
-func NewHealthChecker(repo *db.TransactionRepository, oc *openclaw.Client, btc *bitcoin.NetworkDataFetcher, hh *hodlhodl.Client) *HealthChecker {
-	return &HealthChecker{repo: repo, openclaw: oc, btc: btc, hodlhodl: hh}
+// NewHealthChecker creates a health checker. recoverer drives recovery of stuck
+// tradeflow rows; it may be nil to disable tradeflow recovery (those states then
+// no-op rather than erroring).
+func NewHealthChecker(repo *db.TransactionRepository, oc *openclaw.Client, btc *bitcoin.NetworkDataFetcher, hh *hodlhodl.Client, recoverer TradeflowRecoverer) *HealthChecker {
+	return &HealthChecker{
+		repo:                repo,
+		openclaw:            oc,
+		btc:                 btc,
+		hodlhodl:            hh,
+		recoverer:           recoverer,
+		recoveryGracePeriod: defaultRecoveryGracePeriod,
+	}
+}
+
+// WithRecoveryGracePeriod overrides the default grace period (e.g. from env).
+func (h *HealthChecker) WithRecoveryGracePeriod(d time.Duration) *HealthChecker {
+	if d > 0 {
+		h.recoveryGracePeriod = d
+	}
+	return h
 }
 
 // RunPeriodic executes healthcheck on interval until ctx is cancelled.
@@ -71,6 +103,12 @@ func (h *HealthChecker) verify(ctx context.Context, tx *db.Transaction) error {
 		return h.verifyFiatToCexInitiated(ctx, tx)
 	case db.StatusFiatToCexArrived:
 		return h.verifyFiatToCexArrived(ctx, tx)
+	case db.StatusCexTradeflowStarted:
+		return h.verifyCexTradeflowStarted(ctx, tx)
+	case db.StatusHedgeFailedNeedsReview:
+		return h.verifyHedgeFailedNeedsReview(ctx, tx)
+	case db.StatusCexTradeflowNeedsReview:
+		return nil // alert already fired when the row entered this state; park it.
 	case db.StatusCexTradeSuccessful:
 		return h.verifyCexTradeSuccessful(ctx, tx)
 	case db.StatusCexCryptoWithdrawalInitiated:
@@ -90,9 +128,37 @@ func (h *HealthChecker) verify(ctx context.Context, tx *db.Transaction) error {
 	}
 }
 
-// verifyCexTradeSuccessful is handled by the tradeflow orchestrator for bid rows.
-func (h *HealthChecker) verifyCexTradeSuccessful(_ context.Context, _ *db.Transaction) error {
-	return nil
+// withinGrace reports whether a row is too fresh to recover — it may be a still-in-
+// flight synchronous TradeFlow.Run rather than an abandoned cycle.
+func (h *HealthChecker) withinGrace(tx *db.Transaction) bool {
+	return time.Since(tx.UpdatedAt) < h.recoveryGracePeriod
+}
+
+// verifyCexTradeflowStarted recovers a row whose tradeflow died before the hedge:
+// resume from the hedge step if the spot fill is recorded, else park for review.
+func (h *HealthChecker) verifyCexTradeflowStarted(ctx context.Context, tx *db.Transaction) error {
+	if h.recoverer == nil || h.withinGrace(tx) {
+		return nil
+	}
+	return h.recoverer.ResumeFromTradeflowStarted(ctx, tx)
+}
+
+// verifyCexTradeSuccessful recovers a row whose spot+hedge completed but whose
+// withdrawal was never sent (or failed): retry the withdrawal idempotently.
+func (h *HealthChecker) verifyCexTradeSuccessful(ctx context.Context, tx *db.Transaction) error {
+	if h.recoverer == nil || h.withinGrace(tx) {
+		return nil
+	}
+	return h.recoverer.ResumeWithdrawal(ctx, tx)
+}
+
+// verifyHedgeFailedNeedsReview re-checks the venue: if the hedge is now open the row
+// is advanced to CexTradeSuccessful, otherwise it stays for manual reconciliation.
+func (h *HealthChecker) verifyHedgeFailedNeedsReview(ctx context.Context, tx *db.Transaction) error {
+	if h.recoverer == nil {
+		return nil
+	}
+	return h.recoverer.RecoverHedge(ctx, tx)
 }
 
 // verifyCexCryptoWithdrawalInitiated is handled by dexrelay for bid tradeflow rows.

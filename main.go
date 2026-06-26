@@ -140,7 +140,8 @@ func main() {
 	})
 
 	// ── HealthChecker + dexrelay ──────────────────────────────────────────────
-	hc := healthcheck.NewHealthChecker(repo, claw, btc, hh)
+	// HealthChecker is constructed after tradeFlow (below) so it can recover stuck
+	// tradeflow rows via the recoverer.
 	dexTaker := dexaccount.NewTaker(repo, bq, hh, rs)
 	exchangeAccountHealth := accounthealth.NewChecker(repo, cexaccount.Config{
 		HodlHodlBaseURL: hhBaseURL,
@@ -229,6 +230,8 @@ func main() {
 		},
 	})
 	tradeFlow := tradeflow.New(cexAccountService, repo)
+	hc := healthcheck.NewHealthChecker(repo, claw, btc, hh, tradeFlow).
+		WithRecoveryGracePeriod(parseAccountHealthInterval(envOr("TRADEFLOW_RECOVERY_GRACE", "3m")))
 	apiServer := api.NewServer(apiAddr, repo).
 		WithAccountHealth(exchangeAccountHealth).
 		WithCexAccount(cexAccountService).
@@ -315,8 +318,15 @@ func main() {
 	}
 
 	// ── Periodic healthcheck + dexrelay ─────────────────────────────────────────
-	go hc.RunPeriodic(ctx, healthcheckInterval)
-	go dexRelayWorker.RunPeriodic(ctx, healthcheckInterval)
+	// TEMPORARILY DISABLED: the background workers (transaction recovery + CEX→DEX
+	// relay) take automatic, money-moving corrective actions. They are wired up but
+	// not started while we validate the tradeflow/recovery logic. Re-enable by
+	// uncommenting the two goroutines below.
+	// go hc.RunPeriodic(ctx, healthcheckInterval)
+	// go dexRelayWorker.RunPeriodic(ctx, healthcheckInterval)
+	_ = hc
+	_ = dexRelayWorker
+	_ = healthcheckInterval
 
 	lndHealthChecker.RunAndLog(ctx)
 	go lndHealthChecker.RunPeriodic(ctx, accountHealthInterval)

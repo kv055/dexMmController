@@ -125,6 +125,11 @@ const (
 	// needs manual reconciliation. Terminal until a human intervenes; happy-path
 	// workers must skip it.
 	StatusHedgeFailedNeedsReview TransactionStatus = "HedgeFailedNeedsReview"
+	// StatusCexTradeflowNeedsReview marks a tradeflow that died at CexTradeflowStarted
+	// with the spot-buy outcome unrecorded/unconfirmable. Recovery cannot safely
+	// re-buy (MarketBuyBTC has no idempotency key), so a human must reconcile.
+	// Terminal until a human intervenes; happy-path workers must skip it.
+	StatusCexTradeflowNeedsReview TransactionStatus = "CexTradeflowNeedsReview"
 	// StatusCexTradeSuccessful is the status cex trade successful value.
 	StatusCexTradeSuccessful TransactionStatus = "CexTradeSucessfull"
 	// StatusCexCryptoWithdrawalInitiated is the status cex crypto withdrawal initiated value.

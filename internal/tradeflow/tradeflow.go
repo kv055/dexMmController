@@ -84,6 +84,7 @@ type Service interface {
 	OpenHedge(ctx context.Context, venue, side string, btcNotional, leverage float64) (*cexaccount.HedgeOpenResult, error)
 	LiveHedgePosition(ctx context.Context, venue string) (*cexaccount.HedgeSnapshot, error)
 	WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress, clientRequestID string) (*lnd.WithdrawFromExchangeResult, error)
+	WithdrawalAlreadySent(ctx context.Context, rawProvider, clientRequestID string, amountBTC float64, address string, within time.Duration) (*cexaccount.WithdrawalStatus, error)
 }
 
 // TradeFlow orchestrates the CEX trade leg of a DEX arbitrage cycle.

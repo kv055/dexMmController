@@ -14,6 +14,11 @@ type DexOfferMeta struct {
 	CexWithdrawal     *CexWithdrawalMeta `json:"cex_withdrawal,omitempty"`
 	Execution         map[string]any     `json:"execution,omitempty"`
 	TradeflowAt       *time.Time         `json:"tradeflow_at,omitempty"`
+	// TradeflowOrder is an opaque JSON snapshot of the tradeflow.Order that started
+	// this row, stashed at creation so the healthcheck recovery worker can rebuild
+	// the original parameters (hedge venue/side/notional, provider, …) and resume a
+	// stuck cycle. The db package only carries the bytes — it does not import tradeflow.
+	TradeflowOrder json.RawMessage `json:"tradeflow_order,omitempty"`
 }
 
 // CexWithdrawalMeta tracks the CEX→LND withdrawal leg for confirmation polling.

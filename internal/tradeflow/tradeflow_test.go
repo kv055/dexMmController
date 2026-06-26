@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
@@ -28,12 +29,16 @@ type fakeService struct {
 	// element repeats once exhausted); nil yields a flat snapshot.
 	livePositions []*cexaccount.HedgeSnapshot
 	liveErr       error
+	// withdrawAlreadySent is returned by WithdrawalAlreadySent (nil = safe to send).
+	withdrawAlreadySent    *cexaccount.WithdrawalStatus
+	withdrawAlreadySentErr error
 
 	preTradeCallCount       int
 	spotCallCount           int
 	hedgeCallCount          int
 	withdrawCallCount       int
 	liveCallCount           int
+	alreadySentCallCount    int
 	lastWithdrawClientReqID string
 }
 
@@ -77,6 +82,11 @@ func (f *fakeService) WithdrawSpotToLND(_ context.Context, _ string, _ float64, 
 	f.withdrawCallCount++
 	f.lastWithdrawClientReqID = clientRequestID
 	return f.withdrawResult, f.withdrawErr
+}
+
+func (f *fakeService) WithdrawalAlreadySent(_ context.Context, _, _ string, _ float64, _ string, _ time.Duration) (*cexaccount.WithdrawalStatus, error) {
+	f.alreadySentCallCount++
+	return f.withdrawAlreadySent, f.withdrawAlreadySentErr
 }
 
 // fakeStore is an in-memory transactionStore for asserting per-step persistence.
@@ -502,5 +512,152 @@ func TestRun_Persist_WithdrawalFails_StaysAtTradeSuccessful(t *testing.T) {
 	row := store.only(t)
 	if row.Status != db.StatusCexTradeSuccessful {
 		t.Errorf("status after withdrawal failure: want %s (hedge done, retryable), got %s", db.StatusCexTradeSuccessful, row.Status)
+	}
+}
+
+// --- Recovery -------------------------------------------------------------
+
+// tradeSuccessfulRow builds a persisted row at CexTradeSuccessful (spot + hedge
+// recorded, withdrawal not yet sent) using the real persist helpers.
+func tradeSuccessfulRow(t *testing.T, store *fakeStore, svc *fakeService) *db.Transaction {
+	t.Helper()
+	order := persistOrder()
+	id, err := createTradeflowRow(store, order, "bc1qtest")
+	if err != nil {
+		t.Fatalf("createTradeflowRow: %v", err)
+	}
+	if err := recordSpotBuy(store, id, svc.spotResult, 0.00999); err != nil {
+		t.Fatalf("recordSpotBuy: %v", err)
+	}
+	if err := recordHedge(store, id, order, svc.spotResult, svc.hedgeResult); err != nil {
+		t.Fatalf("recordHedge: %v", err)
+	}
+	tx, err := store.GetTransaction(id)
+	if err != nil {
+		t.Fatalf("GetTransaction: %v", err)
+	}
+	return tx
+}
+
+func TestResumeWithdrawal_IssuesOnceAndAdvances(t *testing.T) {
+	svc := happyFake()
+	store := newFakeStore()
+	tx := tradeSuccessfulRow(t, store, svc)
+
+	if err := New(svc, store).ResumeWithdrawal(context.Background(), tx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if svc.alreadySentCallCount != 1 {
+		t.Errorf("history-match guard should be consulted once, got %d", svc.alreadySentCallCount)
+	}
+	if svc.withdrawCallCount != 1 {
+		t.Errorf("withdrawal should be issued once, got %d", svc.withdrawCallCount)
+	}
+	wantKey := fmt.Sprintf("tradeflow-%d", tx.ID)
+	if svc.lastWithdrawClientReqID != wantKey {
+		t.Errorf("client req id: want %s, got %s", wantKey, svc.lastWithdrawClientReqID)
+	}
+	if row := store.only(t); row.Status != db.StatusCexCryptoWithdrawalInitiated {
+		t.Errorf("status: want %s, got %s", db.StatusCexCryptoWithdrawalInitiated, row.Status)
+	}
+}
+
+func TestResumeWithdrawal_HistoryMatch_NoResend(t *testing.T) {
+	svc := happyFake()
+	svc.withdrawAlreadySent = &cexaccount.WithdrawalStatus{WithdrawalID: "existing-1", CexStatus: "processing"}
+	store := newFakeStore()
+	tx := tradeSuccessfulRow(t, store, svc)
+
+	if err := New(svc, store).ResumeWithdrawal(context.Background(), tx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if svc.withdrawCallCount != 0 {
+		t.Errorf("must NOT resend when a matching withdrawal already exists, got %d", svc.withdrawCallCount)
+	}
+	if row := store.only(t); row.Status != db.StatusCexCryptoWithdrawalInitiated {
+		t.Errorf("status: want %s, got %s", db.StatusCexCryptoWithdrawalInitiated, row.Status)
+	}
+}
+
+func TestResumeFromTradeflowStarted_SpotKnown_ResumesHedge(t *testing.T) {
+	svc := happyFake()
+	store := newFakeStore()
+	order := persistOrder()
+	id, _ := createTradeflowRow(store, order, "bc1qtest")
+	if err := recordSpotBuy(store, id, svc.spotResult, 0.00999); err != nil {
+		t.Fatalf("recordSpotBuy: %v", err)
+	}
+	tx, _ := store.GetTransaction(id)
+
+	if err := New(svc, store).ResumeFromTradeflowStarted(context.Background(), tx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if svc.spotCallCount != 0 {
+		t.Errorf("must NOT re-buy spot during recovery, got %d", svc.spotCallCount)
+	}
+	if svc.hedgeCallCount < 1 {
+		t.Errorf("hedge should be opened, got %d calls", svc.hedgeCallCount)
+	}
+	if row := store.only(t); row.Status != db.StatusCexTradeSuccessful {
+		t.Errorf("status: want %s, got %s", db.StatusCexTradeSuccessful, row.Status)
+	}
+}
+
+func TestResumeFromTradeflowStarted_SpotUnknown_ParksForReview(t *testing.T) {
+	svc := happyFake()
+	store := newFakeStore()
+	order := persistOrder()
+	id, _ := createTradeflowRow(store, order, "bc1qtest") // no spot recorded
+	tx, _ := store.GetTransaction(id)
+
+	if err := New(svc, store).ResumeFromTradeflowStarted(context.Background(), tx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if svc.spotCallCount != 0 || svc.hedgeCallCount != 0 {
+		t.Errorf("must not buy or hedge when spot outcome unknown (spot=%d hedge=%d)", svc.spotCallCount, svc.hedgeCallCount)
+	}
+	if row := store.only(t); row.Status != db.StatusCexTradeflowNeedsReview {
+		t.Errorf("status: want %s, got %s", db.StatusCexTradeflowNeedsReview, row.Status)
+	}
+}
+
+func hedgeFailedRow(t *testing.T, store *fakeStore, svc *fakeService) *db.Transaction {
+	t.Helper()
+	order := persistOrder()
+	id, _ := createTradeflowRow(store, order, "bc1qtest")
+	if err := recordSpotBuy(store, id, svc.spotResult, 0.00999); err != nil {
+		t.Fatalf("recordSpotBuy: %v", err)
+	}
+	if err := markHedgeFailed(store, id, svc.spotResult); err != nil {
+		t.Fatalf("markHedgeFailed: %v", err)
+	}
+	tx, _ := store.GetTransaction(id)
+	return tx
+}
+
+func TestRecoverHedge_VenueShowsOpen_Advances(t *testing.T) {
+	svc := happyFake()
+	svc.livePositions = []*cexaccount.HedgeSnapshot{{Venue: "binance_futures", Side: "short", SizeBTC: 0.01}}
+	store := newFakeStore()
+	tx := hedgeFailedRow(t, store, svc)
+
+	if err := New(svc, store).RecoverHedge(context.Background(), tx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if row := store.only(t); row.Status != db.StatusCexTradeSuccessful {
+		t.Errorf("status: want %s, got %s", db.StatusCexTradeSuccessful, row.Status)
+	}
+}
+
+func TestRecoverHedge_StillFlat_StaysForReview(t *testing.T) {
+	svc := happyFake() // LiveHedgePosition defaults to flat
+	store := newFakeStore()
+	tx := hedgeFailedRow(t, store, svc)
+
+	if err := New(svc, store).RecoverHedge(context.Background(), tx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if row := store.only(t); row.Status != db.StatusHedgeFailedNeedsReview {
+		t.Errorf("status: want %s (unchanged), got %s", db.StatusHedgeFailedNeedsReview, row.Status)
 	}
 }
