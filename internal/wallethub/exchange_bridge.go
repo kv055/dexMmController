@@ -135,6 +135,9 @@ type ExchangeWithdrawRecord struct {
 	Status int
 	// TxID is the tx id value for the exchange withdraw record.
 	TxID string
+	// Fee is the network/withdrawal fee charged for the withdrawal, in Coin units
+	// (BTC for a BTC withdrawal), as a decimal string. Empty when not reported.
+	Fee string
 	// ApplyTime records the relevant time for the exchange withdraw record.
 	ApplyTime string
 	// ClientRequestID is the client request id value for the exchange withdraw record.

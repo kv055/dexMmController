@@ -19,10 +19,20 @@ type WithdrawalStatus struct {
 	WithdrawalID  string `json:"withdrawal_id"`
 	CexStatus     string `json:"cex_status"`
 	CexStatusCode int    `json:"cex_status_code"`
-	TxHash        string `json:"tx_hash,omitempty"`
-	Address       string `json:"address,omitempty"`
-	AmountBTC     string `json:"amount_btc,omitempty"`
-	UpdatedAt     string `json:"updated_at"`
+	TxHash        string  `json:"tx_hash,omitempty"`
+	Address       string  `json:"address,omitempty"`
+	AmountBTC     string  `json:"amount_btc,omitempty"`
+	FeeBTC        float64 `json:"fee_btc,omitempty"` // network/withdrawal fee in BTC, 0 when not reported
+	UpdatedAt     string  `json:"updated_at"`
+}
+
+// parseDecimal parses a decimal string to float64, returning 0 on empty/invalid input.
+func parseDecimal(raw string) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // GetWithdrawalStatus looks up a withdrawal by exchange id (and optional client id).
@@ -136,6 +146,7 @@ func (s *Service) krakenWithdrawalAlreadySent(ctx context.Context, key db.APIKey
 				TxHash:        strings.TrimSpace(rec.TxID),
 				Address:       rec.Info,
 				AmountBTC:     rec.Amount,
+				FeeBTC:        parseDecimal(rec.Fee),
 				UpdatedAt:     time.Unix(rec.Time, 0).UTC().Format(time.RFC3339),
 			}, nil
 		}
@@ -234,6 +245,7 @@ func binanceWithdrawalStatusFromRecord(rec lnd.ExchangeWithdrawRecord) *Withdraw
 		TxHash:        strings.TrimSpace(rec.TxID),
 		Address:       rec.Address,
 		AmountBTC:     rec.Amount,
+		FeeBTC:        parseDecimal(rec.Fee),
 		UpdatedAt:     updatedAt,
 	}
 }
@@ -285,6 +297,7 @@ func (s *Service) krakenWithdrawalStatus(ctx context.Context, key db.APIKey, wit
 			TxHash:        strings.TrimSpace(rec.TxID),
 			Address:       rec.Info,
 			AmountBTC:     rec.Amount,
+			FeeBTC:        parseDecimal(rec.Fee),
 			UpdatedAt:     updatedAt,
 		}, nil
 	}

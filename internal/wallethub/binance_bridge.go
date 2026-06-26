@@ -95,6 +95,7 @@ func (b *BinanceBridge) GetWithdrawHistory(ctx context.Context, params ExchangeW
 			Amount:          record.Amount,
 			Status:          record.Status,
 			TxID:            record.TxID,
+			Fee:             record.TransactionFee,
 			ApplyTime:       record.ApplyTime,
 			ClientRequestID: record.WithdrawOrderID,
 		})

@@ -138,6 +138,9 @@ func (w *Worker) confirmWithdrawal(ctx context.Context, tx *db.Transaction) erro
 	}
 	tx.DexOfferCreation = raw
 	tx.Status = db.StatusCexCryptoWithdrawalArrived
+	if status.FeeBTC > 0 {
+		tx.CexWithdrawalFee = status.FeeBTC
+	}
 	return w.repo.UpdateTransaction(tx)
 }
 
@@ -179,6 +182,9 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	}
 	if offerID == "" {
 		return fmt.Errorf("no offer_id in DexOfferCreation")
+	}
+	if strings.TrimSpace(tx.DexOfferID) == "" {
+		tx.DexOfferID = offerID
 	}
 
 	if meta.Execution == nil {

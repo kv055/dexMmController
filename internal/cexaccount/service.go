@@ -126,6 +126,24 @@ type FeeLine struct {
 	Amount float64 `json:"amount"` // always in Asset units
 }
 
+// FeeInCurrency totals the spot fill's fee lines denominated in the given currency
+// (the trade's quote/fiat currency). Fees paid in a divergent asset (e.g. Binance's
+// BNB fee-discount program) are not converted and are excluded — the full breakdown
+// stays in Execution.Fees / the cex_transaction_details JSON.
+func (r *SpotOrderResult) FeeInCurrency(currency string) float64 {
+	if r == nil || r.Execution == nil {
+		return 0
+	}
+	currency = strings.TrimSpace(currency)
+	var total float64
+	for _, fee := range r.Execution.Fees {
+		if strings.EqualFold(strings.TrimSpace(fee.Asset), currency) {
+			total += fee.Amount
+		}
+	}
+	return total
+}
+
 // ExecutionDetail is the normalized fill/cost/fee summary for a market-buy order,
 // translated from each exchange's native response. AverageRate and FilledFiat are
 // always expressed in the trade's quote currency (fiatCurrency). Fees are reported

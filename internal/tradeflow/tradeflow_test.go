@@ -172,6 +172,7 @@ func happyFake() *fakeService {
 			Execution: &cexaccount.ExecutionDetail{
 				FilledBTC:   0.00999,
 				AverageRate: 50000,
+				Fees:        []cexaccount.FeeLine{{Asset: "EUR", Amount: 0.25}},
 			},
 		},
 		hedgeResult: &cexaccount.HedgeOpenResult{
@@ -512,6 +513,27 @@ func TestRun_Persist_WithdrawalFails_StaysAtTradeSuccessful(t *testing.T) {
 	row := store.only(t)
 	if row.Status != db.StatusCexTradeSuccessful {
 		t.Errorf("status after withdrawal failure: want %s (hedge done, retryable), got %s", db.StatusCexTradeSuccessful, row.Status)
+	}
+}
+
+func TestRecordSpotBuy_PersistsCexTransactionFee(t *testing.T) {
+	svc := happyFake()
+	store := newFakeStore()
+	order := persistOrder() // FiatCurrency "EUR"
+	id, err := createTradeflowRow(store, order, "bc1qtest")
+	if err != nil {
+		t.Fatalf("createTradeflowRow: %v", err)
+	}
+	if err := recordSpotBuy(store, id, svc.spotResult, 0.00999); err != nil {
+		t.Fatalf("recordSpotBuy: %v", err)
+	}
+	row, err := store.GetTransaction(id)
+	if err != nil {
+		t.Fatalf("GetTransaction: %v", err)
+	}
+	// Fixture spot fill has a 0.25 EUR fee line; it should land in the dedicated column.
+	if row.CexTransactionFee != 0.25 {
+		t.Errorf("cex_transaction_fee: want 0.25 (EUR fee line), got %v", row.CexTransactionFee)
 	}
 }
 

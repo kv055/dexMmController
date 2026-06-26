@@ -62,6 +62,7 @@ func createTradeflowRow(store transactionStore, order Order, lndAddr string) (ui
 		Cex:              db.CexExchangeFromProvider(order.Provider),
 		Dex:              db.DexPlatformFromSlug(dexSlug),
 		Status:           db.StatusCexTradeflowStarted,
+		DexOfferID:       offerID,
 		DexOfferCreation: dexOfferJSON,
 		DexBtcAddress:    strings.TrimSpace(lndAddr),
 	}
@@ -105,6 +106,7 @@ func recordSpotBuy(store transactionStore, id uint, spot *cexaccount.SpotOrderRe
 		tx.CexTransactionDetails = details
 		tx.CexBitcoinAmount = filledBTC
 		tx.CexTransactionTimestamp = time.Now().UTC()
+		tx.CexTransactionFee = spot.FeeInCurrency(tx.FiatCurrency)
 	})
 }
 
@@ -189,6 +191,9 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 		tx.CexTransactionDetails = details
 		tx.CexBitcoinAmount = result.Withdrawal.AmountBTC
 		tx.DexOfferCreation = dexOfferJSON
+		if tx.DexOfferID == "" {
+			tx.DexOfferID = offerID
+		}
 		if addr != "" {
 			tx.DexBtcAddress = addr
 		}

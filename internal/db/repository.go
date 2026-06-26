@@ -151,10 +151,41 @@ func (r *TransactionRepository) CreateTransaction(tx *Transaction) error {
 	if err := r.assignPrimaryWalletAddress(tx); err != nil {
 		return err
 	}
+	r.maybeResolveOfferDBID(tx)
 	if err := r.db.Create(tx).Error; err != nil {
 		return fmt.Errorf("failed to create transaction: %w", err)
 	}
 	return nil
+}
+
+// maybeResolveOfferDBID best-effort fills DexOfferDBID from the external DexOfferID
+// when the FK isn't resolved yet. A missing offers row (or lookup error) leaves the
+// FK nil rather than failing the transaction write.
+func (r *TransactionRepository) maybeResolveOfferDBID(tx *Transaction) {
+	if tx == nil || tx.DexOfferDBID != nil || strings.TrimSpace(tx.DexOfferID) == "" {
+		return
+	}
+	if id, err := r.ResolveOfferDBID(tx.DexOfferID); err == nil {
+		tx.DexOfferDBID = id
+	}
+}
+
+// ResolveOfferDBID returns the offers.id for an external DEX offer_id, or nil when
+// no matching offer row exists yet. Best-effort: callers must not fail a trade over
+// a missing offers row.
+func (r *TransactionRepository) ResolveOfferDBID(offerID string) (*int64, error) {
+	offerID = strings.TrimSpace(offerID)
+	if offerID == "" {
+		return nil, nil
+	}
+	var ids []int64
+	if err := r.db.Table("offers").Where("offer_id = ?", offerID).Limit(1).Pluck("id", &ids).Error; err != nil {
+		return nil, fmt.Errorf("resolve offer db id for %s: %w", offerID, err)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return &ids[0], nil
 }
 
 // GetTransaction retrieves a single transaction by ID
@@ -273,6 +304,7 @@ func (r *TransactionRepository) UpdateTransaction(tx *Transaction) error {
 	if tx.ID == 0 {
 		return errors.New("transaction ID is required for update")
 	}
+	r.maybeResolveOfferDBID(tx)
 	if err := r.db.Save(tx).Error; err != nil {
 		return fmt.Errorf("failed to update transaction: %w", err)
 	}

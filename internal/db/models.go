@@ -190,6 +190,12 @@ type Transaction struct {
 	CexCounterPositionFee float64 `json:"cex_counter_position_fee"`
 	// CexHedgingPosition             CexHedgingPositionType `json:"cex_hedging_position"`
 
+	// DexOfferID is the external DEX offer id this transaction was opened against
+	// (mirrors offers.offer_id; the value the bot takes the offer by). Durable anchor.
+	DexOfferID string `json:"dex_offer_id"`
+	// DexOfferDBID is the FK to our own offers row (offers.id), for joins to offers /
+	// order_lifecycle. Nil until/unless the offer is resolved in our table.
+	DexOfferDBID *int64 `gorm:"column:dex_offer_db_id" json:"dex_offer_db_id"`
 	// DexOfferCreation is the dex offer creation value for the transaction.
 	DexOfferCreation json.RawMessage `json:"dex_offer_creation" gorm:"type:jsonb"`
 	// DexOfferTaken is the dex offer taken value for the transaction.
@@ -208,11 +214,6 @@ type Transaction struct {
 
 	// TransactionComplete is the transaction complete value for the transaction.
 	TransactionComplete bool `json:"transaction_complete"`
-
-	// OpenClawLlmInferenceCost is the open claw llm inference cost value for the transaction.
-	OpenClawLlmInferenceCost float64 `json:"open_claw_llm_inference_cost"`
-	// VpsHostingCost is the vps hosting cost value for the transaction.
-	VpsHostingCost float64 `json:"vps_hosting_cost"`
 
 	// TotalTransactionPnl is the total transaction pnl value for the transaction.
 	TotalTransactionPnl float64 `json:"total_transaction_pnl"`

@@ -262,12 +262,18 @@ func buildTransaction(streamURL string, offers []Offer) (*db.Transaction, error)
 		return nil, err
 	}
 
+	offerID := ""
+	if selected.OfferID != nil {
+		offerID = strings.TrimSpace(*selected.OfferID)
+	}
+
 	tx := &db.Transaction{
 		Direction:                                strings.ToUpper(selected.Direction),
 		FiatCurrency:                             "EUR",
 		Cex:                                      inferCexFromStreamURL(streamURL),
 		Dex:                                      inferDexPlatform(selected.Exchange),
 		Status:                                   db.StatusFiatToCexInitiated,
+		DexOfferID:                               offerID,
 		DexOfferCreation:                         payload,
 		TotalTransactionPnl:                      netPremium(selected),
 		PremiumOverCexPriceToBreakEvenPrediction: netPremium(selected),
