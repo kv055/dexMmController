@@ -271,7 +271,7 @@ func buildTransaction(streamURL string, offers []Offer) (*db.Transaction, error)
 		Direction:                                strings.ToUpper(selected.Direction),
 		FiatCurrency:                             "EUR",
 		Cex:                                      inferCexFromStreamURL(streamURL),
-		Dex:                                      inferDexPlatform(selected.Exchange),
+		Dex:                                      db.DexPlatformFromSlug(selected.Exchange),
 		Status:                                   db.StatusFiatToCexInitiated,
 		DexOfferID:                               offerID,
 		DexOfferCreation:                         payload,
@@ -307,19 +307,6 @@ func netPremium(offer Offer) float64 {
 		return 0
 	}
 	return *offer.NetPremiumPercent
-}
-
-func inferDexPlatform(exchange string) db.DexPlatform {
-	switch strings.ToLower(exchange) {
-	case "bisq":
-		return db.DexBisq
-	case "hodlhodl":
-		return db.DexHodlHodl
-	case "robosats":
-		return db.DexRoboSats
-	default:
-		return db.DexPlatform(exchange)
-	}
 }
 
 func inferCexFromStreamURL(raw string) db.CexExchange {

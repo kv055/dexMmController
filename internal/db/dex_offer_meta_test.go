@@ -6,6 +6,29 @@ import (
 	"time"
 )
 
+func TestDexPlatformFromSlug(t *testing.T) {
+	// Covers all five routing-matrix venues (txroute) and the casing/whitespace
+	// normalization; bisq2 and peachbitcoin are the ones the old 3-venue mapper missed.
+	cases := map[string]DexPlatform{
+		"bisq":          DexBisq,
+		"bisq2":         DexBisq2,
+		"hodlhodl":      DexHodlHodl,
+		"robosats":      DexRoboSats,
+		"peachbitcoin":  DexPeachBitcoin,
+		" PeachBitcoin": DexPeachBitcoin,
+		"BISQ2":         DexBisq2,
+	}
+	for slug, want := range cases {
+		if got := DexPlatformFromSlug(slug); got != want {
+			t.Errorf("DexPlatformFromSlug(%q) = %q, want %q", slug, got, want)
+		}
+	}
+	// Unknown slugs pass through unchanged (raw value).
+	if got := DexPlatformFromSlug("mystery"); got != DexPlatform("mystery") {
+		t.Errorf("unknown slug should pass through, got %q", got)
+	}
+}
+
 func TestParseDexOfferMetaOfferAndContract(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"selected_offer": map[string]any{

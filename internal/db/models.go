@@ -100,12 +100,16 @@ const (
 type DexPlatform string
 
 const (
-	// DexBisq is the dex bisq value.
+	// DexBisq is the dex bisq value (bisq v1; Direct route).
 	DexBisq DexPlatform = "Bisq"
-	// DexHodlHodl is the dex hodl hodl value.
+	// DexBisq2 is the dex bisq2 value (Hub route).
+	DexBisq2 DexPlatform = "Bisq2"
+	// DexHodlHodl is the dex hodl hodl value (Hub route).
 	DexHodlHodl DexPlatform = "HodlHodl"
-	// DexRoboSats is the dex robo sats value.
+	// DexRoboSats is the dex robo sats value (Swap route).
 	DexRoboSats DexPlatform = "RoboSats"
+	// DexPeachBitcoin is the dex peach bitcoin value (Hub route).
+	DexPeachBitcoin DexPlatform = "PeachBitcoin"
 )
 
 // TransactionStatus represents the lifecycle state of a transaction

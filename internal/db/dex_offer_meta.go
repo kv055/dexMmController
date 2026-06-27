@@ -156,10 +156,14 @@ func DexPlatformFromSlug(slug string) DexPlatform {
 	switch strings.ToLower(strings.TrimSpace(slug)) {
 	case "bisq":
 		return DexBisq
+	case "bisq2":
+		return DexBisq2
 	case "hodlhodl":
 		return DexHodlHodl
 	case "robosats":
 		return DexRoboSats
+	case "peachbitcoin":
+		return DexPeachBitcoin
 	default:
 		return DexPlatform(slug)
 	}
