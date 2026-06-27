@@ -473,7 +473,7 @@ func (r *TransactionRepository) UpdateAccountHealth(ctx context.Context, provide
 }
 
 func (r *TransactionRepository) assignPrimaryWalletAddress(tx *Transaction) error {
-	if tx == nil || tx.DexBtcAddress != "" {
+	if tx == nil || tx.HubAddress != "" {
 		return nil
 	}
 
@@ -485,6 +485,6 @@ func (r *TransactionRepository) assignPrimaryWalletAddress(tx *Transaction) erro
 		return fmt.Errorf("failed to assign primary wallet address: %w", err)
 	}
 
-	tx.DexBtcAddress = primary.Address
+	tx.HubAddress = primary.Address
 	return nil
 }

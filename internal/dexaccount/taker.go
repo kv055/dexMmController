@@ -21,10 +21,12 @@ const (
 	defaultSatPerVbyte  = 2
 )
 
-// LNDRelay sends on-chain BTC or pays a lightning invoice.
+// LNDRelay sends on-chain BTC, pays a lightning invoice, and reads the confirmed
+// balance of a single hub address (to detect an incoming CEX withdrawal).
 type LNDRelay interface {
 	SendOnChain(ctx context.Context, toAddress string, amountSat, satPerVbyte int64) (string, error)
 	PayInvoice(ctx context.Context, paymentRequest string, feeLimitSat int64) (paymentHash string, err error)
+	ConfirmedBalanceForAddress(ctx context.Context, address string) (int64, error)
 }
 
 // Taker accepts DEX offers and resolves per-offer deposit destinations.

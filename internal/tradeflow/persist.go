@@ -8,7 +8,23 @@ import (
 
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
+	"dexMmController/internal/txroute"
 )
+
+// applyWithdrawTarget records the CEX withdrawal target on the row (and the hub address
+// in meta) according to the route: the LND hub address for hub/swap routes, or the
+// direct DEX-wallet destination (bisq v1) for the direct route.
+func applyWithdrawTarget(tx *db.Transaction, meta *db.DexOfferMeta, target string, method txroute.Method) {
+	target = strings.TrimSpace(target)
+	if method.NeedsHub() {
+		tx.HubAddress = target
+		if meta != nil {
+			meta.LNDReceiveAddress = target
+		}
+		return
+	}
+	tx.DestinationAddress = target
+}
 
 // transactionStore persists mm transaction rows as the tradeflow progresses.
 // Each irreversible CEX step is recorded immediately so a half-finished cycle is
@@ -22,7 +38,7 @@ type transactionStore interface {
 // createTradeflowRow creates (or reuses, when order.TransactionID is set) the
 // transaction row before the spot buy, at StatusCexTradeflowStarted. Returning the
 // row ID early gives the rest of the flow a stable idempotency key.
-func createTradeflowRow(store transactionStore, order Order, lndAddr string) (uint, error) {
+func createTradeflowRow(store transactionStore, order Order, target string, method txroute.Method) (uint, error) {
 	offerID := strings.TrimSpace(order.OfferID)
 	dexSlug := strings.TrimSpace(order.Dex)
 
@@ -40,14 +56,9 @@ func createTradeflowRow(store transactionStore, order Order, lndAddr string) (ui
 		return 0, fmt.Errorf("marshal tradeflow order snapshot: %w", err)
 	}
 	meta := db.DexOfferMeta{
-		SelectedOffer:     selectedOffer,
-		LNDReceiveAddress: strings.TrimSpace(lndAddr),
-		TradeflowAt:       &now,
-		TradeflowOrder:    orderSnapshot,
-	}
-	dexOfferJSON, err := db.MarshalDexOfferCreation(meta)
-	if err != nil {
-		return 0, err
+		SelectedOffer:  selectedOffer,
+		TradeflowAt:    &now,
+		TradeflowOrder: orderSnapshot,
 	}
 
 	fiatCurrency := strings.TrimSpace(order.FiatCurrency)
@@ -56,16 +67,21 @@ func createTradeflowRow(store transactionStore, order Order, lndAddr string) (ui
 	}
 
 	tx := &db.Transaction{
-		Direction:        "BUY",
-		FiatAmount:       order.FiatAmount,
-		FiatCurrency:     fiatCurrency,
-		Cex:              db.CexExchangeFromProvider(order.Provider),
-		Dex:              db.DexPlatformFromSlug(dexSlug),
-		Status:           db.StatusCexTradeflowStarted,
-		DexOfferID:       offerID,
-		DexOfferCreation: dexOfferJSON,
-		DexBtcAddress:    strings.TrimSpace(lndAddr),
+		Direction:    "BUY",
+		FiatAmount:   order.FiatAmount,
+		FiatCurrency: fiatCurrency,
+		Cex:          db.CexExchangeFromProvider(order.Provider),
+		Dex:          db.DexPlatformFromSlug(dexSlug),
+		Status:       db.StatusCexTradeflowStarted,
+		DexOfferID:   offerID,
 	}
+	applyWithdrawTarget(tx, &meta, target, method)
+
+	dexOfferJSON, err := db.MarshalDexOfferCreation(meta)
+	if err != nil {
+		return 0, err
+	}
+	tx.DexOfferCreation = dexOfferJSON
 
 	if order.TransactionID > 0 {
 		existing, err := store.GetTransaction(order.TransactionID)
@@ -145,7 +161,7 @@ func markHedgeFailed(store transactionStore, id uint, spot *cexaccount.SpotOrder
 // recordWithdrawal persists the withdrawal as the final tradeflow step, advancing
 // the row to StatusCexCryptoWithdrawalInitiated and writing offer linkage so the
 // downstream dexrelay worker can take over.
-func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexaccount.SpotOrderResult, hedge *cexaccount.HedgeOpenResult, result *Result, lndAddr string) error {
+func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexaccount.SpotOrderResult, hedge *cexaccount.HedgeOpenResult, result *Result, target string, method txroute.Method) error {
 	offerID := strings.TrimSpace(order.OfferID)
 	dexSlug := strings.TrimSpace(order.Dex)
 
@@ -161,9 +177,13 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 	if err != nil {
 		return fmt.Errorf("marshal tradeflow order snapshot: %w", err)
 	}
+	addr := strings.TrimSpace(target)
+	if addr == "" {
+		addr = strings.TrimSpace(result.Withdrawal.WalletAddress)
+	}
+
 	meta := db.DexOfferMeta{
-		SelectedOffer:     selectedOffer,
-		LNDReceiveAddress: strings.TrimSpace(lndAddr),
+		SelectedOffer: selectedOffer,
 		CexWithdrawal: &db.CexWithdrawalMeta{
 			WithdrawalID:    result.Withdrawal.WithdrawalID,
 			ClientRequestID: result.Withdrawal.ClientRequestID,
@@ -171,6 +191,9 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 		},
 		TradeflowAt:    &now,
 		TradeflowOrder: orderSnapshot,
+	}
+	if method.NeedsHub() {
+		meta.LNDReceiveAddress = addr
 	}
 	dexOfferJSON, err := db.MarshalDexOfferCreation(meta)
 	if err != nil {
@@ -181,11 +204,6 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 		return err
 	}
 
-	addr := strings.TrimSpace(lndAddr)
-	if addr == "" {
-		addr = strings.TrimSpace(result.Withdrawal.WalletAddress)
-	}
-
 	return mutateRow(store, id, func(tx *db.Transaction) {
 		tx.Status = db.StatusCexCryptoWithdrawalInitiated
 		tx.CexTransactionDetails = details
@@ -194,9 +212,7 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 		if tx.DexOfferID == "" {
 			tx.DexOfferID = offerID
 		}
-		if addr != "" {
-			tx.DexBtcAddress = addr
-		}
+		applyWithdrawTarget(tx, nil, addr, method)
 	})
 }
 

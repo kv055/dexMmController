@@ -179,8 +179,13 @@ type Transaction struct {
 	CexToDexWithdrawalTxDetails json.RawMessage `json:"cex_to_dex_withdrawal_tx_details" gorm:"type:jsonb"`
 	// CexWithdrawalFee is the fee value reported for the transaction.
 	CexWithdrawalFee float64 `json:"cex_withdrawal_fee"`
-	// DexBtcAddress is a BTC-denominated dex btc address value.
-	DexBtcAddress string `json:"dex_btc_address"` // on-chain address the CEX withdrawal is sent to
+	// DestinationAddress is the final DEX-side on-chain target for the BTC: on the bid
+	// side the counterparty's/escrow per-trade address (bisq v1: our own bisq wallet),
+	// on the ask side our CEX deposit. Empty for the swap (lightning) route.
+	DestinationAddress string `json:"destination_address"`
+	// HubAddress is our LND wallet address the CEX withdraws to when the route needs a
+	// hop (HubWallet: bisq2/hodlhodl/peach; Swap: robosats). Empty for the direct route.
+	HubAddress string `json:"hub_address"`
 
 	// CexCounterPositionOpenDetails is the count associated with the transaction.
 	CexCounterPositionOpenDetails json.RawMessage `json:"cex_counter_position_open_details" gorm:"type:jsonb"`

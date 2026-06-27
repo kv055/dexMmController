@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"dexMmController/internal/cexaccount"
+	"dexMmController/internal/txroute"
 	lnd "dexMmController/internal/wallethub"
 )
 
@@ -87,10 +88,19 @@ type Service interface {
 	WithdrawalAlreadySent(ctx context.Context, rawProvider, clientRequestID string, amountBTC float64, address string, within time.Duration) (*cexaccount.WithdrawalStatus, error)
 }
 
+// DirectDestinationResolver resolves the on-chain address the CEX should withdraw to
+// for a direct-routed DEX (bisq v1: its integrated wallet funding address), where the
+// CEX funds the DEX wallet straight away with no LND hub hop. Only consulted for the
+// direct route.
+type DirectDestinationResolver interface {
+	DirectDestination(ctx context.Context, dexSlug string) (string, error)
+}
+
 // TradeFlow orchestrates the CEX trade leg of a DEX arbitrage cycle.
 type TradeFlow struct {
-	svc   Service
-	store transactionStore
+	svc            Service
+	store          transactionStore
+	directResolver DirectDestinationResolver
 }
 
 // New creates a TradeFlow backed by the given CEX service and transaction store.
@@ -98,6 +108,13 @@ type TradeFlow struct {
 // is also skipped when an order carries no offer_id/dex linkage.
 func New(svc Service, store transactionStore) *TradeFlow {
 	return &TradeFlow{svc: svc, store: store}
+}
+
+// WithDirectDestinationResolver wires the resolver used to find the withdrawal target
+// for direct-routed DEXes (bisq v1). Without it, direct-route orders fail fast.
+func (tf *TradeFlow) WithDirectDestinationResolver(r DirectDestinationResolver) *TradeFlow {
+	tf.directResolver = r
+	return tf
 }
 
 // Run executes the trade cycle for the given order. It stops at the first failure
@@ -128,27 +145,28 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 		"hedge_venue", order.HedgeVenue,
 	)
 
+	// The route decides where the CEX withdraws to: direct DEXes (bisq v1) fund their
+	// own wallet, hub/swap DEXes fund our LND hub.
+	method := txroute.BidMethod(order.Dex)
+
 	// Step 1: pre-trade checks (read-only; result logged for observability).
 	report, err := tf.svc.PreTradeCheck(ctx, order.Provider, order.FiatCurrency, order.RequiredCapitalEUR)
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: pre-trade check error: %w", err)
 	}
-	if !report.OK {
-		var failed []string
-		for _, chk := range report.Checks {
-			if !chk.Passed {
-				failed = append(failed, chk.Message)
-			}
-		}
+	if ok, failed := preTradePassed(report, method); !ok {
 		return nil, fmt.Errorf("tradeflow: pre-trade checks failed: %s", strings.Join(failed, "; "))
 	}
-	lndAddr := strings.TrimSpace(report.LNDWithdrawAddress)
-	if lndAddr == "" {
-		return nil, fmt.Errorf("tradeflow: pre-trade checks passed but no LND withdrawal address was resolved")
+
+	// target is the address the CEX withdrawal is sent to.
+	target, err := tf.resolveWithdrawTarget(ctx, order, method, report)
+	if err != nil {
+		return nil, err
 	}
 	slog.Info("tradeflow: pre-trade checks passed",
 		"provider", order.Provider,
-		"lnd_withdraw_address", lndAddr,
+		"route_method", string(method),
+		"withdraw_target", target,
 	)
 
 	// Persistence is enabled only when the order links a DEX offer and a store is
@@ -157,7 +175,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 
 	var txID uint
 	if persist {
-		txID, err = createTradeflowRow(tf.store, order, lndAddr)
+		txID, err = createTradeflowRow(tf.store, order, target, method)
 		if err != nil {
 			return nil, fmt.Errorf("tradeflow: persist tradeflow start: %w", err)
 		}
@@ -220,7 +238,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	if txID > 0 {
 		clientReqID = fmt.Sprintf("tradeflow-%d", txID)
 	}
-	wd, err := tf.svc.WithdrawSpotToLND(ctx, order.Provider, filledBTC, lndAddr, clientReqID)
+	wd, err := tf.svc.WithdrawSpotToLND(ctx, order.Provider, filledBTC, target, clientReqID)
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: withdrawal failed (spot order_id=%s, hedge open): %w", spot.OrderID, err)
 	}
@@ -245,12 +263,55 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	}
 
 	if persist {
-		if err := recordWithdrawal(tf.store, txID, order, spot, hedge, result, lndAddr); err != nil {
+		if err := recordWithdrawal(tf.store, txID, order, spot, hedge, result, target, method); err != nil {
 			return nil, fmt.Errorf("tradeflow: persist withdrawal: %w", err)
 		}
 	}
 
 	return result, nil
+}
+
+// preTradePassed reports whether the pre-trade checks allow the trade to proceed,
+// returning the messages of any blocking failures. The "whitelist" check verifies that
+// an LND hub address is whitelisted at the CEX — only relevant for hub/swap routes; the
+// direct route withdraws to the bisq wallet instead, so its failure is not blocking.
+func preTradePassed(report *cexaccount.Report, method txroute.Method) (bool, []string) {
+	var failed []string
+	for _, chk := range report.Checks {
+		if chk.Passed {
+			continue
+		}
+		if method == txroute.Direct && chk.Name == "whitelist" {
+			continue
+		}
+		failed = append(failed, chk.Message)
+	}
+	return len(failed) == 0, failed
+}
+
+// resolveWithdrawTarget returns the address the CEX withdrawal is sent to: the bisq
+// wallet's funding address for the direct route, or the whitelisted LND hub address for
+// the hub/swap routes.
+func (tf *TradeFlow) resolveWithdrawTarget(ctx context.Context, order Order, method txroute.Method, report *cexaccount.Report) (string, error) {
+	if method == txroute.Direct {
+		if tf.directResolver == nil {
+			return "", fmt.Errorf("tradeflow: direct route (%s) requires a DEX wallet resolver, none configured", order.Dex)
+		}
+		addr, err := tf.directResolver.DirectDestination(ctx, order.Dex)
+		if err != nil {
+			return "", fmt.Errorf("tradeflow: resolve direct destination for %s: %w", order.Dex, err)
+		}
+		if strings.TrimSpace(addr) == "" {
+			return "", fmt.Errorf("tradeflow: direct route resolved an empty destination address for %s", order.Dex)
+		}
+		return strings.TrimSpace(addr), nil
+	}
+
+	addr := strings.TrimSpace(report.LNDWithdrawAddress)
+	if addr == "" {
+		return "", fmt.Errorf("tradeflow: pre-trade checks passed but no LND withdrawal address was resolved")
+	}
+	return addr, nil
 }
 
 // openHedgeWithRetry opens the hedge, retrying on error. Before each retry it asks

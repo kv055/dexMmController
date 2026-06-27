@@ -10,6 +10,7 @@ import (
 
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
+	"dexMmController/internal/txroute"
 )
 
 // withdrawalLookback bounds how far back the withdrawal history-match guard looks
@@ -53,9 +54,14 @@ func loadRecoveryContext(tx *db.Transaction) (*recoveryContext, error) {
 		}
 	}
 
+	// The withdrawal target: the LND hub on hub/swap routes, or the direct
+	// destination (e.g. our bisq wallet) on the direct route.
 	lndAddr := strings.TrimSpace(meta.LNDReceiveAddress)
 	if lndAddr == "" {
-		lndAddr = strings.TrimSpace(tx.DexBtcAddress)
+		lndAddr = strings.TrimSpace(tx.HubAddress)
+	}
+	if lndAddr == "" {
+		lndAddr = strings.TrimSpace(tx.DestinationAddress)
 	}
 	return &recoveryContext{order: order, bundle: bundle, lndAddr: lndAddr}, nil
 }
@@ -158,6 +164,7 @@ func (tf *TradeFlow) ResumeWithdrawal(ctx context.Context, tx *db.Transaction) e
 	if rc.lndAddr == "" {
 		return fmt.Errorf("tradeflow recovery: no LND withdrawal address on row %d", tx.ID)
 	}
+	method := txroute.BidMethod(rc.order.Dex)
 
 	filledBTC := tx.CexBitcoinAmount
 	if filledBTC <= 0 && rc.bundle.Spot.Execution != nil {
@@ -177,7 +184,7 @@ func (tf *TradeFlow) ResumeWithdrawal(ctx context.Context, tx *db.Transaction) e
 		slog.Warn("tradeflow recovery: withdrawal already exists on venue — recording, not resending",
 			"transaction_id", tx.ID, "withdrawal_id", existing.WithdrawalID)
 		result := withdrawalResultFrom(rc.order.Provider, existing, clientReqID, rc.lndAddr, filledBTC)
-		return recordWithdrawal(tf.store, tx.ID, rc.order, rc.bundle.Spot, rc.bundle.Hedge, result, rc.lndAddr)
+		return recordWithdrawal(tf.store, tx.ID, rc.order, rc.bundle.Spot, rc.bundle.Hedge, result, rc.lndAddr, method)
 	}
 
 	wd, err := tf.svc.WithdrawSpotToLND(ctx, rc.order.Provider, filledBTC, rc.lndAddr, clientReqID)
@@ -199,7 +206,7 @@ func (tf *TradeFlow) ResumeWithdrawal(ctx context.Context, tx *db.Transaction) e
 		},
 		TransactionID: tx.ID,
 	}
-	return recordWithdrawal(tf.store, tx.ID, rc.order, rc.bundle.Spot, rc.bundle.Hedge, result, rc.lndAddr)
+	return recordWithdrawal(tf.store, tx.ID, rc.order, rc.bundle.Spot, rc.bundle.Hedge, result, rc.lndAddr, method)
 }
 
 // withdrawalResultFrom builds a Result around an already-existing withdrawal found by

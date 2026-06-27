@@ -372,7 +372,7 @@ func (w *Watcher) takeBestOffer(ctx context.Context, tx *db.Transaction, offers 
 
 	dexAddress := takeResult.DepositAddress
 	if dexAddress != "" {
-		tx.DexBtcAddress = dexAddress
+		tx.DestinationAddress = dexAddress
 	}
 	return w.updateExecutionPayload(tx, selected, takeResult.Execution, nil)
 }

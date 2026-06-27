@@ -10,6 +10,7 @@ import (
 
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
+	"dexMmController/internal/txroute"
 	lnd "dexMmController/internal/wallethub"
 )
 
@@ -520,7 +521,7 @@ func TestRecordSpotBuy_PersistsCexTransactionFee(t *testing.T) {
 	svc := happyFake()
 	store := newFakeStore()
 	order := persistOrder() // FiatCurrency "EUR"
-	id, err := createTradeflowRow(store, order, "bc1qtest")
+	id, err := createTradeflowRow(store, order, "bc1qtest", txroute.BidMethod(order.Dex))
 	if err != nil {
 		t.Fatalf("createTradeflowRow: %v", err)
 	}
@@ -544,7 +545,7 @@ func TestRecordSpotBuy_PersistsCexTransactionFee(t *testing.T) {
 func tradeSuccessfulRow(t *testing.T, store *fakeStore, svc *fakeService) *db.Transaction {
 	t.Helper()
 	order := persistOrder()
-	id, err := createTradeflowRow(store, order, "bc1qtest")
+	id, err := createTradeflowRow(store, order, "bc1qtest", txroute.BidMethod(order.Dex))
 	if err != nil {
 		t.Fatalf("createTradeflowRow: %v", err)
 	}
@@ -605,7 +606,7 @@ func TestResumeFromTradeflowStarted_SpotKnown_ResumesHedge(t *testing.T) {
 	svc := happyFake()
 	store := newFakeStore()
 	order := persistOrder()
-	id, _ := createTradeflowRow(store, order, "bc1qtest")
+	id, _ := createTradeflowRow(store, order, "bc1qtest", txroute.BidMethod(order.Dex))
 	if err := recordSpotBuy(store, id, svc.spotResult, 0.00999); err != nil {
 		t.Fatalf("recordSpotBuy: %v", err)
 	}
@@ -629,7 +630,7 @@ func TestResumeFromTradeflowStarted_SpotUnknown_ParksForReview(t *testing.T) {
 	svc := happyFake()
 	store := newFakeStore()
 	order := persistOrder()
-	id, _ := createTradeflowRow(store, order, "bc1qtest") // no spot recorded
+	id, _ := createTradeflowRow(store, order, "bc1qtest", txroute.BidMethod(order.Dex)) // no spot recorded
 	tx, _ := store.GetTransaction(id)
 
 	if err := New(svc, store).ResumeFromTradeflowStarted(context.Background(), tx); err != nil {
@@ -646,7 +647,7 @@ func TestResumeFromTradeflowStarted_SpotUnknown_ParksForReview(t *testing.T) {
 func hedgeFailedRow(t *testing.T, store *fakeStore, svc *fakeService) *db.Transaction {
 	t.Helper()
 	order := persistOrder()
-	id, _ := createTradeflowRow(store, order, "bc1qtest")
+	id, _ := createTradeflowRow(store, order, "bc1qtest", txroute.BidMethod(order.Dex))
 	if err := recordSpotBuy(store, id, svc.spotResult, 0.00999); err != nil {
 		t.Fatalf("recordSpotBuy: %v", err)
 	}

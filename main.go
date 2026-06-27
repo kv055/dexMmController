@@ -229,7 +229,8 @@ func main() {
 			return coinbase.NewFuturesClient().StreamPositions(ctx)
 		},
 	})
-	tradeFlow := tradeflow.New(cexAccountService, repo)
+	tradeFlow := tradeflow.New(cexAccountService, repo).
+		WithDirectDestinationResolver(dexaccount.NewDirectResolver(bq))
 	hc := healthcheck.NewHealthChecker(repo, claw, btc, hh, tradeFlow).
 		WithRecoveryGracePeriod(parseAccountHealthInterval(envOr("TRADEFLOW_RECOVERY_GRACE", "3m")))
 	apiServer := api.NewServer(apiAddr, repo).

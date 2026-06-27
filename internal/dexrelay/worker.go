@@ -12,16 +12,41 @@ import (
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
+	"dexMmController/internal/txroute"
 )
 
-// Worker advances bid-side tradeflow part 2: confirm CEX→LND withdrawal, take offer, relay to DEX.
+// Worker advances bid-side tradeflow part 2: confirm the CEX withdrawal arrived, take
+// the DEX offer, and (on hub/swap routes) relay the BTC on to the DEX destination.
+//
+// The route decides where the BTC lands and how it is forwarded:
+//   - Direct (bisq v1): the CEX withdraws straight into our bisq wallet (the
+//     destination); we watch that address and the bisq daemon funds the trade itself —
+//     no LND relay.
+//   - Hub (bisq2/hodlhodl/peach): the CEX withdraws to our LND hub; we watch the hub,
+//     then forward on-chain to the counterparty's per-trade destination.
+//   - Swap (robosats): the CEX withdraws to our LND hub; we watch the hub, then pay the
+//     offer's hold invoice over Lightning.
 type Worker struct {
-	repo      *db.TransactionRepository
-	cex       *cexaccount.Service
-	btc       *bitcoin.NetworkDataFetcher
-	taker     *dexaccount.Taker
-	lnd       dexaccount.LNDRelay
-	satPerVb  int64
+	repo     txStore
+	cex      *cexaccount.Service
+	btc      *bitcoin.NetworkDataFetcher
+	taker    offerTaker
+	lnd      dexaccount.LNDRelay
+	satPerVb int64
+}
+
+// txStore is the transaction-row access the worker needs (satisfied by
+// *db.TransactionRepository).
+type txStore interface {
+	GetTransactionsByStatuses(statuses []db.TransactionStatus, direction string) ([]db.Transaction, error)
+	UpdateTransaction(tx *db.Transaction) error
+}
+
+// offerTaker takes a DEX offer and resolves its deposit destination (satisfied by
+// *dexaccount.Taker).
+type offerTaker interface {
+	Take(ctx context.Context, in dexaccount.OfferInput) (*dexaccount.TakeResult, error)
+	ResolveDeposit(ctx context.Context, exchange string, execution map[string]any) (string, string, error)
 }
 
 // NewWorker creates a dexrelay worker.
@@ -92,64 +117,101 @@ func (w *Worker) process(ctx context.Context, tx *db.Transaction) error {
 	}
 }
 
+// confirmWithdrawal advances Initiated → Arrived once the required BTC have landed at
+// the address the route watches: the LND hub (hub/swap) or the bisq wallet (direct).
 func (w *Worker) confirmWithdrawal(ctx context.Context, tx *db.Transaction) error {
 	meta, err := db.ParseDexOfferCreation(tx.DexOfferCreation)
 	if err != nil {
 		return err
 	}
-	if meta.CexWithdrawal == nil || meta.CexWithdrawal.WithdrawalID == "" {
-		return fmt.Errorf("missing cex_withdrawal metadata")
-	}
+	method := txroute.BidMethod(deriveExchange(tx, meta))
 
-	wd := meta.CexWithdrawal
-	status, err := w.cex.GetWithdrawalStatus(ctx, wd.Provider, wd.WithdrawalID, wd.ClientRequestID)
+	var arrived bool
+	if method.NeedsHub() {
+		arrived, err = w.hubFundsArrived(ctx, tx, &meta)
+	} else {
+		arrived, err = w.destinationFundsArrived(ctx, tx)
+	}
 	if err != nil {
-		return fmt.Errorf("withdrawal status: %w", err)
+		return err
 	}
-
-	confirmations := 0
-	if status.TxHash != "" {
-		wd.TxHash = status.TxHash
-		if w.btc != nil {
-			if chainTx, txErr := w.btc.FetchTransaction(ctx, status.TxHash); txErr == nil {
-				confirmations = chainTx.Confirmations
-				wd.Confirmations = confirmations
-			}
-		}
-	}
-
-	if !db.WithdrawalConfirmationsMet(confirmations) {
-		if w.btc != nil && meta.LNDReceiveAddress != "" {
-			bal, balErr := w.btc.FetchAddressBalance(ctx, meta.LNDReceiveAddress)
-			if balErr == nil && bal >= tx.CexBitcoinAmount*0.99 {
-				confirmations = 1
-				wd.Confirmations = confirmations
-			}
-		}
-	}
-	if !db.WithdrawalConfirmationsMet(confirmations) {
+	if !arrived {
 		return nil
 	}
 
-	meta.CexWithdrawal = wd
 	raw, err := db.MarshalDexOfferCreation(meta)
 	if err != nil {
 		return err
 	}
 	tx.DexOfferCreation = raw
 	tx.Status = db.StatusCexCryptoWithdrawalArrived
-	if status.FeeBTC > 0 {
-		tx.CexWithdrawalFee = status.FeeBTC
-	}
 	return w.repo.UpdateTransaction(tx)
 }
 
+// hubFundsArrived checks our LND hub for the incoming CEX withdrawal. It primarily
+// reads the hub address balance from our own wallet, and cross-checks the CEX
+// withdrawal status / on-chain confirmations when available.
+func (w *Worker) hubFundsArrived(ctx context.Context, tx *db.Transaction, meta *db.DexOfferMeta) (bool, error) {
+	// Cross-check via the CEX withdrawal status + on-chain confirmations (informational;
+	// keeps wd.TxHash/Confirmations fresh and confirms via the chain when reachable).
+	confirmations := 0
+	if meta.CexWithdrawal != nil && meta.CexWithdrawal.WithdrawalID != "" {
+		wd := meta.CexWithdrawal
+		if status, err := w.cex.GetWithdrawalStatus(ctx, wd.Provider, wd.WithdrawalID, wd.ClientRequestID); err == nil {
+			if status.TxHash != "" {
+				wd.TxHash = status.TxHash
+				if w.btc != nil {
+					if chainTx, txErr := w.btc.FetchTransaction(ctx, status.TxHash); txErr == nil {
+						confirmations = chainTx.Confirmations
+						wd.Confirmations = confirmations
+					}
+				}
+			}
+			if status.FeeBTC > 0 {
+				tx.CexWithdrawalFee = status.FeeBTC
+			}
+		}
+		meta.CexWithdrawal = wd
+	}
+	if db.WithdrawalConfirmationsMet(confirmations) {
+		return true, nil
+	}
+
+	// Primary: read the hub address balance from our own LND wallet.
+	hub := strings.TrimSpace(tx.HubAddress)
+	if hub == "" {
+		hub = strings.TrimSpace(meta.LNDReceiveAddress)
+	}
+	if w.lnd == nil || hub == "" {
+		return false, nil
+	}
+	balSat, err := w.lnd.ConfirmedBalanceForAddress(ctx, hub)
+	if err != nil {
+		return false, fmt.Errorf("hub balance: %w", err)
+	}
+	return balSat >= requiredSat(tx.CexBitcoinAmount), nil
+}
+
+// destinationFundsArrived checks the bisq wallet (direct route) for the incoming CEX
+// withdrawal via mempool.space, since we don't drive that wallet's API here.
+func (w *Worker) destinationFundsArrived(ctx context.Context, tx *db.Transaction) (bool, error) {
+	dest := strings.TrimSpace(tx.DestinationAddress)
+	if w.btc == nil || dest == "" {
+		return false, nil
+	}
+	bal, err := w.btc.FetchAddressBalance(ctx, dest)
+	if err != nil {
+		return false, fmt.Errorf("destination balance: %w", err)
+	}
+	return bal >= tx.CexBitcoinAmount*0.99, nil
+}
+
+// relayToDEX takes the offer and, per route, forwards the BTC to the DEX: on-chain to
+// the per-trade destination (hub), over Lightning to the hold invoice (swap), or not at
+// all (direct — the bisq wallet already holds the funds and funds the trade itself).
 func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	if db.HasRelayCompleted(tx.CexToDexWithdrawalTxDetails) {
 		return nil
-	}
-	if w.lnd == nil {
-		return fmt.Errorf("LND client is not configured")
 	}
 	if w.taker == nil {
 		return fmt.Errorf("DEX taker is not configured")
@@ -160,25 +222,11 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		return err
 	}
 
+	exchange := deriveExchange(tx, meta)
+	method := txroute.BidMethod(exchange)
 	offerID := meta.OfferID()
-	exchange := meta.Exchange()
 	if offerID == "" {
 		offerID = strings.TrimSpace(stringFromSelectedOffer(meta.SelectedOffer, "offer_id"))
-	}
-	if exchange == "" {
-		exchange = strings.TrimSpace(stringFromSelectedOffer(meta.SelectedOffer, "exchange"))
-	}
-	if exchange == "" {
-		switch tx.Dex {
-		case db.DexHodlHodl:
-			exchange = "hodlhodl"
-		case db.DexBisq:
-			exchange = "bisq"
-		case db.DexRoboSats:
-			exchange = "robosats"
-		default:
-			exchange = strings.ToLower(string(tx.Dex))
-		}
 	}
 	if offerID == "" {
 		return fmt.Errorf("no offer_id in DexOfferCreation")
@@ -187,6 +235,7 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		tx.DexOfferID = offerID
 	}
 
+	// Take the offer (idempotent: only when no execution recorded yet).
 	if meta.Execution == nil {
 		takeResult, takeErr := w.taker.Take(ctx, dexaccount.OfferInput{
 			Exchange:   exchange,
@@ -214,6 +263,24 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		}
 	}
 
+	relayDetails := db.CexToDexRelayDetails{
+		AmountSat:   dexaccount.BTCToSats(tx.CexBitcoinAmount),
+		SatPerVbyte: w.satPerVb,
+		SentAt:      time.Now().UTC(),
+	}
+
+	// Direct route (bisq v1): the funds are already in our bisq wallet; the daemon funds
+	// the multisig from there. Nothing to send on-chain — just record the taken offer.
+	if method == txroute.Direct {
+		relayDetails.DepositAddress = strings.TrimSpace(tx.DestinationAddress)
+		relayDetails.PaymentMethod = "direct"
+		return w.finishRelay(tx, meta, relayDetails)
+	}
+
+	// Hub/Swap: we must forward from the LND hub. Resolve the per-trade target.
+	if w.lnd == nil {
+		return fmt.Errorf("LND client is not configured")
+	}
 	depositAddr := meta.EscrowOrDepositAddress()
 	invoice := meta.LNInvoice()
 	if depositAddr == "" && invoice == "" {
@@ -230,26 +297,20 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		}
 	}
 
-	amountSat := dexaccount.BTCToSats(tx.CexBitcoinAmount)
-	if amountSat <= 0 {
+	if relayDetails.AmountSat <= 0 {
 		return fmt.Errorf("invalid relay amount")
 	}
 
-	var relayDetails db.CexToDexRelayDetails
-	relayDetails.AmountSat = amountSat
-	relayDetails.SatPerVbyte = w.satPerVb
-	relayDetails.SentAt = time.Now().UTC()
-
 	switch {
 	case depositAddr != "":
-		txid, sendErr := w.lnd.SendOnChain(ctx, depositAddr, amountSat, w.satPerVb)
+		txid, sendErr := w.lnd.SendOnChain(ctx, depositAddr, relayDetails.AmountSat, w.satPerVb)
 		if sendErr != nil {
 			return fmt.Errorf("LND send on-chain: %w", sendErr)
 		}
 		relayDetails.TxID = txid
 		relayDetails.DepositAddress = depositAddr
 		relayDetails.PaymentMethod = "onchain"
-		tx.DexBtcAddress = depositAddr
+		tx.DestinationAddress = depositAddr
 	case invoice != "":
 		paymentHash, payErr := w.lnd.PayInvoice(ctx, invoice, 0)
 		if payErr != nil {
@@ -262,6 +323,11 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		return fmt.Errorf("no deposit address or invoice available for relay")
 	}
 
+	return w.finishRelay(tx, meta, relayDetails)
+}
+
+// finishRelay persists the relay outcome and advances the row to DexPositionOpen.
+func (w *Worker) finishRelay(tx *db.Transaction, meta db.DexOfferMeta, relayDetails db.CexToDexRelayDetails) error {
 	relayJSON, err := json.Marshal(relayDetails)
 	if err != nil {
 		return err
@@ -276,6 +342,35 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	tx.Status = db.StatusDexPositionOpen
 	tx.DexOfferTaken = time.Now().UTC()
 	return w.repo.UpdateTransaction(tx)
+}
+
+// deriveExchange resolves the DEX venue slug from the offer metadata, falling back to
+// the transaction's Dex column. The slug carries the bisq vs bisq2 distinction that the
+// Dex column ("Bisq") does not.
+func deriveExchange(tx *db.Transaction, meta db.DexOfferMeta) string {
+	if ex := strings.TrimSpace(meta.Exchange()); ex != "" {
+		return ex
+	}
+	if ex := strings.TrimSpace(stringFromSelectedOffer(meta.SelectedOffer, "exchange")); ex != "" {
+		return ex
+	}
+	switch tx.Dex {
+	case db.DexHodlHodl:
+		return "hodlhodl"
+	case db.DexBisq:
+		return "bisq"
+	case db.DexRoboSats:
+		return "robosats"
+	default:
+		return strings.ToLower(string(tx.Dex))
+	}
+}
+
+// requiredSat is the minimum satoshi balance we accept as "arrived", allowing a 1%
+// shortfall for the on-chain withdrawal fee deducted by the CEX.
+func requiredSat(btcAmount float64) int64 {
+	full := dexaccount.BTCToSats(btcAmount)
+	return full * 99 / 100
 }
 
 func stringFromSelectedOffer(raw json.RawMessage, field string) string {

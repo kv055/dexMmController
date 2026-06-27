@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -520,6 +521,49 @@ func (c *Client) OnChainBalance(ctx context.Context) (*OnChainBalanceResponse, e
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// Utxo is a single unspent output owned by the LND wallet.
+type Utxo struct {
+	// Address is the on-chain address paying to this output.
+	Address string `json:"address"`
+	// AmountSat is the output value in satoshis (LND REST encodes int64 as a string).
+	AmountSat string `json:"amount_sat"`
+	// Confirmations is the confirmation depth (LND REST encodes int64 as a string).
+	Confirmations string `json:"confirmations"`
+}
+
+// ListUtxosResponse is the LND /v1/utxos response.
+type ListUtxosResponse struct {
+	// Utxos is the list of unspent outputs.
+	Utxos []Utxo `json:"utxos"`
+}
+
+// ConfirmedBalanceForAddress returns the confirmed satoshi balance held by a single
+// wallet address, summing the wallet's confirmed UTXOs that pay to it. Used by the
+// second-leg worker to watch the hub address for an incoming CEX withdrawal.
+func (c *Client) ConfirmedBalanceForAddress(ctx context.Context, address string) (int64, error) {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return 0, errors.New("address is required")
+	}
+	var resp ListUtxosResponse
+	// min_confs=1 → confirmed only; max_confs caps the range (LND requires it set).
+	if err := c.get(ctx, "/v1/utxos?min_confs=1&max_confs=2147483647", &resp); err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, u := range resp.Utxos {
+		if !strings.EqualFold(strings.TrimSpace(u.Address), address) {
+			continue
+		}
+		sat, err := strconv.ParseInt(strings.TrimSpace(u.AmountSat), 10, 64)
+		if err != nil {
+			continue
+		}
+		total += sat
+	}
+	return total, nil
 }
 
 // HealthCheck verifies that the wallet client can reach LND.

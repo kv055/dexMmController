@@ -33,3 +33,11 @@ func (a LNDAdapter) PayInvoice(ctx context.Context, paymentRequest string, feeLi
 	}
 	return "", nil
 }
+
+// ConfirmedBalanceForAddress returns the confirmed satoshi balance at a hub address.
+func (a LNDAdapter) ConfirmedBalanceForAddress(ctx context.Context, address string) (int64, error) {
+	if a.Client == nil {
+		return 0, nil
+	}
+	return a.Client.ConfirmedBalanceForAddress(ctx, address)
+}

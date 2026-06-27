@@ -106,6 +106,18 @@ type Trade struct {
 	CreatedAt time.Time
 }
 
+// AddressBalance is a normalized funding address from the bisq wallet.
+type AddressBalance struct {
+	// Address is the on-chain BTC address.
+	Address string
+	// BalanceSats is the confirmed balance in satoshis.
+	BalanceSats int64
+	// NumConfirmations is the confirmation count of the most recent deposit.
+	NumConfirmations int64
+	// IsAddressUnused reports whether the address has never received funds.
+	IsAddressUnused bool
+}
+
 // TakeOfferParams represents a take offer params.
 type TakeOfferParams struct {
 	// PaymentAccountID is the count associated with the take offer params.
@@ -313,6 +325,43 @@ func (c *Client) CreatePosition(ctx context.Context, params CreatePositionParams
 	return &offer, nil
 }
 
+// GetFundingAddresses returns the bisq wallet's BTC funding addresses with balances.
+// Bisq keeps at least one unused funding address available at all times.
+func (c *Client) GetFundingAddresses(ctx context.Context) ([]AddressBalance, error) {
+	req := newMessage("GetFundingAddressesRequest")
+	resp := newMessage("GetFundingAddressesReply")
+	if err := c.invoke(ctx, "/io.bisq.protobuffer.Wallets/GetFundingAddresses", req, resp); err != nil {
+		return nil, err
+	}
+
+	list := resp.Get(resp.Descriptor().Fields().ByName("address_balance_info")).List()
+	out := make([]AddressBalance, 0, list.Len())
+	for i := 0; i < list.Len(); i++ {
+		out = append(out, addressBalanceFromMessage(list.Get(i).Message()))
+	}
+	return out, nil
+}
+
+// FundingAddress returns a BTC address to fund the bisq wallet, preferring an unused
+// one (so a fresh CEX withdrawal lands on a clean address).
+func (c *Client) FundingAddress(ctx context.Context) (string, error) {
+	addrs, err := c.GetFundingAddresses(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, a := range addrs {
+		if a.IsAddressUnused && a.Address != "" {
+			return a.Address, nil
+		}
+	}
+	for _, a := range addrs {
+		if a.Address != "" {
+			return a.Address, nil
+		}
+	}
+	return "", errors.New("bisq: no funding address available")
+}
+
 func (c *Client) invoke(ctx context.Context, method string, req, resp *dynamicpb.Message) error {
 	conn, err := c.connection(ctx)
 	if err != nil {
@@ -470,6 +519,15 @@ func tradeFromMessage(msg protoreflect.Message) Trade {
 	return out
 }
 
+func addressBalanceFromMessage(msg protoreflect.Message) AddressBalance {
+	return AddressBalance{
+		Address:          stringField(msg, "address"),
+		BalanceSats:      int64Field(msg, "balance"),
+		NumConfirmations: int64Field(msg, "num_confirmations"),
+		IsAddressUnused:  boolField(msg, "is_address_unused"),
+	}
+}
+
 func stringField(msg protoreflect.Message, name string) string {
 	field := msg.Descriptor().Fields().ByName(protoreflect.Name(name))
 	if field == nil || !msg.Has(field) {
@@ -492,6 +550,14 @@ func uint64Field(msg protoreflect.Message, name string) uint64 {
 		return 0
 	}
 	return msg.Get(field).Uint()
+}
+
+func int64Field(msg protoreflect.Message, name string) int64 {
+	field := msg.Descriptor().Fields().ByName(protoreflect.Name(name))
+	if field == nil || !msg.Has(field) {
+		return 0
+	}
+	return msg.Get(field).Int()
 }
 
 func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
@@ -598,6 +664,16 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 			message("GetTradesReply", []*descriptorpb.FieldDescriptorProto{
 				repeatedMessageField("trades", 1, ".io.bisq.protobuffer.TradeInfo"),
 			}),
+			message("AddressBalanceInfo", []*descriptorpb.FieldDescriptorProto{
+				field("address", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("balance", 2, descriptorpb.FieldDescriptorProto_TYPE_INT64),
+				field("num_confirmations", 3, descriptorpb.FieldDescriptorProto_TYPE_INT64),
+				field("is_address_unused", 4, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
+			}),
+			message("GetFundingAddressesRequest", nil),
+			message("GetFundingAddressesReply", []*descriptorpb.FieldDescriptorProto{
+				repeatedMessageField("address_balance_info", 1, ".io.bisq.protobuffer.AddressBalanceInfo"),
+			}),
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
@@ -619,6 +695,12 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 					method("TakeOffer", ".io.bisq.protobuffer.TakeOfferRequest", ".io.bisq.protobuffer.TakeOfferReply"),
 					method("GetTrade", ".io.bisq.protobuffer.GetTradeRequest", ".io.bisq.protobuffer.GetTradeReply"),
 					method("GetTrades", ".io.bisq.protobuffer.GetTradesRequest", ".io.bisq.protobuffer.GetTradesReply"),
+				},
+			},
+			{
+				Name: strptr("Wallets"),
+				Method: []*descriptorpb.MethodDescriptorProto{
+					method("GetFundingAddresses", ".io.bisq.protobuffer.GetFundingAddressesRequest", ".io.bisq.protobuffer.GetFundingAddressesReply"),
 				},
 			},
 		},
