@@ -115,8 +115,15 @@ type Contract struct {
 
 	// Escrow is the escrow value for the contract.
 	Escrow struct {
-		Address              string `json:"address"`
-		Confirmations        int    `json:"confirmations"`
+		Address       string `json:"address"`
+		Confirmations int    `json:"confirmations"`
+		// Index is the BIP32 child index (m/<index>) of the seller's per-contract
+		// escrow key, derived from the account-level encrypted seed. Required to sign
+		// the release transaction. (Field name pending verification against a live API.)
+		Index uint32 `json:"index"`
+		// WitnessScript is the hex P2WSH multisig redeem/witness script of the escrow
+		// output, needed for the BIP143 sighash. (Field name pending live verification.)
+		WitnessScript        string `json:"witness_script"`
 		AmountDeposited      string `json:"amount_deposited"`
 		AmountReleased       string `json:"amount_released"`
 		DepositTransactionID string `json:"deposit_transaction_id"`
@@ -208,6 +215,26 @@ type offersResponse struct {
 // contractResponse wraps a single contract.
 type contractResponse struct {
 	Contract Contract `json:"contract"`
+}
+
+// ReleaseTransaction is the unsigned release transaction returned by
+// GET /api/v1/contracts/:id/release_transaction. The seller signs Hex locally (with the
+// per-contract escrow key) and submits it back to release the escrow to the buyer.
+type ReleaseTransaction struct {
+	// Hex is the unsigned transaction to be signed (BTC contracts).
+	Hex string `json:"hex"`
+	// InAmounts is the satoshi amount of each escrow input being spent, in input order
+	// (required for the BIP143 segwit sighash).
+	InAmounts []int64 `json:"in_amounts"`
+	// GoesToBuyer / GoesToSeller are the sat outputs, used to sanity-check the release
+	// pays the buyer the expected amount before signing.
+	GoesToBuyer  int64 `json:"goes_to_buyer"`
+	GoesToSeller int64 `json:"goes_to_seller"`
+}
+
+// releaseTransactionResponse wraps GET …/release_transaction.
+type releaseTransactionResponse struct {
+	Transaction ReleaseTransaction `json:"transaction"`
 }
 
 // contractsResponse wraps a list of contracts.

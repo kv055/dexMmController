@@ -37,6 +37,10 @@ type Server struct {
 	lndInit       func(ctx context.Context) (LNDInitResult, error)
 	lndStateProbe func(ctx context.Context) (string, error)
 	lndInitMu     sync.Mutex
+
+	// Stage-6 release webhook (fiat-controller → release worker), set via WithDexRelease.
+	dexRelease      dexReleaseEnqueuer
+	dexReleaseToken string
 }
 
 // LNDInitResult is returned by the on-demand wallet creation hook.
@@ -129,6 +133,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/cex/pre-trade-check", s.handleCexPreTradeCheck)
 	mux.HandleFunc("POST /api/cex/tradeflow", s.handleCexTradeflow)
 	mux.HandleFunc("GET /api/cex/withdrawal-track", s.handleCexWithdrawalTrack)
+	mux.HandleFunc("POST /api/webhooks/dex-release", s.handleDexReleaseWebhook)
 	mux.HandleFunc("GET /ws/cex/hedge-stream", s.handleCexHedgeStream)
 
 	server := &http.Server{

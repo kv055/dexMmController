@@ -280,6 +280,21 @@ func (c *Client) GetPosition(ctx context.Context, tradeID string) (*Trade, error
 	return &trade, nil
 }
 
+// ConfirmPaymentReceived tells the bisq daemon that the buyer's fiat payment has arrived,
+// which triggers it to sign and broadcast the multisig payout — releasing the BTC to the
+// buyer. This is the bisq Stage-6 release for the direct route: the daemon holds the keys,
+// so no local signing is required. The reply is empty; callers read the resulting
+// payout_tx_id via GetPosition.
+func (c *Client) ConfirmPaymentReceived(ctx context.Context, tradeID string) error {
+	if tradeID == "" {
+		return errors.New("bisq: trade ID is required")
+	}
+	req := newMessage("ConfirmPaymentReceivedRequest")
+	setString(req, "trade_id", tradeID)
+	resp := newMessage("ConfirmPaymentReceivedReply")
+	return c.invoke(ctx, "/io.bisq.protobuffer.Trades/ConfirmPaymentReceived", req, resp)
+}
+
 // CreatePosition creates a position.
 func (c *Client) CreatePosition(ctx context.Context, params CreatePositionParams) (*Offer, error) {
 	if params.CurrencyCode == "" {
@@ -664,6 +679,10 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 			message("GetTradesReply", []*descriptorpb.FieldDescriptorProto{
 				repeatedMessageField("trades", 1, ".io.bisq.protobuffer.TradeInfo"),
 			}),
+			message("ConfirmPaymentReceivedRequest", []*descriptorpb.FieldDescriptorProto{
+				field("trade_id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}),
+			message("ConfirmPaymentReceivedReply", nil),
 			message("AddressBalanceInfo", []*descriptorpb.FieldDescriptorProto{
 				field("address", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				field("balance", 2, descriptorpb.FieldDescriptorProto_TYPE_INT64),
@@ -695,6 +714,7 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 					method("TakeOffer", ".io.bisq.protobuffer.TakeOfferRequest", ".io.bisq.protobuffer.TakeOfferReply"),
 					method("GetTrade", ".io.bisq.protobuffer.GetTradeRequest", ".io.bisq.protobuffer.GetTradeReply"),
 					method("GetTrades", ".io.bisq.protobuffer.GetTradesRequest", ".io.bisq.protobuffer.GetTradesReply"),
+					method("ConfirmPaymentReceived", ".io.bisq.protobuffer.ConfirmPaymentReceivedRequest", ".io.bisq.protobuffer.ConfirmPaymentReceivedReply"),
 				},
 			},
 			{

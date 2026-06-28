@@ -22,6 +22,7 @@ import (
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
 	"dexMmController/internal/dexrelay"
+	"dexMmController/internal/dexrelease"
 	"dexMmController/internal/exchangeconnectors/cex"
 	"dexMmController/internal/exchangeconnectors/cex/binance"
 	"dexMmController/internal/exchangeconnectors/cex/coinbase"
@@ -44,6 +45,10 @@ func main() {
 	openclawURL := envOr("OPENCLAW_URL", "")
 	hhAPIKey := envOr("HODLHODL_API_KEY", "")
 	hhBaseURL := envOr("HODLHODL_URL", "")
+	hhSignatureKey := envOr("HODLHODL_SIGNATURE_KEY", "")
+	hhEscrowSeed := envOr("HODLHODL_ESCROW_SEED", "")
+	hhEscrowPaymentPassword := envOr("HODLHODL_ESCROW_PAYMENT_PASSWORD", "")
+	dexReleaseToken := envOr("DEX_RELEASE_WEBHOOK_TOKEN", "")
 	binanceBaseURL := envOr("BINANCE_API_BASE_URL", "")
 	krakenBaseURL := envOr("KRAKEN_API_BASE_URL", "")
 	coinbaseBaseURL := envOr("COINBASE_API_BASE_URL", "")
@@ -125,7 +130,7 @@ func main() {
 	btc := bitcoin.NewNetworkDataFetcher()
 
 	// ── HodlHodl ─────────────────────────────────────────────────────────────
-	hh := hodlhodl.NewClient(hhBaseURL, hhAPIKey)
+	hh := hodlhodl.NewClient(hhBaseURL, hhAPIKey).WithSignatureKey(hhSignatureKey)
 
 	// ── Bisq / RoboSats ──────────────────────────────────────────────────────
 	bq := bisq.NewClient(bisqGRPCHost, bisqAPIPassword)
@@ -143,6 +148,13 @@ func main() {
 	// HealthChecker is constructed after tradeFlow (below) so it can recover stuck
 	// tradeflow rows via the recoverer.
 	dexTaker := dexaccount.NewTaker(repo, bq, hh, rs)
+	// dexReleaser performs Stage-6 BTC release; dexReleaseWorker drains the webhook-fed
+	// queue and runs the (idempotent) releases in the background.
+	dexReleaser := dexaccount.NewReleaser(repo, bq, hh, rs, dexaccount.HodlHodlEscrowConfig{
+		EncryptedSeed:   hhEscrowSeed,
+		PaymentPassword: hhEscrowPaymentPassword,
+	})
+	dexReleaseWorker := dexrelease.NewWorker(repo, dexReleaser)
 	exchangeAccountHealth := accounthealth.NewChecker(repo, cexaccount.Config{
 		HodlHodlBaseURL: hhBaseURL,
 		BinanceBaseURL:  binanceBaseURL,
@@ -238,7 +250,8 @@ func main() {
 		WithCexAccount(cexAccountService).
 		WithTradeFlow(tradeFlow).
 		WithHedgeStream(hedgeStreamManager).
-		WithLNDHealth(lndHealthChecker)
+		WithLNDHealth(lndHealthChecker).
+		WithDexRelease(dexReleaseWorker, dexReleaseToken)
 
 	// lndInit creates (or restores) the LND wallet using the password stored in the
 	// database, persists the generated seed + primary address + channel backup, and
@@ -332,6 +345,9 @@ func main() {
 	lndHealthChecker.RunAndLog(ctx)
 	go lndHealthChecker.RunPeriodic(ctx, accountHealthInterval)
 	go exchangeAccountHealth.RunPeriodic(ctx, accountHealthInterval)
+	// The Stage-6 release worker only acts on webhook-delivered jobs (no autonomous
+	// money-moving poll), so it runs unconditionally — unlike the team-gated dexrelay loop.
+	go dexReleaseWorker.Run(ctx)
 
 	go func() {
 		if err := apiServer.Run(ctx); err != nil && ctx.Err() == nil {

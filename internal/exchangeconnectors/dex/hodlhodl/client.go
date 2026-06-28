@@ -23,7 +23,11 @@ const defaultBaseURL = "https://hodlhodl.com"
 type Client struct {
 	baseURL string
 	apiKey  string
-	http    *http.Client
+	// signatureKey is the HodlHodl API signature key used to HMAC-sign privileged
+	// requests (release_transaction, …). Distinct from the Bitcoin escrow seed used to
+	// sign the release transaction itself. Empty until set via WithSignatureKey.
+	signatureKey string
+	http         *http.Client
 }
 
 // MeResponse represents a me response.
@@ -44,6 +48,13 @@ func NewClient(baseURL, apiKey string) *Client {
 		apiKey:  apiKey,
 		http:    &http.Client{Timeout: 15 * time.Second},
 	}
+}
+
+// WithSignatureKey sets the HodlHodl API signature key used to HMAC-sign privileged
+// requests (contract release). Returns the client for chaining.
+func (c *Client) WithSignatureKey(signatureKey string) *Client {
+	c.signatureKey = signatureKey
+	return c
 }
 
 // errorEnvelope is the common error shape returned by the HodlHodl API.
@@ -194,21 +205,26 @@ func (c *Client) serverTime(ctx context.Context) (time.Time, error) {
 	return http.ParseTime(resp.Header.Get("Date"))
 }
 
-// VerifySignatureKey verifies that a HodlHodl API signature key is usable.
-func (c *Client) VerifySignatureKey(ctx context.Context, signatureKey string) error {
+// signRequest builds the {nonce, hmac} pair HodlHodl requires on privileged requests:
+// an HMAC-SHA256 of "<apiKey>:<nonce>" keyed by the given signature key. The nonce must
+// sit within a tight window around the server's clock, so it is read from the server's
+// Date header and back-dated slightly (whole-second precision; the server rejects nonces
+// ahead of its clock).
+func (c *Client) signRequest(ctx context.Context, signatureKey string) (nonce, mac string) {
 	now := time.Now()
 	if serverNow, err := c.serverTime(ctx); err == nil {
 		now = serverNow
 	}
-	// Back-date the nonce slightly: the server rejects nonces ahead of its
-	// clock, and the Date header has whole-second precision.
-	nonce := strconv.FormatInt(now.Add(-2*time.Second).Unix(), 10)
-	mac := hmac.New(sha256.New, []byte(signatureKey))
-	_, _ = mac.Write([]byte(c.apiKey + ":" + nonce))
-	body := map[string]string{
-		"nonce": nonce,
-		"hmac":  hex.EncodeToString(mac.Sum(nil)),
-	}
+	nonce = strconv.FormatInt(now.Add(-2*time.Second).Unix(), 10)
+	h := hmac.New(sha256.New, []byte(signatureKey))
+	_, _ = h.Write([]byte(c.apiKey + ":" + nonce))
+	return nonce, hex.EncodeToString(h.Sum(nil))
+}
+
+// VerifySignatureKey verifies that a HodlHodl API signature key is usable.
+func (c *Client) VerifySignatureKey(ctx context.Context, signatureKey string) error {
+	nonce, mac := c.signRequest(ctx, signatureKey)
+	body := map[string]string{"nonce": nonce, "hmac": mac}
 	var resp map[string]any
 	return c.post(ctx, "/api/v1/contracts/verify_signature_key", body, &resp)
 }
@@ -286,6 +302,39 @@ func (c *Client) CreateContract(ctx context.Context, p CreateContractParams) (*C
 	}
 	var resp contractResponse
 	if err := c.post(ctx, "/api/v1/contracts", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp.Contract, nil
+}
+
+// ---------- Contract release (Stage 6) ----------
+
+// GetReleaseTransaction fetches the unsigned release transaction for a contract. The
+// seller signs transaction.hex locally with the per-contract escrow key, then submits it
+// via SubmitReleaseTransaction. Requires authentication.
+func (c *Client) GetReleaseTransaction(ctx context.Context, contractID string) (*ReleaseTransaction, error) {
+	var resp releaseTransactionResponse
+	if err := c.get(ctx, "/api/v1/contracts/"+contractID+"/release_transaction", &resp); err != nil {
+		return nil, err
+	}
+	return &resp.Transaction, nil
+}
+
+// SubmitReleaseTransaction submits the seller-signed release transaction, releasing the
+// escrowed BTC to the buyer. Like other privileged endpoints it carries the signature-key
+// HMAC (nonce + hmac) in the body; the signature key must be set via WithSignatureKey.
+func (c *Client) SubmitReleaseTransaction(ctx context.Context, contractID, signedHex string) (*Contract, error) {
+	if strings.TrimSpace(c.signatureKey) == "" {
+		return nil, fmt.Errorf("hodlhodl: signature key not configured (WithSignatureKey); cannot release")
+	}
+	nonce, mac := c.signRequest(ctx, c.signatureKey)
+	body := map[string]any{
+		"nonce": nonce,
+		"hmac":  mac,
+		"hex":   signedHex,
+	}
+	var resp contractResponse
+	if err := c.post(ctx, "/api/v1/contracts/"+contractID+"/release_transaction", body, &resp); err != nil {
 		return nil, err
 	}
 	return &resp.Contract, nil

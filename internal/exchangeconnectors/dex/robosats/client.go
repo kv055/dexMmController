@@ -46,6 +46,10 @@ type Config struct {
 	PositionPath string
 	// CreateOrderPath is the create order path value for the config.
 	CreateOrderPath string
+	// OrderActionPath is the singular order-action endpoint used to update a trade
+	// (confirm fiat, dispute, …). Distinct from PositionPath: the action endpoint is
+	// /api/order/?order_id=<id> (singular), not the /api/orders/ list path.
+	OrderActionPath string
 	// RobotPath is the robot path value for the config.
 	RobotPath string
 }
@@ -58,6 +62,7 @@ type Client struct {
 	openPositionsPath string
 	positionPath      string
 	createOrderPath   string
+	orderActionPath   string
 	robotPath         string
 	http              *http.Client
 	proxyErr          error
@@ -124,6 +129,7 @@ func NewClient(cfg Config) *Client {
 		openPositionsPath: defaultPath(cfg.OpenPositionsPath, "/api/orders/"),
 		positionPath:      defaultPath(cfg.PositionPath, "/api/orders/%s/"),
 		createOrderPath:   defaultPath(cfg.CreateOrderPath, "/api/orders/"),
+		orderActionPath:   defaultPath(cfg.OrderActionPath, "/api/order/?order_id=%s"),
 		robotPath:         defaultPath(cfg.RobotPath, "/api/robot/"),
 		http:              &http.Client{Timeout: defaultTimeout},
 	}
@@ -156,6 +162,7 @@ func (c *Client) WithAuthToken(authToken string) *Client {
 		openPositionsPath: c.openPositionsPath,
 		positionPath:      c.positionPath,
 		createOrderPath:   c.createOrderPath,
+		orderActionPath:   c.orderActionPath,
 		robotPath:         c.robotPath,
 		http:              c.http,
 		proxyErr:          c.proxyErr,
@@ -227,6 +234,22 @@ func (c *Client) GetPosition(ctx context.Context, positionID string) (*Position,
 func (c *Client) CreatePosition(ctx context.Context, params CreatePositionParams) (*Position, error) {
 	var pos Position
 	if err := c.request(ctx, http.MethodPost, c.createOrderPath, params, &pos); err != nil {
+		return nil, err
+	}
+	return &pos, nil
+}
+
+// ConfirmFiatReceived confirms — as the BTC seller — that the buyer's fiat payment has
+// arrived, which tells the coordinator to settle the locked hold invoice to the buyer
+// (releasing the sats). This is the RoboSats Stage-6 release for the swap route: the
+// coordinator holds the keys, so no local signing is required. Returns the updated order.
+func (c *Client) ConfirmFiatReceived(ctx context.Context, orderID string) (*Position, error) {
+	if orderID == "" {
+		return nil, errors.New("robosats: order ID is required")
+	}
+	var pos Position
+	body := map[string]any{"action": "confirm"}
+	if err := c.request(ctx, http.MethodPost, fmt.Sprintf(c.orderActionPath, orderID), body, &pos); err != nil {
 		return nil, err
 	}
 	return &pos, nil
