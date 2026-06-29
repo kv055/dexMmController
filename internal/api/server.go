@@ -117,6 +117,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /api/transactions", s.handleTransactions)
 	mux.HandleFunc("GET /api/transactions/{id}", s.handleTransactionByID)
+	mux.HandleFunc("GET /api/transactions/{id}/payment-details", s.handleTransactionPaymentDetails)
 	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("POST /api/accounts/health_check", s.handleAccountHealthCheck)
 	mux.HandleFunc("GET /api/lnd/wallet", s.handleLNDWalletStatus)

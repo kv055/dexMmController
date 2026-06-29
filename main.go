@@ -148,6 +148,9 @@ func main() {
 	// HealthChecker is constructed after tradeFlow (below) so it can recover stuck
 	// tradeflow rows via the recoverer.
 	dexTaker := dexaccount.NewTaker(repo, bq, hh, rs)
+	// dexPaymentResolver fetches the counterparty's fiat details (Bisq: the trade contract;
+	// Robosats: the PGP trade chat) and, on chat venues, shares our own.
+	dexPaymentResolver := dexaccount.NewPaymentResolver(repo, bq, rs)
 	// dexReleaser performs Stage-6 BTC release; dexReleaseWorker drains the webhook-fed
 	// queue and runs the (idempotent) releases in the background.
 	dexReleaser := dexaccount.NewReleaser(repo, bq, hh, rs, dexaccount.HodlHodlEscrowConfig{
@@ -223,7 +226,7 @@ func main() {
 		}),
 	)
 	cexAccountService.WithBidChecker(bidChecker)
-	dexRelayWorker := dexrelay.NewWorker(repo, cexAccountService, btc, dexTaker)
+	dexRelayWorker := dexrelay.NewWorker(repo, cexAccountService, btc, dexTaker, dexPaymentResolver)
 	lndHealthChecker := lndhealth.NewChecker(repo, nil, lndhealth.Config{
 		ExtendedMasterKeyFile: lndExtendedMasterKeyFile,
 	})
@@ -244,7 +247,8 @@ func main() {
 	tradeFlow := tradeflow.New(cexAccountService, repo).
 		WithDirectDestinationResolver(dexaccount.NewDirectResolver(bq))
 	hc := healthcheck.NewHealthChecker(repo, claw, btc, hh, tradeFlow).
-		WithRecoveryGracePeriod(parseAccountHealthInterval(envOr("TRADEFLOW_RECOVERY_GRACE", "3m")))
+		WithRecoveryGracePeriod(parseAccountHealthInterval(envOr("TRADEFLOW_RECOVERY_GRACE", "3m"))).
+		WithPaymentResolver(dexPaymentResolver)
 	apiServer := api.NewServer(apiAddr, repo).
 		WithAccountHealth(exchangeAccountHealth).
 		WithCexAccount(cexAccountService).

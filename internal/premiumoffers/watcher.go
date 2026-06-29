@@ -57,8 +57,8 @@ type Offer struct {
 	BTCMin *float64 `json:"btc_min"`
 	// BTCMax is a BTC-denominated btcmax value.
 	BTCMax *float64 `json:"btc_max"`
-	// PaymentMethod is the payment method value for the offer.
-	PaymentMethod *string `json:"payment_method"`
+	// PaymentMethods lists the payment methods accepted by the offer.
+	PaymentMethods []string `json:"payment_methods"`
 	// OfferID is the offer id value for the offer.
 	OfferID *string `json:"offer_id"`
 	// FirstSeen is the first seen value for the offer.

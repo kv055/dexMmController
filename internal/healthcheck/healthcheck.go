@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/db"
+	"dexMmController/internal/dexaccount"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
 	"dexMmController/internal/openclaw"
 )
@@ -32,6 +34,7 @@ type HealthChecker struct {
 	openclaw            *openclaw.Client
 	btc                 *bitcoin.NetworkDataFetcher
 	hodlhodl            *hodlhodl.Client
+	resolver            *dexaccount.PaymentResolver
 	recoverer           TradeflowRecoverer
 	recoveryGracePeriod time.Duration
 }
@@ -55,6 +58,14 @@ func (h *HealthChecker) WithRecoveryGracePeriod(d time.Duration) *HealthChecker 
 	if d > 0 {
 		h.recoveryGracePeriod = d
 	}
+	return h
+}
+
+// WithPaymentResolver wires the resolver used to drive the Robosats trade-chat conversation
+// (send the payment-details request, capture the counterparty's reply). Without it, chat-venue
+// rows simply no-op in the post-take checks.
+func (h *HealthChecker) WithPaymentResolver(r *dexaccount.PaymentResolver) *HealthChecker {
+	h.resolver = r
 	return h
 }
 
@@ -224,12 +235,48 @@ func (h *HealthChecker) verifyDexPositionOpen(ctx context.Context, tx *db.Transa
 			tx.Status = db.StatusDexPositionTaken
 			return h.repo.UpdateTransaction(tx)
 		}
-	case db.DexBisq, db.DexRoboSats:
-		// TODO: implement Bisq / RoboSats contract polling
+	case db.DexRoboSats:
+		// Robosats details arrive over the trade chat, not the trade object: send the
+		// payment-details request once and keep capturing the counterparty's reply.
+		return h.captureChatPayment(ctx, tx)
+	case db.DexBisq:
+		// TODO: implement Bisq contract polling for status advancement.
 	default:
 		return fmt.Errorf("verifyDexPositionOpen: unknown DEX %q", tx.Dex)
 	}
 	return nil
+}
+
+// captureChatPayment drives the chat-venue conversation for a row: send the templated
+// payment-details request once and store the counterparty's inbound reply on the row. The fiat
+// controller reads counterparty_payment_info to match and decide release vs dispute.
+func (h *HealthChecker) captureChatPayment(ctx context.Context, tx *db.Transaction) error {
+	if h.resolver == nil {
+		return nil
+	}
+	meta, err := db.ParseDexOfferCreation(tx.DexOfferCreation)
+	if err != nil {
+		return fmt.Errorf("captureChatPayment: %w", err)
+	}
+	orderID := meta.ContractID()
+	if orderID == "" {
+		return nil // offer not taken / no order id yet — nothing to capture
+	}
+	exchange := meta.Exchange()
+	if exchange == "" {
+		exchange = string(tx.Dex)
+	}
+	info, err := h.resolver.CaptureChatPayment(ctx, dexaccount.ChatRequest{
+		Exchange:         exchange,
+		OrderID:          orderID,
+		ExpectedAmount:   strconv.FormatFloat(tx.FiatAmount, 'f', 2, 64),
+		ExpectedCurrency: tx.FiatCurrency,
+	})
+	if err != nil {
+		return fmt.Errorf("captureChatPayment: %w", err)
+	}
+	tx.CounterpartyPaymentInfo = info
+	return h.repo.UpdateTransaction(tx)
 }
 
 // verifyDexPositionTaken confirms the trade is in progress on the DEX.

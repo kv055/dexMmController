@@ -2,8 +2,10 @@ package bisq
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,6 +104,11 @@ type Trade struct {
 	DepositTxID string
 	// PayoutTxID is the payout tx id value for the trade.
 	PayoutTxID string
+	// ContractAsJSON is the full bisq trade contract serialized as JSON. It carries both
+	// parties' payment-account payloads (makerPaymentAccountPayload / takerPaymentAccountPayload)
+	// once the trade is taken, and is the source for GetCounterpartyPayment. Empty before the
+	// contract is formed.
+	ContractAsJSON string
 	// CreatedAt records the relevant time for the trade.
 	CreatedAt time.Time
 }
@@ -293,6 +300,41 @@ func (c *Client) ConfirmPaymentReceived(ctx context.Context, tradeID string) err
 	setString(req, "trade_id", tradeID)
 	resp := newMessage("ConfirmPaymentReceivedReply")
 	return c.invoke(ctx, "/io.bisq.protobuffer.Trades/ConfirmPaymentReceived", req, resp)
+}
+
+// GetCounterpartyPayment returns the maker's (our counterparty's) payment-account payload
+// for a taken trade, read from the trade contract. Bisq is the "structured" style: the daemon
+// exposes both parties' payment accounts inside contract_as_json once the trade is taken — no
+// chat needed. We are always the taker, so the counterparty is the maker
+// (makerPaymentAccountPayload); when that key is absent we return the whole contract so nothing
+// is lost. Returns an error while the contract has not been formed yet.
+func (c *Client) GetCounterpartyPayment(ctx context.Context, tradeID string) (json.RawMessage, error) {
+	trade, err := c.GetPosition(ctx, tradeID)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(trade.ContractAsJSON) == "" {
+		return nil, fmt.Errorf("bisq: trade %s has no contract yet", tradeID)
+	}
+	return makerPaymentFromContract(trade.ContractAsJSON)
+}
+
+// makerPaymentFromContract extracts the maker's payment-account payload from a bisq trade
+// contract JSON. We are always the taker, so the counterparty is the maker. When the field is
+// absent the whole contract is returned so nothing is lost.
+func makerPaymentFromContract(contractJSON string) (json.RawMessage, error) {
+	contractJSON = strings.TrimSpace(contractJSON)
+	if contractJSON == "" {
+		return nil, fmt.Errorf("bisq: empty contract json")
+	}
+	var contract map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(contractJSON), &contract); err != nil {
+		return nil, fmt.Errorf("bisq: parse contract json: %w", err)
+	}
+	if payload, ok := contract["makerPaymentAccountPayload"]; ok && len(payload) > 0 {
+		return json.RawMessage(payload), nil
+	}
+	return json.RawMessage(contractJSON), nil
 }
 
 // CreatePosition creates a position.
@@ -522,6 +564,7 @@ func tradeFromMessage(msg protoreflect.Message) Trade {
 		ErrorMessage:    stringField(msg, "error_message"),
 		DepositTxID:     stringField(msg, "deposit_tx_id"),
 		PayoutTxID:      stringField(msg, "payout_tx_id"),
+		ContractAsJSON:  stringField(msg, "contract_as_json"),
 	}
 	if ms := uint64Field(msg, "date"); ms > 0 {
 		out.CreatedAt = time.UnixMilli(int64(ms)).UTC()
@@ -653,6 +696,10 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 				field("state", 15, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				field("phase", 16, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				field("is_completed", 23, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
+				// contract_as_json (24) and contract (25) carry the trade contract once formed;
+				// field numbers match the modern bisq TradeInfo proto (consistent with the
+				// is_completed=23 / trade_volume=26 / has_failed=30 numbering already used here).
+				field("contract_as_json", 24, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				field("trade_volume", 26, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				field("has_failed", 30, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
 				field("error_message", 31, descriptorpb.FieldDescriptorProto_TYPE_STRING),

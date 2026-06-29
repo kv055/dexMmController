@@ -211,6 +211,11 @@ type Transaction struct {
 	DexOfferTaken time.Time `json:"dex_offer_taken"`
 	// DexFiatArrival is a fiat-denominated dex fiat arrival value.
 	DexFiatArrival json.RawMessage `json:"dex_fiat_arrival" gorm:"type:jsonb"`
+	// CounterpartyPaymentInfo is the unstructured venue payload carrying the counterparty's
+	// fiat/bank details, fetched as early as the venue allows after the offer is taken
+	// (Bisq 1: the trade contract; Robosats: the trade chat). Stored verbatim under a thin
+	// envelope ({exchange, source, fetched_at, raw}); payment types vary too widely to model.
+	CounterpartyPaymentInfo json.RawMessage `json:"counterparty_payment_info,omitempty" gorm:"column:counterparty_payment_info;type:jsonb"`
 	// DexBtcRelease is a BTC-denominated dex btc release value.
 	DexBtcRelease time.Time `json:"dex_btc_release"`
 	// DexFees is the fee value reported for the transaction.

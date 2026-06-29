@@ -52,6 +52,9 @@ type Config struct {
 	OrderActionPath string
 	// RobotPath is the robot path value for the config.
 	RobotPath string
+	// ChatPath is the PGP trade-chat endpoint, format string taking the order id. GET reads
+	// the (encrypted) messages + peer public key; POST sends an encrypted message.
+	ChatPath string
 }
 
 // Client represents a client.
@@ -64,6 +67,7 @@ type Client struct {
 	createOrderPath   string
 	orderActionPath   string
 	robotPath         string
+	chatPath          string
 	http              *http.Client
 	proxyErr          error
 
@@ -131,6 +135,7 @@ func NewClient(cfg Config) *Client {
 		createOrderPath:   defaultPath(cfg.CreateOrderPath, "/api/orders/"),
 		orderActionPath:   defaultPath(cfg.OrderActionPath, "/api/order/?order_id=%s"),
 		robotPath:         defaultPath(cfg.RobotPath, "/api/robot/"),
+		chatPath:          defaultPath(cfg.ChatPath, "/api/chat/?order_id=%s"),
 		http:              &http.Client{Timeout: defaultTimeout},
 	}
 	if proxy := strings.TrimSpace(cfg.ProxyURL); proxy != "" {
@@ -164,6 +169,7 @@ func (c *Client) WithAuthToken(authToken string) *Client {
 		createOrderPath:   c.createOrderPath,
 		orderActionPath:   c.orderActionPath,
 		robotPath:         c.robotPath,
+		chatPath:          c.chatPath,
 		http:              c.http,
 		proxyErr:          c.proxyErr,
 	}

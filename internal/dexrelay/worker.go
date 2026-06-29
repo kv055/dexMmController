@@ -31,6 +31,7 @@ type Worker struct {
 	cex      *cexaccount.Service
 	btc      *bitcoin.NetworkDataFetcher
 	taker    offerTaker
+	resolver paymentResolver
 	lnd      dexaccount.LNDRelay
 	satPerVb int64
 }
@@ -49,20 +50,37 @@ type offerTaker interface {
 	ResolveDeposit(ctx context.Context, exchange string, execution map[string]any) (string, string, error)
 }
 
-// NewWorker creates a dexrelay worker.
+// paymentResolver fetches a structured venue's counterparty fiat details (satisfied by
+// *dexaccount.PaymentResolver). Chat venues (Robosats) are handled by the healthcheck, not here,
+// because their details arrive over a conversation rather than in the trade object. Optional: a
+// nil resolver disables the fetch.
+type paymentResolver interface {
+	IsStructuredVenue(exchange string) bool
+	FetchCounterparty(ctx context.Context, exchange string, execution map[string]any) (json.RawMessage, error)
+}
+
+// NewWorker creates a dexrelay worker. resolver may be nil to disable the counterparty
+// fiat-detail fetch/share steps.
 func NewWorker(
 	repo *db.TransactionRepository,
 	cex *cexaccount.Service,
 	btc *bitcoin.NetworkDataFetcher,
 	taker *dexaccount.Taker,
+	resolver *dexaccount.PaymentResolver,
 ) *Worker {
-	return &Worker{
+	w := &Worker{
 		repo:     repo,
 		cex:      cex,
 		btc:      btc,
 		taker:    taker,
 		satPerVb: dexaccount.DefaultSatPerVbyte(),
 	}
+	// Assign through the interface only when non-nil to avoid a typed-nil interface that
+	// would defeat the nil guards in the fetch/share helpers.
+	if resolver != nil {
+		w.resolver = resolver
+	}
+	return w
 }
 
 // SetLND wires the live LND client used for on-chain/LN relay. Safe to call after wallet init.
@@ -263,6 +281,12 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		}
 	}
 
+	// Structured venues (Bisq) expose the counterparty's fiat details in the trade contract
+	// the moment the offer is taken, so capture them here before any BTC moves. Chat venues
+	// (Robosats) are handled by the healthcheck instead — their details arrive over a
+	// conversation. Best-effort: a miss is logged, never fatal to the BTC relay.
+	w.populateCounterpartyPayment(ctx, tx, meta, exchange)
+
 	relayDetails := db.CexToDexRelayDetails{
 		AmountSat:   dexaccount.BTCToSats(tx.CexBitcoinAmount),
 		SatPerVbyte: w.satPerVb,
@@ -324,6 +348,28 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	}
 
 	return w.finishRelay(tx, meta, relayDetails)
+}
+
+// populateCounterpartyPayment fetches a structured venue's counterparty fiat details once and
+// stores them on the row's counterparty_payment_info column. Chat venues are skipped (the
+// healthcheck drives their conversation). Best-effort: failures (e.g. contract not ready yet)
+// are logged, not fatal, so they never block the BTC relay.
+func (w *Worker) populateCounterpartyPayment(ctx context.Context, tx *db.Transaction, meta db.DexOfferMeta, exchange string) {
+	if w.resolver == nil || meta.Execution == nil || len(tx.CounterpartyPaymentInfo) > 0 {
+		return
+	}
+	if !w.resolver.IsStructuredVenue(exchange) {
+		return
+	}
+	info, err := w.resolver.FetchCounterparty(ctx, exchange, meta.Execution)
+	if err != nil {
+		log.Printf("dexrelay: tx %d fetch counterparty payment (%s): %v", tx.ID, exchange, err)
+		return
+	}
+	tx.CounterpartyPaymentInfo = info
+	if err := w.repo.UpdateTransaction(tx); err != nil {
+		log.Printf("dexrelay: tx %d persist counterparty payment (%s): %v", tx.ID, exchange, err)
+	}
 }
 
 // finishRelay persists the relay outcome and advances the row to DexPositionOpen.
