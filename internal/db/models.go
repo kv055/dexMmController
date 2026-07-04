@@ -19,6 +19,8 @@ type Account struct {
 	Password string `json:"password"`
 	// Phone is the phone value for the account.
 	Phone string `json:"phone"`
+	// Category is the account category (Fiat Transmitter, DEX, CEX, Bank).
+	Category string `json:"category"`
 	// LastHealthCheck is the last health check value for the account.
 	LastHealthCheck time.Time `json:"last_health_check"`
 	// IsHealthy reports whether the account condition is true.
@@ -32,6 +34,25 @@ type Account struct {
 // TableName returns the database table name for the model.
 func (Account) TableName() string {
 	return "accounts"
+}
+
+// BankAccount is a payable bank account linked to an online-banking login.
+type BankAccount struct {
+	// ID identifies the bank account.
+	ID uint `gorm:"primaryKey" json:"id"`
+	// AccountID is the parent account.
+	AccountID uint `json:"account_id"`
+	// Scheme identifies the payment scheme (e.g. iban_bic).
+	Scheme string `json:"scheme"`
+	// Details holds scheme-specific fields (iban, bic, …).
+	Details json.RawMessage `gorm:"type:jsonb" json:"details"`
+	// IsActive reports whether this bank account is active.
+	IsActive bool `json:"is_active"`
+}
+
+// TableName returns the database table name for the model.
+func (BankAccount) TableName() string {
+	return "bank_accounts"
 }
 
 // APIKey is a shared account API-key row owned by dexUnifiedApi schema files.

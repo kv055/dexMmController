@@ -43,12 +43,12 @@ type fakeService struct {
 	lastWithdrawClientReqID string
 }
 
-func (f *fakeService) PreTradeCheck(_ context.Context, _, _ string, _ float64) (*cexaccount.Report, error) {
+func (f *fakeService) PreTradeCheck(_ context.Context, _, _ string, _ float64, _ string, _ []string) (*cexaccount.Report, error) {
 	f.preTradeCallCount++
 	return f.preTradeReport, f.preTradeErr
 }
 
-func (f *fakeService) MarketBuyBTC(_ context.Context, _ string, _ float64, _ string, _ float64) (*cexaccount.SpotOrderResult, error) {
+func (f *fakeService) MarketBuyBTC(_ context.Context, _ string, _ float64, _ string, _ float64, _ string, _ []string) (*cexaccount.SpotOrderResult, error) {
 	f.spotCallCount++
 	return f.spotResult, f.spotErr
 }
@@ -149,6 +149,7 @@ func validOrder() Order {
 		HedgeSide:          "short",
 		HedgeNotionalBTC:   0.01,
 		Leverage:           10,
+		PaymentMethod:      "Revolut",
 	}
 }
 
@@ -259,6 +260,27 @@ func TestRun_PreTradeCheckFails_ShortCircuits(t *testing.T) {
 	}
 	if svc.withdrawCallCount != 0 {
 		t.Errorf("withdraw must not be called when pre-trade checks fail, called %d times", svc.withdrawCallCount)
+	}
+}
+
+func TestRun_PreTradePaymentSetupFails_ShortCircuits(t *testing.T) {
+	svc := happyFake()
+	svc.preTradeReport = &cexaccount.Report{
+		OK: false,
+		Checks: []cexaccount.CheckResult{
+			{Name: "payment_setup", Passed: false, Message: "pre-trade check failed: no Revolut account in Trading Accounts"},
+		},
+	}
+
+	_, err := New(svc, nil).Run(context.Background(), validOrder())
+	if err == nil {
+		t.Fatal("expected error when payment setup check fails")
+	}
+	if !strings.Contains(err.Error(), "payment_setup") && !strings.Contains(err.Error(), "Revolut account") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if svc.spotCallCount != 0 {
+		t.Errorf("spot buy must not be called when payment setup fails, called %d times", svc.spotCallCount)
 	}
 }
 

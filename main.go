@@ -39,6 +39,21 @@ import (
 	lnd "dexMmController/internal/wallethub"
 )
 
+// paymentMethodSnapshot converts a payment_methods DB row into the pre-trade
+// checker's view of it.
+func paymentMethodSnapshot(row *db.PaymentMethod) *cexaccount.PaymentMethodSnapshot {
+	return &cexaccount.PaymentMethodSnapshot{
+		Name:            row.Name,
+		Category:        row.Category,
+		BankAccountID:   row.BankAccountID,
+		AccountID:       row.AccountID,
+		WalletAddressID: row.WalletAddressID,
+		IsActive:        row.IsActive,
+		IsLinked:        row.IsLinked,
+		Priority:        row.Priority,
+	}
+}
+
 func main() {
 	// ── Config ────────────────────────────────────────────────────────────────
 	databaseURL := envOr("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/dexarb?sslmode=disable")
@@ -224,6 +239,54 @@ func main() {
 			}
 			return merged, nil
 		}),
+		cexaccount.PaymentSetupFetcherFuncs{
+			MethodFn: func(ctx context.Context, name string) (*cexaccount.PaymentMethodSnapshot, error) {
+				row, err := repo.GetPaymentMethodByName(ctx, name)
+				if err != nil || row == nil {
+					return nil, err
+				}
+				return paymentMethodSnapshot(row), nil
+			},
+			PickFn: func(ctx context.Context, names []string) (*cexaccount.PaymentMethodSnapshot, error) {
+				row, err := repo.PickPaymentMethod(ctx, names)
+				if err != nil || row == nil {
+					return nil, err
+				}
+				return paymentMethodSnapshot(row), nil
+			},
+			FiatFn: func(ctx context.Context, id int64) (*cexaccount.FiatAccountSnapshot, error) {
+				acct, err := repo.GetAccountByID(ctx, id)
+				if err != nil || acct == nil {
+					return nil, err
+				}
+				return &cexaccount.FiatAccountSnapshot{
+					Provider: acct.Provider,
+					Email:    acct.Email,
+					Phone:    acct.Phone,
+				}, nil
+			},
+			BankFn: func(ctx context.Context, id int64) (*cexaccount.BankAccountSnapshot, error) {
+				row, err := repo.GetBankAccountByID(ctx, id)
+				if err != nil || row == nil {
+					return nil, err
+				}
+				return &cexaccount.BankAccountSnapshot{
+					Scheme:   row.Scheme,
+					Details:  cexaccount.ParseBankAccountDetails(row.Details),
+					IsActive: row.IsActive,
+				}, nil
+			},
+			WalletFn: func(ctx context.Context, id int64) (*cexaccount.WalletAddressSnapshot, error) {
+				addr, err := repo.GetWalletAddressByID(ctx, id)
+				if err != nil || addr == nil {
+					return nil, err
+				}
+				return &cexaccount.WalletAddressSnapshot{
+					Label:   addr.Label,
+					Address: addr.Address,
+				}, nil
+			},
+		},
 	)
 	cexAccountService.WithBidChecker(bidChecker)
 	dexRelayWorker := dexrelay.NewWorker(repo, cexAccountService, btc, dexTaker, dexPaymentResolver)

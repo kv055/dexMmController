@@ -33,6 +33,8 @@ type tradeflowRequest struct {
 	FiatAmount         float64         `json:"fiat_amount"`
 	TransactionID      uint            `json:"transaction_id,omitempty"`
 	SelectedOffer      json.RawMessage `json:"selected_offer,omitempty"`
+	PaymentMethod      string          `json:"payment_method"`
+	PaymentMethods     []string        `json:"payment_methods"`
 }
 
 func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +94,8 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		FiatAmount:         req.FiatAmount,
 		TransactionID:      req.TransactionID,
 		SelectedOffer:      req.SelectedOffer,
+		PaymentMethod:      strings.TrimSpace(req.PaymentMethod),
+		PaymentMethods:     req.PaymentMethods,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -108,6 +112,8 @@ type preTradeCheckRequest struct {
 	Provider           string  `json:"provider"`
 	FiatCurrency       string  `json:"fiat_currency"`
 	RequiredCapitalEUR float64 `json:"required_capital_eur"`
+	PaymentMethod      string  `json:"payment_method"`
+	PaymentMethods     []string `json:"payment_methods"`
 }
 
 // handleCexPreTradeCheck runs all bid-side pre-trade checks (read-only) and reports
@@ -139,7 +145,7 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	report, err := s.cexAccount.PreTradeCheck(r.Context(), provider, req.FiatCurrency, req.RequiredCapitalEUR)
+	report, err := s.cexAccount.PreTradeCheck(r.Context(), provider, req.FiatCurrency, req.RequiredCapitalEUR, strings.TrimSpace(req.PaymentMethod), req.PaymentMethods)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return

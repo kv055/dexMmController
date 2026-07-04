@@ -113,10 +113,10 @@ func TestMaxMarketBuyBTCDefault(t *testing.T) {
 func TestMarketBuyBTCRejectsInvalidAmounts(t *testing.T) {
 	t.Setenv("MAX_MARKET_BUY_BTC", "1.0")
 	svc := &Service{}
-	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 0, "EUR", 100); err == nil {
+	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 0, "EUR", 100, "Revolut", nil); err == nil {
 		t.Fatal("expected error for zero amount")
 	}
-	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 5, "EUR", 100); err == nil {
+	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 5, "EUR", 100, "Revolut", nil); err == nil {
 		t.Fatal("expected error for amount over cap")
 	}
 }
@@ -124,7 +124,7 @@ func TestMarketBuyBTCRejectsInvalidAmounts(t *testing.T) {
 func TestMarketBuyBTCRequiresCapitalRequirement(t *testing.T) {
 	t.Setenv("MAX_MARKET_BUY_BTC", "1.0")
 	svc := &Service{}
-	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 0.01, "EUR", 0); err == nil {
+	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 0.01, "EUR", 0, "Revolut", nil); err == nil {
 		t.Fatal("expected error when required_capital_eur is not provided")
 	}
 }

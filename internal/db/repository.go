@@ -23,6 +23,80 @@ type TransactionRepository struct {
 	db *gorm.DB
 }
 
+// GetPaymentMethodByName retrieves a payment_methods catalog row by its
+// canonical name. Returns (nil, nil) when the method is not in the catalog.
+func (r *TransactionRepository) GetPaymentMethodByName(ctx context.Context, name string) (*PaymentMethod, error) {
+	var pm PaymentMethod
+	if err := r.db.WithContext(ctx).
+		Where("name = ?", strings.TrimSpace(name)).
+		First(&pm).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load payment method %s: %w", name, err)
+	}
+	return &pm, nil
+}
+
+// PickPaymentMethod returns the linked+active payment method with the highest
+// priority among names (name ASC breaks ties). Returns (nil, nil) when none
+// of the names is eligible.
+func (r *TransactionRepository) PickPaymentMethod(ctx context.Context, names []string) (*PaymentMethod, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	var pm PaymentMethod
+	if err := r.db.WithContext(ctx).
+		Where("name IN ? AND is_active AND is_linked", names).
+		Order("priority DESC, name ASC").
+		First(&pm).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("pick payment method: %w", err)
+	}
+	return &pm, nil
+}
+
+// GetAccountByID retrieves an accounts row by primary key. Returns (nil, nil)
+// when it does not exist (e.g. deleted after a payment method linked it).
+func (r *TransactionRepository) GetAccountByID(ctx context.Context, id int64) (*Account, error) {
+	var account Account
+	if err := r.db.WithContext(ctx).First(&account, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load account %d: %w", id, err)
+	}
+	return &account, nil
+}
+
+// GetBankAccountByID retrieves a bank_accounts row by primary key. Returns
+// (nil, nil) when it does not exist.
+func (r *TransactionRepository) GetBankAccountByID(ctx context.Context, id int64) (*BankAccount, error) {
+	var account BankAccount
+	if err := r.db.WithContext(ctx).First(&account, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load bank account %d: %w", id, err)
+	}
+	return &account, nil
+}
+
+// GetWalletAddressByID retrieves a wallet_addresses row by primary key.
+// Returns (nil, nil) when it does not exist.
+func (r *TransactionRepository) GetWalletAddressByID(ctx context.Context, id int64) (*WalletAddress, error) {
+	var addr WalletAddress
+	if err := r.db.WithContext(ctx).First(&addr, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load wallet address %d: %w", id, err)
+	}
+	return &addr, nil
+}
+
 // GetAccountByProvider retrieves an account by provider.
 func (r *TransactionRepository) GetAccountByProvider(ctx context.Context, provider string) (*Account, error) {
 	var account Account

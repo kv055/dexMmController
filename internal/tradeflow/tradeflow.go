@@ -58,6 +58,11 @@ type Order struct {
 	TransactionID uint
 	// SelectedOffer is an optional JSON snapshot of the chosen offer from the UI.
 	SelectedOffer []byte
+	// PaymentMethod is the canonical offer payment method the operator will use to pay the maker.
+	PaymentMethod string
+	// PaymentMethods is the offer's full accepted-method list; when PaymentMethod
+	// is empty the highest-priority linked+active catalog entry is picked from it.
+	PaymentMethods []string
 }
 
 // Result bundles the outcomes of all steps in the CEX→wallet trade cycle.
@@ -80,8 +85,8 @@ type WithdrawalResult struct {
 
 // Service is the subset of cexaccount.Service used by TradeFlow.
 type Service interface {
-	PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64) (*cexaccount.Report, error)
-	MarketBuyBTC(ctx context.Context, rawProvider string, btcAmount float64, fiatCurrency string, requiredCapitalEUR float64) (*cexaccount.SpotOrderResult, error)
+	PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64, paymentMethod string, paymentMethods []string) (*cexaccount.Report, error)
+	MarketBuyBTC(ctx context.Context, rawProvider string, btcAmount float64, fiatCurrency string, requiredCapitalEUR float64, paymentMethod string, paymentMethods []string) (*cexaccount.SpotOrderResult, error)
 	OpenHedge(ctx context.Context, venue, side string, btcNotional, leverage float64) (*cexaccount.HedgeOpenResult, error)
 	LiveHedgePosition(ctx context.Context, venue string) (*cexaccount.HedgeSnapshot, error)
 	WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress, clientRequestID string) (*lnd.WithdrawFromExchangeResult, error)
@@ -150,7 +155,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	method := txroute.BidMethod(order.Dex)
 
 	// Step 1: pre-trade checks (read-only; result logged for observability).
-	report, err := tf.svc.PreTradeCheck(ctx, order.Provider, order.FiatCurrency, order.RequiredCapitalEUR)
+	report, err := tf.svc.PreTradeCheck(ctx, order.Provider, order.FiatCurrency, order.RequiredCapitalEUR, order.PaymentMethod, order.PaymentMethods)
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: pre-trade check error: %w", err)
 	}
@@ -183,7 +188,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	}
 
 	// Step 2: spot market buy.
-	spot, err := tf.svc.MarketBuyBTC(ctx, order.Provider, order.BTCAmount, order.FiatCurrency, order.RequiredCapitalEUR)
+	spot, err := tf.svc.MarketBuyBTC(ctx, order.Provider, order.BTCAmount, order.FiatCurrency, order.RequiredCapitalEUR, order.PaymentMethod, order.PaymentMethods)
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: spot buy failed: %w", err)
 	}

@@ -415,7 +415,7 @@ func offerBTCAmount(offer Offer) float64 {
 
 func errorsPayload(tx *db.Transaction, message string) error {
 	if tx == nil {
-		return fmt.Errorf(message)
+		return fmt.Errorf("%s", message)
 	}
 	return fmt.Errorf("tx %d: %s", tx.ID, message)
 }

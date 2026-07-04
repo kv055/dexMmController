@@ -449,14 +449,14 @@ func marketBuyPair(provider, fiatCurrency string) string {
 // PreTradeCheck runs all bid-side pre-trade checks to completion (without placing any
 // order) and returns the per-check report so the UI can show exactly which checks pass
 // or fail before the operator confirms the trade. It performs only read-only lookups.
-func (s *Service) PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64) (*Report, error) {
+func (s *Service) PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64, paymentMethod string, paymentMethods []string) (*Report, error) {
 	if s.bidChecker == nil {
 		return nil, fmt.Errorf("bid pre-trade checker not configured")
 	}
 	if requiredCapitalEUR <= 0 {
 		return nil, fmt.Errorf("required_capital_eur must be greater than zero")
 	}
-	report := s.bidChecker.Run(ctx, rawProvider, fiatCurrency, requiredCapitalEUR)
+	report := s.bidChecker.Run(ctx, rawProvider, fiatCurrency, requiredCapitalEUR, paymentMethod, paymentMethods)
 	return &report, nil
 }
 
@@ -468,7 +468,7 @@ func (s *Service) PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency s
 // by dexUnifiedApi's CapitalRequirement for the offer). Before placing the order, the
 // account's available fiat balance is checked against this figure so a trade is never
 // started if it can't also fund the hedge that follows.
-func (s *Service) MarketBuyBTC(ctx context.Context, rawProvider string, btcAmount float64, fiatCurrency string, requiredCapitalEUR float64) (*SpotOrderResult, error) {
+func (s *Service) MarketBuyBTC(ctx context.Context, rawProvider string, btcAmount float64, fiatCurrency string, requiredCapitalEUR float64, paymentMethod string, paymentMethods []string) (*SpotOrderResult, error) {
 	if btcAmount <= 0 {
 		return nil, fmt.Errorf("btc_amount must be greater than zero")
 	}
@@ -481,7 +481,7 @@ func (s *Service) MarketBuyBTC(ctx context.Context, rawProvider string, btcAmoun
 	if s.bidChecker == nil {
 		return nil, fmt.Errorf("bid pre-trade checker not configured")
 	}
-	if err := s.bidChecker.RunAll(ctx, rawProvider, fiatCurrency, requiredCapitalEUR); err != nil {
+	if err := s.bidChecker.RunAll(ctx, rawProvider, fiatCurrency, requiredCapitalEUR, paymentMethod, paymentMethods); err != nil {
 		return nil, err
 	}
 
