@@ -56,7 +56,7 @@ func paymentMethodSnapshot(row *db.PaymentMethod) *cexaccount.PaymentMethodSnaps
 
 func main() {
 	// ── Config ────────────────────────────────────────────────────────────────
-	databaseURL := envOr("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/dexarb?sslmode=disable")
+	databaseURL := resolveDatabaseURL()
 	openclawURL := envOr("OPENCLAW_URL", "")
 	hhAPIKey := envOr("HODLHODL_API_KEY", "")
 	hhBaseURL := envOr("HODLHODL_URL", "")
@@ -443,6 +443,31 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// resolveDatabaseURL picks the Postgres connection string.
+//
+// When POSTGRES_HOST is set, the URL is assembled from the individual
+// POSTGRES_HOST / POSTGRES_PORT / POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD
+// vars. This lets the deployment choose the network location (e.g. the docker
+// bridge DNS name "postgres") without re-stating credentials: compose sets
+// POSTGRES_HOST, the operator's .env supplies the rest.
+//
+// When POSTGRES_HOST is empty (e.g. a host-networked deployment relying on the
+// .env's pre-built URL), DATABASE_URL is used as-is, preserving prior behavior.
+func resolveDatabaseURL() string {
+	host := os.Getenv("POSTGRES_HOST")
+	if host == "" {
+		return envOr("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/dexarb?sslmode=disable")
+	}
+	return fmt.Sprintf(
+		"postgres://%s:%s@%s:%s/%s?sslmode=disable",
+		envOr("POSTGRES_USER", "postgres"),
+		envOr("POSTGRES_PASSWORD", "postgres"),
+		host,
+		envOr("POSTGRES_PORT", "5432"),
+		envOr("POSTGRES_DB", "dexarb"),
+	)
 }
 
 type robosatsTokenRepo interface {
