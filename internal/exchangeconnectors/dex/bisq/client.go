@@ -208,6 +208,59 @@ func (c *Client) GetPaymentAccounts(ctx context.Context) ([]PaymentAccount, erro
 	return out, nil
 }
 
+// SepaAccountParams carries the discrete fields needed to create a SEPA payment account on
+// the bisq daemon. Bisq derives the trade currency (EUR) and accepted SEPA countries itself.
+type SepaAccountParams struct {
+	// AccountName is the human-readable label for the payment account.
+	AccountName string
+	// HolderName is the bank account holder's full name.
+	HolderName string
+	// IBAN is the account IBAN.
+	IBAN string
+	// BIC is the bank BIC/SWIFT code.
+	BIC string
+	// CountryCode is the ISO 3166-1 alpha-2 country of the bank (e.g. "DE").
+	CountryCode string
+}
+
+// CreateSepaPaymentAccount registers a SEPA payment account in the bisq daemon's profile and
+// returns the created account. It relies on the dexArbTrading bisq source patch: the stock
+// CreatePaymentAccount(json) path cannot round-trip SEPA (its acceptedCountryCodes collection
+// is mishandled by the form parser), so the daemon builds the SepaAccount from these discrete
+// fields instead. Bisq rate-limits this to one call per minute.
+func (c *Client) CreateSepaPaymentAccount(ctx context.Context, params SepaAccountParams) (*PaymentAccount, error) {
+	req := newMessage("CreateSepaPaymentAccountRequest")
+	setString(req, "account_name", params.AccountName)
+	setString(req, "holder_name", params.HolderName)
+	setString(req, "iban", params.IBAN)
+	setString(req, "bic", params.BIC)
+	setString(req, "country_code", params.CountryCode)
+
+	resp := newMessage("CreateSepaPaymentAccountReply")
+	if err := c.invoke(ctx, "/io.bisq.protobuffer.PaymentAccounts/CreateSepaPaymentAccount", req, resp); err != nil {
+		return nil, err
+	}
+
+	paField := resp.Descriptor().Fields().ByName("payment_account")
+	if !resp.Has(paField) {
+		return nil, errors.New("bisq: create SEPA payment account returned no account")
+	}
+	account := paymentAccountFromMessage(resp.Get(paField).Message())
+	return &account, nil
+}
+
+// DeletePaymentAccount removes a saved payment account from the bisq daemon's profile by id.
+// It relies on the dexArbTrading bisq source patch (the stock gRPC API has no delete).
+func (c *Client) DeletePaymentAccount(ctx context.Context, id string) error {
+	if id == "" {
+		return errors.New("bisq: payment account ID is required")
+	}
+	req := newMessage("DeletePaymentAccountRequest")
+	setString(req, "payment_account_id", id)
+	resp := newMessage("DeletePaymentAccountReply")
+	return c.invoke(ctx, "/io.bisq.protobuffer.PaymentAccounts/DeletePaymentAccount", req, resp)
+}
+
 // TakeOffer accepts an existing DEX offer.
 func (c *Client) TakeOffer(ctx context.Context, offerID string, params TakeOfferParams) (*Trade, error) {
 	if offerID == "" {
@@ -678,6 +731,23 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 			message("GetPaymentAccountsReply", []*descriptorpb.FieldDescriptorProto{
 				repeatedMessageField("payment_accounts", 1, ".io.bisq.protobuffer.PaymentAccount"),
 			}),
+			// CreateSepaPaymentAccount / DeletePaymentAccount are provided by the dexArbTrading
+			// bisq source patch (bisq-patches/payment-accounts-sepa-delete.patch); the stock
+			// daemon exposes neither.
+			message("CreateSepaPaymentAccountRequest", []*descriptorpb.FieldDescriptorProto{
+				field("account_name", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("holder_name", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("iban", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("bic", 4, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("country_code", 5, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}),
+			message("CreateSepaPaymentAccountReply", []*descriptorpb.FieldDescriptorProto{
+				messageField("payment_account", 1, ".io.bisq.protobuffer.PaymentAccount"),
+			}),
+			message("DeletePaymentAccountRequest", []*descriptorpb.FieldDescriptorProto{
+				field("payment_account_id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}),
+			message("DeletePaymentAccountReply", nil),
 			message("TakeOfferRequest", []*descriptorpb.FieldDescriptorProto{
 				field("offer_id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				field("payment_account_id", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
@@ -753,6 +823,8 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 				Name: strptr("PaymentAccounts"),
 				Method: []*descriptorpb.MethodDescriptorProto{
 					method("GetPaymentAccounts", ".io.bisq.protobuffer.GetPaymentAccountsRequest", ".io.bisq.protobuffer.GetPaymentAccountsReply"),
+					method("CreateSepaPaymentAccount", ".io.bisq.protobuffer.CreateSepaPaymentAccountRequest", ".io.bisq.protobuffer.CreateSepaPaymentAccountReply"),
+					method("DeletePaymentAccount", ".io.bisq.protobuffer.DeletePaymentAccountRequest", ".io.bisq.protobuffer.DeletePaymentAccountReply"),
 				},
 			},
 			{

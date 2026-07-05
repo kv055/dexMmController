@@ -318,7 +318,8 @@ func main() {
 		WithTradeFlow(tradeFlow).
 		WithHedgeStream(hedgeStreamManager).
 		WithLNDHealth(lndHealthChecker).
-		WithDexRelease(dexReleaseWorker, dexReleaseToken)
+		WithDexRelease(dexReleaseWorker, dexReleaseToken).
+		WithBisqPayments(bq)
 
 	// lndInit creates (or restores) the LND wallet using the password stored in the
 	// database, persists the generated seed + primary address + channel backup, and

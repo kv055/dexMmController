@@ -41,6 +41,11 @@ type Server struct {
 	// Stage-6 release webhook (fiat-controller → release worker), set via WithDexRelease.
 	dexRelease      dexReleaseEnqueuer
 	dexReleaseToken string
+
+	// bisqPayments is the bisq1 gRPC client used to list/create/delete payment accounts in
+	// the bisq daemon's own profile, set via WithBisqPayments. Nil when the DEX stack is
+	// disabled, in which case the payment-account routes answer 503.
+	bisqPayments bisqPaymentClient
 }
 
 // LNDInitResult is returned by the on-demand wallet creation hook.
@@ -111,6 +116,13 @@ func (s *Server) WithLNDManagement(m LNDManagement) *Server {
 	return s
 }
 
+// WithBisqPayments attaches the bisq1 payment-account client used by the
+// /api/bisq/payment-accounts routes.
+func (s *Server) WithBisqPayments(client bisqPaymentClient) *Server {
+	s.bisqPayments = client
+	return s
+}
+
 // Run runs value.
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -135,6 +147,9 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/cex/tradeflow", s.handleCexTradeflow)
 	mux.HandleFunc("GET /api/cex/withdrawal-track", s.handleCexWithdrawalTrack)
 	mux.HandleFunc("POST /api/webhooks/dex-release", s.handleDexReleaseWebhook)
+	mux.HandleFunc("GET /api/bisq/payment-accounts", s.handleBisqPaymentAccounts)
+	mux.HandleFunc("POST /api/bisq/payment-accounts", s.handleBisqCreatePaymentAccount)
+	mux.HandleFunc("DELETE /api/bisq/payment-accounts/{id}", s.handleBisqDeletePaymentAccount)
 	mux.HandleFunc("GET /ws/cex/hedge-stream", s.handleCexHedgeStream)
 
 	server := &http.Server{
