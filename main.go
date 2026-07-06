@@ -173,19 +173,35 @@ func main() {
 	})
 	b2 := bisq2.NewClient(bisq2RESTHost, bisq2APIPassword, nil)
 
-	tgClient := telegram.NewClient(telegramCfg.Token, telegramCfg.ChatID, &http.Client{Timeout: 10 * time.Second})
+	// ── Telegram (shared bot: trade-chat relay + anomaly alerts, DEXMM webhook) ─
+	// Config is seeded from env (LoadConfig("DEXMM")) for backwards compatibility,
+	// then overridden by the shared telegram_settings DB row when present. The
+	// store is the hot-reloadable runtime holder; the poller below keeps it in
+	// sync with the DB row so the UI can change credentials without a restart.
+	telegramSettingsRepo := db.NewTelegramSettingsRepository(database)
+	seedCfg := telegramCfg
+	if row, err := telegramSettingsRepo.Get(ctx); err == nil && strings.TrimSpace(row.BotToken) != "" {
+		seedCfg = telegram.Config{
+			Token:      row.BotToken,
+			ChatID:     row.ChatID,
+			WebhookURL: row.DexmmWebhookURL,
+		}
+	} else if err != nil && err != db.ErrTelegramSettingsNotFound {
+		log.Printf("warning: load telegram settings: %v", err)
+	}
+	telegramStore := telegram.NewStore(seedCfg, &http.Client{Timeout: 10 * time.Second})
+	tgClient := telegramStore.Client()
 	chatRelay := telegram.NewChatRelay(tgClient, nil)
 	dexPaymentResolver := dexaccount.NewPaymentResolver(repo, bq, rs, b2, hh)
 	telegramSvc := dexnotify.NewService(chatRelay, dexPaymentResolver)
 	anomalyNotifier := dexnotify.NewAnomalyNotifier(tgClient)
-	if telegramCfg.WebhookURL != "" && tgClient != nil {
-		if err := tgClient.SetWebhook(ctx, telegramCfg.WebhookURL); err != nil {
+	if telegramStore.Enabled() && strings.TrimSpace(telegramStore.Get().WebhookURL) != "" {
+		if err := tgClient.SetWebhook(ctx, telegramStore.Get().WebhookURL); err != nil {
 			log.Printf("warning: telegram setWebhook: %v", err)
 		}
 	}
-	if tgClient != nil && tgClient.Enabled() {
-		go chatRelay.Run(ctx)
-	}
+	go chatRelay.Run(ctx)
+	go startTelegramSettingsPoller(ctx, telegramSettingsRepo, telegramStore, chatRelay, anomalyNotifier)
 
 	dexTaker := dexaccount.NewTaker(repo, bq, hh, rs)
 	// dexReleaser performs Stage-6 BTC release; dexReleaseWorker drains the webhook-fed
@@ -344,7 +360,8 @@ func main() {
 		WithLNDHealth(lndHealthChecker).
 		WithDexRelease(dexReleaseWorker, dexReleaseToken).
 		WithBisqPayments(bq).
-		WithTelegramRelay(chatRelay)
+		WithTelegramRelay(chatRelay).
+		WithTelegramSettings(telegramSettingsRepo, telegramStore, anomalyNotifier)
 
 	// lndInit creates (or restores) the LND wallet using the password stored in the
 	// database, persists the generated seed + primary address + channel backup, and
@@ -664,4 +681,57 @@ func hashFileSHA256(path string) (string, int64, error) {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), int64(len(data)), nil
+}
+
+// startTelegramSettingsPoller watches the shared telegram_settings row for
+// config_version changes and applies them at runtime: it rebuilds the store's
+// client, pushes the new client to the chat relay and anomaly notifier, and
+// re-registers the DEXMM webhook with Telegram when one is configured. This is
+// the hot-reload path that lets the UI update bot credentials without a restart.
+func startTelegramSettingsPoller(ctx context.Context, repo *db.TelegramSettingsRepository, store *telegram.Store, relay *telegram.ChatRelay, anomaly *dexnotify.AnomalyNotifier) {
+	ticker := time.NewTicker(telegram.PollInterval)
+	defer ticker.Stop()
+	var lastVersion int64
+	if v, err := repo.ConfigVersion(ctx); err == nil {
+		lastVersion = v
+	}
+	apply := func() {
+		row, err := repo.Get(ctx)
+		if err != nil {
+			if err != db.ErrTelegramSettingsNotFound {
+				log.Printf("telegram poller: load settings: %v", err)
+			}
+			return
+		}
+		if row.ConfigVersion == lastVersion {
+			return
+		}
+		lastVersion = row.ConfigVersion
+		store.Set(telegram.Config{
+			Token:      row.BotToken,
+			ChatID:     row.ChatID,
+			WebhookURL: row.DexmmWebhookURL,
+		})
+		client := store.Client()
+		if relay != nil {
+			relay.SetClient(client)
+		}
+		if anomaly != nil {
+			anomaly.SetClient(client)
+		}
+		if store.Enabled() && strings.TrimSpace(row.DexmmWebhookURL) != "" {
+			if err := client.SetWebhook(ctx, row.DexmmWebhookURL); err != nil {
+				log.Printf("telegram poller: setWebhook: %v", err)
+			}
+		}
+		log.Printf("telegram settings reloaded (version=%d)", row.ConfigVersion)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			apply()
+		}
+	}
 }

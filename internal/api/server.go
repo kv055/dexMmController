@@ -51,6 +51,14 @@ type Server struct {
 
 	// telegramRelay forwards operator Telegram replies into active DEX trade chats.
 	telegramRelay *telegram.ChatRelay
+
+	// telegramSettingsRepo persists the shared bot token + per-service webhook URLs.
+	// telegramStore is the runtime hot-reloadable config holder. telegramExtraSetters
+	// are additional consumers (e.g. the anomaly notifier) that should receive a
+	// rebuilt client whenever the operator saves new Telegram config via the UI.
+	telegramSettingsRepo telegramSettingsBackend
+	telegramStore        *telegram.Store
+	telegramExtraSetters []telegramClientSetter
 }
 
 // LNDInitResult is returned by the on-demand wallet creation hook.
@@ -153,6 +161,10 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/cex/withdrawal-track", s.handleCexWithdrawalTrack)
 	mux.HandleFunc("POST /api/webhooks/dex-release", s.handleDexReleaseWebhook)
 	mux.HandleFunc("POST /telegram-webhook", s.handleTelegramWebhook)
+	mux.HandleFunc("GET /api/telegram/config", s.handleTelegramSettingsConfig)
+	mux.HandleFunc("PUT /api/telegram/config", s.handleTelegramSettingsConfig)
+	mux.HandleFunc("POST /api/telegram/set-webhook", s.handleTelegramSetWebhook)
+	mux.HandleFunc("POST /api/telegram/test", s.handleTelegramTest)
 	mux.HandleFunc("GET /api/bisq/payment-accounts", s.handleBisqPaymentAccounts)
 	mux.HandleFunc("POST /api/bisq/payment-accounts", s.handleBisqCreatePaymentAccount)
 	mux.HandleFunc("DELETE /api/bisq/payment-accounts/{id}", s.handleBisqDeletePaymentAccount)
@@ -339,7 +351,7 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
