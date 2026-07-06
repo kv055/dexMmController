@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -32,6 +33,7 @@ type Watcher struct {
 	repo                *db.TransactionRepository
 	taker               *dexaccount.Taker
 	url                 string
+	secret              string
 	netProfitThreshold  float64
 	minQualifiedOffers  int
 	lastLoggedSignature string
@@ -70,17 +72,24 @@ type Offer struct {
 }
 
 // NewWatcher creates a watcher.
+//
+// streamSecret is the X-Internal-Secret value sent on the WS handshake when
+// the stream URL points at a secret-gated internal route (e.g. unified-api's
+// /internal/ws/live_offers). It is ignored for browser-facing /ws/live_offers
+// URLs (which use a session cookie instead) — pass "" there.
 func NewWatcher(
 	repo *db.TransactionRepository,
 	bisqClient *bisq.Client,
 	hodlhodlClient *hodlhodl.Client,
 	robosatsClient *robosats.Client,
 	streamURL string,
+	streamSecret string,
 ) *Watcher {
 	return &Watcher{
 		repo:               repo,
 		taker:              dexaccount.NewTaker(repo, bisqClient, hodlhodlClient, robosatsClient),
 		url:                streamURL,
+		secret:             streamSecret,
 		netProfitThreshold: defaultNetProfitThreshold,
 		minQualifiedOffers: defaultMinQualifiedOffers,
 	}
@@ -114,7 +123,11 @@ func (w *Watcher) Run(ctx context.Context) error {
 
 func (w *Watcher) runSession(ctx context.Context) error {
 	log.Printf("connecting to premium offer stream: %s", w.url)
-	conn, _, err := websocket.Dial(ctx, w.url, nil)
+	opts := &websocket.DialOptions{}
+	if w.secret != "" {
+		opts.HTTPHeader = http.Header{"X-Internal-Secret": {w.secret}}
+	}
+	conn, _, err := websocket.Dial(ctx, w.url, opts)
 	if err != nil {
 		return err
 	}

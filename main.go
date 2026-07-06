@@ -74,6 +74,11 @@ func main() {
 	robosatsAuthToken := envOr("ROBOSATS_AUTH_TOKEN", "")
 	torProxyURL := envOr("TOR_PROXY_URL", "")
 	offerPremiumWSSURL := envOr("OFFER_PREMIUM_WSS_URL", "")
+	// Internal secret for the secret-gated /internal/ws/live_offers route on
+	// unified-api. Empty when OFFER_PREMIUM_WSS_URL points at the browser
+	// session-cookie path or when running without INTERNAL_API_SECRET
+	// (unified-api then fails the dial closed unless ALLOW_INSECURE_INTERNAL).
+	offerPremiumWSSSecret := os.Getenv("INTERNAL_API_SECRET")
 	apiAddr := envOr("API_ADDR", ":5001")
 	lndHost := envOr("LND_HOST", "")
 	lndTLSCertPath := envOr("LND_TLS_CERT_PATH", "")
@@ -431,7 +436,7 @@ func main() {
 		return
 	}
 
-	watcher := premiumoffers.NewWatcher(repo, bq, hh, rs, offerPremiumWSSURL)
+	watcher := premiumoffers.NewWatcher(repo, bq, hh, rs, offerPremiumWSSURL, offerPremiumWSSSecret)
 	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("premium-offer watcher failed: %v", err)
 	}
