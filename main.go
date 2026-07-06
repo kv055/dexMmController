@@ -61,7 +61,7 @@ func paymentMethodSnapshot(row *db.PaymentMethod) *cexaccount.PaymentMethodSnaps
 
 func main() {
 	// ── Config ────────────────────────────────────────────────────────────────
-	databaseURL := envOr("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/dexarb?sslmode=disable")
+	databaseURL := resolveDatabaseURL()
 	openclawURL := envOr("OPENCLAW_URL", "")
 	hhAPIKey := envOr("HODLHODL_API_KEY", "")
 	hhBaseURL := envOr("HODLHODL_URL", "")
@@ -82,6 +82,11 @@ func main() {
 	telegramCfg := telegram.LoadConfig("DEXMM")
 	torProxyURL := envOr("TOR_PROXY_URL", "")
 	offerPremiumWSSURL := envOr("OFFER_PREMIUM_WSS_URL", "")
+	// Internal secret for the secret-gated /internal/ws/live_offers route on
+	// unified-api. Empty when OFFER_PREMIUM_WSS_URL points at the browser
+	// session-cookie path or when running without INTERNAL_API_SECRET
+	// (unified-api then fails the dial closed unless ALLOW_INSECURE_INTERNAL).
+	offerPremiumWSSSecret := os.Getenv("INTERNAL_API_SECRET")
 	apiAddr := envOr("API_ADDR", ":5001")
 	lndHost := envOr("LND_HOST", "")
 	lndTLSCertPath := envOr("LND_TLS_CERT_PATH", "")
@@ -451,7 +456,7 @@ func main() {
 		return
 	}
 
-	watcher := premiumoffers.NewWatcher(repo, bq, hh, rs, offerPremiumWSSURL)
+	watcher := premiumoffers.NewWatcher(repo, bq, hh, rs, offerPremiumWSSURL, offerPremiumWSSSecret)
 	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("premium-offer watcher failed: %v", err)
 	}
@@ -463,6 +468,31 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// resolveDatabaseURL picks the Postgres connection string.
+//
+// When POSTGRES_HOST is set, the URL is assembled from the individual
+// POSTGRES_HOST / POSTGRES_PORT / POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD
+// vars. This lets the deployment choose the network location (e.g. the docker
+// bridge DNS name "postgres") without re-stating credentials: compose sets
+// POSTGRES_HOST, the operator's .env supplies the rest.
+//
+// When POSTGRES_HOST is empty (e.g. a host-networked deployment relying on the
+// .env's pre-built URL), DATABASE_URL is used as-is, preserving prior behavior.
+func resolveDatabaseURL() string {
+	host := os.Getenv("POSTGRES_HOST")
+	if host == "" {
+		return envOr("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/dexarb?sslmode=disable")
+	}
+	return fmt.Sprintf(
+		"postgres://%s:%s@%s:%s/%s?sslmode=disable",
+		envOr("POSTGRES_USER", "postgres"),
+		envOr("POSTGRES_PASSWORD", "postgres"),
+		host,
+		envOr("POSTGRES_PORT", "5432"),
+		envOr("POSTGRES_DB", "dexarb"),
+	)
 }
 
 type robosatsTokenRepo interface {
