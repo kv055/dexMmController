@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
+	"dexMmController/internal/dexnotify"
 	"dexMmController/internal/dexrelay"
 	"dexMmController/internal/dexrelease"
 	"dexMmController/internal/exchangeconnectors/cex"
@@ -28,6 +30,7 @@ import (
 	"dexMmController/internal/exchangeconnectors/cex/coinbase"
 	"dexMmController/internal/exchangeconnectors/cex/kraken"
 	"dexMmController/internal/exchangeconnectors/dex/bisq"
+	"dexMmController/internal/exchangeconnectors/dex/bisq2"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
 	"dexMmController/internal/exchangeconnectors/dex/robosats"
 	"dexMmController/internal/healthcheck"
@@ -37,6 +40,8 @@ import (
 	"dexMmController/internal/premiumoffers"
 	"dexMmController/internal/tradeflow"
 	lnd "dexMmController/internal/wallethub"
+
+	"commons/telegram"
 )
 
 // paymentMethodSnapshot converts a payment_methods DB row into the pre-trade
@@ -72,6 +77,9 @@ func main() {
 	bisqAPIPassword := envOr("BISQ_API_PASSWORD", "")
 	robosatsURL := envOr("ROBOSATS_URL", "")
 	robosatsAuthToken := envOr("ROBOSATS_AUTH_TOKEN", "")
+	bisq2RESTHost := envOr("BISQ2_REST_HOST", "")
+	bisq2APIPassword := envOr("BISQ2_API_PASSWORD", "")
+	telegramCfg := telegram.LoadConfig("DEXMM")
 	torProxyURL := envOr("TOR_PROXY_URL", "")
 	offerPremiumWSSURL := envOr("OFFER_PREMIUM_WSS_URL", "")
 	apiAddr := envOr("API_ADDR", ":5001")
@@ -158,14 +166,23 @@ func main() {
 		AuthToken: dbRobosatsAuthToken,
 		ProxyURL:  torProxyURL,
 	})
+	b2 := bisq2.NewClient(bisq2RESTHost, bisq2APIPassword, nil)
 
-	// ── HealthChecker + dexrelay ──────────────────────────────────────────────
-	// HealthChecker is constructed after tradeFlow (below) so it can recover stuck
-	// tradeflow rows via the recoverer.
+	tgClient := telegram.NewClient(telegramCfg.Token, telegramCfg.ChatID, &http.Client{Timeout: 10 * time.Second})
+	chatRelay := telegram.NewChatRelay(tgClient, nil)
+	dexPaymentResolver := dexaccount.NewPaymentResolver(repo, bq, rs, b2, hh)
+	telegramSvc := dexnotify.NewService(chatRelay, dexPaymentResolver)
+	anomalyNotifier := dexnotify.NewAnomalyNotifier(tgClient)
+	if telegramCfg.WebhookURL != "" && tgClient != nil {
+		if err := tgClient.SetWebhook(ctx, telegramCfg.WebhookURL); err != nil {
+			log.Printf("warning: telegram setWebhook: %v", err)
+		}
+	}
+	if tgClient != nil && tgClient.Enabled() {
+		go chatRelay.Run(ctx)
+	}
+
 	dexTaker := dexaccount.NewTaker(repo, bq, hh, rs)
-	// dexPaymentResolver fetches the counterparty's fiat details (Bisq: the trade contract;
-	// Robosats: the PGP trade chat) and, on chat venues, shares our own.
-	dexPaymentResolver := dexaccount.NewPaymentResolver(repo, bq, rs)
 	// dexReleaser performs Stage-6 BTC release; dexReleaseWorker drains the webhook-fed
 	// queue and runs the (idempotent) releases in the background.
 	dexReleaser := dexaccount.NewReleaser(repo, bq, hh, rs, dexaccount.HodlHodlEscrowConfig{
@@ -311,7 +328,9 @@ func main() {
 		WithDirectDestinationResolver(dexaccount.NewDirectResolver(bq))
 	hc := healthcheck.NewHealthChecker(repo, claw, btc, hh, tradeFlow).
 		WithRecoveryGracePeriod(parseAccountHealthInterval(envOr("TRADEFLOW_RECOVERY_GRACE", "3m"))).
-		WithPaymentResolver(dexPaymentResolver)
+		WithPaymentResolver(dexPaymentResolver).
+		WithTelegramRelay(telegramSvc, anomalyNotifier).
+		WithBisq(bq)
 	apiServer := api.NewServer(apiAddr, repo).
 		WithAccountHealth(exchangeAccountHealth).
 		WithCexAccount(cexAccountService).
@@ -319,7 +338,8 @@ func main() {
 		WithHedgeStream(hedgeStreamManager).
 		WithLNDHealth(lndHealthChecker).
 		WithDexRelease(dexReleaseWorker, dexReleaseToken).
-		WithBisqPayments(bq)
+		WithBisqPayments(bq).
+		WithTelegramRelay(chatRelay)
 
 	// lndInit creates (or restores) the LND wallet using the password stored in the
 	// database, persists the generated seed + primary address + channel backup, and

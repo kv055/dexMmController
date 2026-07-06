@@ -16,6 +16,8 @@ import (
 	"dexMmController/internal/db"
 	"dexMmController/internal/hedgestream"
 	"dexMmController/internal/lndhealth"
+
+	"commons/telegram"
 )
 
 // Server represents a server.
@@ -46,6 +48,9 @@ type Server struct {
 	// the bisq daemon's own profile, set via WithBisqPayments. Nil when the DEX stack is
 	// disabled, in which case the payment-account routes answer 503.
 	bisqPayments bisqPaymentClient
+
+	// telegramRelay forwards operator Telegram replies into active DEX trade chats.
+	telegramRelay *telegram.ChatRelay
 }
 
 // LNDInitResult is returned by the on-demand wallet creation hook.
@@ -147,6 +152,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/cex/tradeflow", s.handleCexTradeflow)
 	mux.HandleFunc("GET /api/cex/withdrawal-track", s.handleCexWithdrawalTrack)
 	mux.HandleFunc("POST /api/webhooks/dex-release", s.handleDexReleaseWebhook)
+	mux.HandleFunc("POST /telegram-webhook", s.handleTelegramWebhook)
 	mux.HandleFunc("GET /api/bisq/payment-accounts", s.handleBisqPaymentAccounts)
 	mux.HandleFunc("POST /api/bisq/payment-accounts", s.handleBisqCreatePaymentAccount)
 	mux.HandleFunc("DELETE /api/bisq/payment-accounts/{id}", s.handleBisqDeletePaymentAccount)

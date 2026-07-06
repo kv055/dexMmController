@@ -11,8 +11,8 @@ func TestStyleFor(t *testing.T) {
 	cases := map[string]paymentStyle{
 		"bisq":     styleStructured,
 		"robosats": styleChat,
-		"hodlhodl": styleUnknown,
-		"bisq2":    styleUnknown,
+		"bisq2":    styleChat,
+		"hodlhodl": styleStructured,
 		"":         styleUnknown,
 	}
 	for exchange, want := range cases {
@@ -23,7 +23,7 @@ func TestStyleFor(t *testing.T) {
 }
 
 func TestIsStructuredVenue(t *testing.T) {
-	r := NewPaymentResolver(nil, nil, nil)
+	r := NewPaymentResolver(nil, nil, nil, nil, nil)
 	if !r.IsStructuredVenue("bisq") {
 		t.Error("bisq should be structured")
 	}
@@ -33,14 +33,14 @@ func TestIsStructuredVenue(t *testing.T) {
 }
 
 func TestFetchCounterpartyRouting(t *testing.T) {
-	r := NewPaymentResolver(nil, nil, nil)
+	r := NewPaymentResolver(nil, nil, nil, nil, nil)
 	// Chat venue must not use the one-shot structured fetch.
 	if _, err := r.FetchCounterparty(context.Background(), "robosats", map[string]any{"position_id": "p1"}); err == nil {
 		t.Fatal("expected robosats to be rejected from FetchCounterparty (chat flow)")
 	}
-	// Unsupported venue.
-	if _, err := r.FetchCounterparty(context.Background(), "hodlhodl", map[string]any{}); err == nil {
-		t.Fatal("expected unsupported-exchange error for hodlhodl")
+	// HodlHodl is structured (contract holds payment details); chat is relay-only.
+	if _, err := r.FetchCounterparty(context.Background(), "hodlhodl", map[string]any{"trade_id": "t1"}); err == nil {
+		t.Fatal("expected error when bisq client is not configured for hodlhodl structured fetch")
 	}
 	// Structured venue with no client configured.
 	if _, err := r.FetchCounterparty(context.Background(), "bisq", map[string]any{"trade_id": "t1"}); err == nil {

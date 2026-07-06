@@ -443,3 +443,42 @@ func (c *Client) ContractIsPaid(ctx context.Context, contractID string) (bool, e
 	}
 	return contract.Status == ContractPaid || contract.Status == ContractCompleted, nil
 }
+
+// ChatMessage is one HodlHodl contract chat message.
+type ChatMessage struct {
+	Text      string `json:"text"`
+	Author    string `json:"author"`
+	FromAdmin bool   `json:"from_admin"`
+	SentAt    string `json:"sent_at"`
+}
+
+type chatMessagesResponse struct {
+	Status       string        `json:"status"`
+	ChatMessages []ChatMessage `json:"chat_messages"`
+}
+
+// GetContractMessages lists chat messages for a contract (GET /api/v1/contracts/:id/chat_messages).
+func (c *Client) GetContractMessages(ctx context.Context, contractID string) ([]ChatMessage, error) {
+	if strings.TrimSpace(contractID) == "" {
+		return nil, fmt.Errorf("hodlhodl: contract ID is required")
+	}
+	var resp chatMessagesResponse
+	if err := c.get(ctx, "/api/v1/contracts/"+contractID+"/chat_messages", &resp); err != nil {
+		return nil, err
+	}
+	return resp.ChatMessages, nil
+}
+
+// SendContractMessage posts a chat message to a contract. HodlHodl documents GET only;
+// POST is attempted against the symmetric path and may require a future API revision.
+func (c *Client) SendContractMessage(ctx context.Context, contractID, text string) error {
+	if strings.TrimSpace(contractID) == "" {
+		return fmt.Errorf("hodlhodl: contract ID is required")
+	}
+	body := map[string]any{"text": strings.TrimSpace(text)}
+	var resp chatMessagesResponse
+	if err := c.post(ctx, "/api/v1/contracts/"+contractID+"/chat_messages", body, &resp); err != nil {
+		return err
+	}
+	return nil
+}

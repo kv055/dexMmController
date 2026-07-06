@@ -10,6 +10,8 @@ import (
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
+	"dexMmController/internal/dexnotify"
+	"dexMmController/internal/exchangeconnectors/dex/bisq"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
 	"dexMmController/internal/openclaw"
 )
@@ -34,7 +36,10 @@ type HealthChecker struct {
 	openclaw            *openclaw.Client
 	btc                 *bitcoin.NetworkDataFetcher
 	hodlhodl            *hodlhodl.Client
+	bisq                *bisq.Client
 	resolver            *dexaccount.PaymentResolver
+	telegram            *dexnotify.Service
+	anomaly             *dexnotify.AnomalyNotifier
 	recoverer           TradeflowRecoverer
 	recoveryGracePeriod time.Duration
 }
@@ -66,6 +71,19 @@ func (h *HealthChecker) WithRecoveryGracePeriod(d time.Duration) *HealthChecker 
 // rows simply no-op in the post-take checks.
 func (h *HealthChecker) WithPaymentResolver(r *dexaccount.PaymentResolver) *HealthChecker {
 	h.resolver = r
+	return h
+}
+
+// WithTelegramRelay wires the trade-chat relay and anomaly notifier.
+func (h *HealthChecker) WithTelegramRelay(svc *dexnotify.Service, anomaly *dexnotify.AnomalyNotifier) *HealthChecker {
+	h.telegram = svc
+	h.anomaly = anomaly
+	return h
+}
+
+// WithBisq wires the bisq1 client used for structured-venue anomaly checks.
+func (h *HealthChecker) WithBisq(bq *bisq.Client) *HealthChecker {
+	h.bisq = bq
 	return h
 }
 
@@ -235,12 +253,11 @@ func (h *HealthChecker) verifyDexPositionOpen(ctx context.Context, tx *db.Transa
 			tx.Status = db.StatusDexPositionTaken
 			return h.repo.UpdateTransaction(tx)
 		}
-	case db.DexRoboSats:
-		// Robosats details arrive over the trade chat, not the trade object: send the
-		// payment-details request once and keep capturing the counterparty's reply.
+	case db.DexRoboSats, db.DexBisq2:
+		// Chat venues: send the payment-details request once and capture the counterparty's reply.
 		return h.captureChatPayment(ctx, tx)
 	case db.DexBisq:
-		// TODO: implement Bisq contract polling for status advancement.
+		return h.checkBisqAnomaly(ctx, tx)
 	default:
 		return fmt.Errorf("verifyDexPositionOpen: unknown DEX %q", tx.Dex)
 	}
@@ -276,7 +293,47 @@ func (h *HealthChecker) captureChatPayment(ctx context.Context, tx *db.Transacti
 		return fmt.Errorf("captureChatPayment: %w", err)
 	}
 	tx.CounterpartyPaymentInfo = info
-	return h.repo.UpdateTransaction(tx)
+	if err := h.repo.UpdateTransaction(tx); err != nil {
+		return err
+	}
+	if h.telegram != nil {
+		if err := h.telegram.RegisterTradeChat(ctx, exchange, orderID); err != nil {
+			return fmt.Errorf("captureChatPayment: telegram relay: %w", err)
+		}
+	}
+	return nil
+}
+
+func (h *HealthChecker) notifyAnomaly(ctx context.Context, exchange, tradeID, reason, detail string) error {
+	if h.anomaly == nil {
+		return nil
+	}
+	return h.anomaly.NotifyAnomaly(ctx, exchange, tradeID, reason, detail)
+}
+
+func (h *HealthChecker) checkBisqAnomaly(ctx context.Context, tx *db.Transaction) error {
+	if h.bisq == nil || h.anomaly == nil {
+		return nil
+	}
+	tradeID, err := dexContractID(tx)
+	if err != nil || tradeID == "" {
+		return nil
+	}
+	trade, err := h.bisq.GetPosition(ctx, tradeID)
+	if err != nil {
+		return fmt.Errorf("checkBisqAnomaly: %w", err)
+	}
+	if trade == nil {
+		return nil
+	}
+	if trade.HasFailed || trade.ErrorMessage != "" {
+		detail := trade.ErrorMessage
+		if detail == "" {
+			detail = "trade state=" + trade.State
+		}
+		return h.notifyAnomaly(ctx, string(tx.Dex), tradeID, "bisq trade failure", detail)
+	}
+	return nil
 }
 
 // verifyDexPositionTaken confirms the trade is in progress on the DEX.
@@ -288,6 +345,13 @@ func (h *HealthChecker) verifyDexPositionTaken(ctx context.Context, tx *db.Trans
 		if err != nil {
 			return fmt.Errorf("verifyDexPositionTaken: %w", err)
 		}
+		contract, err := h.hodlhodl.GetContract(ctx, contractID)
+		if err != nil {
+			return fmt.Errorf("verifyDexPositionTaken: %w", err)
+		}
+		if contract.Status == hodlhodl.ContractDisputed || contract.Status == hodlhodl.ContractCanceled {
+			_ = h.notifyAnomaly(ctx, string(tx.Dex), contractID, "contract status "+string(contract.Status), "")
+		}
 		paid, err := h.hodlhodl.ContractIsPaid(ctx, contractID)
 		if err != nil {
 			return fmt.Errorf("verifyDexPositionTaken: %w", err)
@@ -296,8 +360,10 @@ func (h *HealthChecker) verifyDexPositionTaken(ctx context.Context, tx *db.Trans
 			tx.Status = db.StatusDexFiatHasArrived
 			return h.repo.UpdateTransaction(tx)
 		}
-	case db.DexBisq, db.DexRoboSats:
-		// TODO: implement Bisq / RoboSats contract status check
+	case db.DexBisq:
+		return h.checkBisqAnomaly(ctx, tx)
+	case db.DexRoboSats:
+		// TODO: implement RoboSats contract status check
 	default:
 		return fmt.Errorf("verifyDexPositionTaken: unknown DEX %q", tx.Dex)
 	}
