@@ -41,15 +41,21 @@ func styleFor(exchange string) paymentStyle {
 	}
 }
 
+// ChatTemplateStore loads the active chat request template for a payment method.
+type ChatTemplateStore interface {
+	GetChatTemplate(ctx context.Context, exchange, paymentMethodName string) (string, error)
+}
+
 // PaymentResolver fetches the counterparty's fiat/bank details for a taken offer. Structured
 // venues (Bisq, HodlHodl) read the trade contract in one shot; chat venues (Robosats, Bisq2)
 // run a short conversation: send one templated request and capture the counterparty's reply.
 type PaymentResolver struct {
-	repo     *db.TransactionRepository
-	bisq     *bisq.Client
-	bisq2    *bisq2.Client
-	hodlhodl *hodlhodl.Client
-	robosats *robosats.Client
+	repo      *db.TransactionRepository
+	templates ChatTemplateStore
+	bisq      *bisq.Client
+	bisq2     *bisq2.Client
+	hodlhodl  *hodlhodl.Client
+	robosats  *robosats.Client
 }
 
 // NewPaymentResolver creates a PaymentResolver backed by the configured DEX clients.
@@ -61,11 +67,12 @@ func NewPaymentResolver(
 	hodlHodlClient *hodlhodl.Client,
 ) *PaymentResolver {
 	return &PaymentResolver{
-		repo:     repo,
-		bisq:     bisqClient,
-		bisq2:    bisq2Client,
-		hodlhodl: hodlHodlClient,
-		robosats: robosatsClient,
+		repo:      repo,
+		templates: repo,
+		bisq:      bisqClient,
+		bisq2:     bisq2Client,
+		hodlhodl:  hodlHodlClient,
+		robosats:  robosatsClient,
 	}
 }
 
@@ -134,6 +141,9 @@ type ChatRequest struct {
 	OrderID          string
 	ExpectedAmount   string
 	ExpectedCurrency string
+	// PaymentMethod is the canonical catalog name selected for this trade. Used to
+	// pick the custom chat template from payment_method_chat_templates.
+	PaymentMethod string
 }
 
 const paymentRequestMarker = "match what you provide in this chat"
@@ -145,14 +155,28 @@ Please reply here with:
 • The account / handle / IBAN the payment will come from
 • The payment method
 
-I will release the Bitcoin only after I receive exactly %s and the sender name, handle and payment details match what you provide in this chat. If they don't match, I'll have to open a dispute. Thank you!`
+I will release the Bitcoin only after I receive exactly {{amount}} {{currency}} and the sender name, handle and payment details match what you provide in this chat. If they don't match, I'll have to open a dispute. Thank you!`
 
-func paymentRequestMessage(amount, currency string) string {
-	amt := strings.TrimSpace(strings.TrimSpace(amount) + " " + strings.TrimSpace(currency))
-	if amt == "" {
-		amt = "the agreed amount"
+// renderChatTemplate substitutes the supported placeholders in a custom or default
+// chat template. Supported placeholders: {{amount}}, {{currency}}.
+func renderChatTemplate(template, amount, currency string) string {
+	amount = strings.TrimSpace(amount)
+	currency = strings.TrimSpace(currency)
+	if amount == "" && currency == "" {
+		amount = "the agreed amount"
 	}
-	return fmt.Sprintf(paymentRequestTemplate, amt)
+	out := strings.ReplaceAll(template, "{{amount}}", amount)
+	out = strings.ReplaceAll(out, "{{currency}}", currency)
+	// Collapse whitespace runs left when one of the placeholders is empty.
+	out = strings.ReplaceAll(out, "  ", " ")
+	return out
+}
+
+func paymentRequestMessage(template, amount, currency string) string {
+	if strings.TrimSpace(template) == "" {
+		template = paymentRequestTemplate
+	}
+	return renderChatTemplate(template, amount, currency)
 }
 
 type chatPaymentEnvelope struct {
@@ -184,7 +208,14 @@ func (p *PaymentResolver) CaptureChatPayment(ctx context.Context, req ChatReques
 	if err != nil {
 		return nil, err
 	}
-	return captureFromChat(ctx, chat, req)
+	var template string
+	if p.templates != nil {
+		template, err = p.templates.GetChatTemplate(ctx, req.Exchange, req.PaymentMethod)
+		if err != nil {
+			return nil, fmt.Errorf("dexaccount: load chat template: %w", err)
+		}
+	}
+	return captureFromChat(ctx, chat, req, template)
 }
 
 // TradeChatFor resolves the venue chat transport (used by dexnotify relay registration).
@@ -192,13 +223,13 @@ func (p *PaymentResolver) TradeChatFor(ctx context.Context, exchange string) (Tr
 	return p.tradeChat(ctx, exchange)
 }
 
-func captureFromChat(ctx context.Context, chat TradeChat, req ChatRequest) (json.RawMessage, error) {
+func captureFromChat(ctx context.Context, chat TradeChat, req ChatRequest, template string) (json.RawMessage, error) {
 	msgs, err := chat.Messages(ctx, req.OrderID)
 	if err != nil {
 		return nil, err
 	}
 	if !requestAlreadySent(msgs) {
-		if err := chat.SendMessage(ctx, req.OrderID, paymentRequestMessage(req.ExpectedAmount, req.ExpectedCurrency)); err != nil {
+		if err := chat.SendMessage(ctx, req.OrderID, paymentRequestMessage(template, req.ExpectedAmount, req.ExpectedCurrency)); err != nil {
 			return nil, fmt.Errorf("dexaccount: send payment request: %w", err)
 		}
 		if refreshed, rerr := chat.Messages(ctx, req.OrderID); rerr == nil {

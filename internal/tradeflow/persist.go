@@ -67,13 +67,14 @@ func createTradeflowRow(store transactionStore, order Order, target string, meth
 	}
 
 	tx := &db.Transaction{
-		Direction:    "BUY",
-		FiatAmount:   order.FiatAmount,
-		FiatCurrency: fiatCurrency,
-		Cex:          db.CexExchangeFromProvider(order.Provider),
-		Dex:          db.DexPlatformFromSlug(dexSlug),
-		Status:       db.StatusCexTradeflowStarted,
-		DexOfferID:   offerID,
+		Direction:     "BUY",
+		FiatAmount:    order.FiatAmount,
+		FiatCurrency:  fiatCurrency,
+		PaymentMethod: strings.TrimSpace(order.PaymentMethod),
+		Cex:           db.CexExchangeFromProvider(order.Provider),
+		Dex:           db.DexPlatformFromSlug(dexSlug),
+		Status:        db.StatusCexTradeflowStarted,
+		DexOfferID:    offerID,
 	}
 	applyWithdrawTarget(tx, &meta, target, method)
 

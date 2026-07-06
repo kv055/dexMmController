@@ -49,7 +49,7 @@ func TestFetchCounterpartyRouting(t *testing.T) {
 }
 
 func TestPaymentRequestMessage(t *testing.T) {
-	msg := paymentRequestMessage("100.00", "EUR")
+	msg := paymentRequestMessage("", "100.00", "EUR")
 	if !strings.Contains(msg, "100.00 EUR") {
 		t.Errorf("expected amount+currency in message, got: %q", msg)
 	}
@@ -57,8 +57,21 @@ func TestPaymentRequestMessage(t *testing.T) {
 		t.Errorf("template must contain the idempotency marker %q", paymentRequestMarker)
 	}
 	// Empty amount falls back to a readable phrase, no leftover formatting artifacts.
-	if fb := paymentRequestMessage("", ""); !strings.Contains(fb, "the agreed amount") {
+	if fb := paymentRequestMessage("", "", ""); !strings.Contains(fb, "the agreed amount") {
 		t.Errorf("expected fallback phrase, got: %q", fb)
+	}
+}
+
+func TestPaymentRequestMessageCustomTemplate(t *testing.T) {
+	custom := "Please send {{amount}} {{currency}} via your preferred method."
+	msg := paymentRequestMessage(custom, "100.00", "EUR")
+	if msg != "Please send 100.00 EUR via your preferred method." {
+		t.Errorf("unexpected rendered message: %q", msg)
+	}
+	// Empty placeholders fall back to the agreed-amount phrase; whitespace runs are collapsed.
+	msg = paymentRequestMessage(custom, "", "")
+	if msg != "Please send the agreed amount via your preferred method." {
+		t.Errorf("unexpected fallback message: %q", msg)
 	}
 }
 
@@ -84,14 +97,14 @@ func TestCaptureFromChatSendsRequestOnce(t *testing.T) {
 	req := ChatRequest{Exchange: "robosats", OrderID: "o1", ExpectedAmount: "100.00", ExpectedCurrency: "EUR"}
 
 	chat := &fakeChat{}
-	if _, err := captureFromChat(ctx, chat, req); err != nil {
+	if _, err := captureFromChat(ctx, chat, req, ""); err != nil {
 		t.Fatalf("first capture: %v", err)
 	}
 	if len(chat.sent) != 1 {
 		t.Fatalf("expected exactly one request sent, got %d", len(chat.sent))
 	}
 	// A second pass must NOT resend (idempotent via the request marker already in-thread).
-	if _, err := captureFromChat(ctx, chat, req); err != nil {
+	if _, err := captureFromChat(ctx, chat, req, ""); err != nil {
 		t.Fatalf("second capture: %v", err)
 	}
 	if len(chat.sent) != 1 {
@@ -105,11 +118,11 @@ func TestCaptureFromChatInboundOnly(t *testing.T) {
 
 	// Thread already has our request (marker) + the counterparty's reply.
 	chat := &fakeChat{msgs: []TradeChatMessage{
-		{Sender: "us", Outbound: true, Text: paymentRequestMessage("100.00", "EUR")},
+		{Sender: "us", Outbound: true, Text: paymentRequestMessage("", "100.00", "EUR")},
 		{Sender: "Robo123", Time: "2026-06-29T10:00:00Z", Text: "IBAN DE89..., holder Max"},
 	}}
 
-	out, err := captureFromChat(ctx, chat, req)
+	out, err := captureFromChat(ctx, chat, req, "")
 	if err != nil {
 		t.Fatalf("capture: %v", err)
 	}
@@ -135,5 +148,36 @@ func TestCaptureFromChatInboundOnly(t *testing.T) {
 	}
 	if env.CounterpartyHandle != "Robo123" {
 		t.Fatalf("expected counterparty handle Robo123, got %q", env.CounterpartyHandle)
+	}
+}
+
+// fakeChatTemplateStore is an in-memory ChatTemplateStore for testing.
+type fakeChatTemplateStore map[string]string
+
+func (f fakeChatTemplateStore) GetChatTemplate(_ context.Context, exchange, paymentMethod string) (string, error) {
+	return f[exchange+"|"+paymentMethod], nil
+}
+
+func TestCaptureFromChatUsesCustomTemplate(t *testing.T) {
+	ctx := context.Background()
+	req := ChatRequest{
+		Exchange:         "robosats",
+		OrderID:          "o1",
+		ExpectedAmount:   "100.00",
+		ExpectedCurrency: "EUR",
+		PaymentMethod:    "Revolut",
+	}
+	custom := "Hi, please send {{amount}} {{currency}} via Revolut and reply with your handle."
+
+	chat := &fakeChat{}
+	if _, err := captureFromChat(ctx, chat, req, custom); err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if len(chat.sent) != 1 {
+		t.Fatalf("expected exactly one request sent, got %d", len(chat.sent))
+	}
+	want := "Hi, please send 100.00 EUR via Revolut and reply with your handle."
+	if chat.sent[0] != want {
+		t.Fatalf("unexpected sent message: %q, want %q", chat.sent[0], want)
 	}
 }

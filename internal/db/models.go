@@ -182,6 +182,10 @@ type Transaction struct {
 	FiatAmount float64 `json:"fiat_amount"`
 	// FiatCurrency is a fiat-denominated fiat currency value.
 	FiatCurrency string `json:"fiat_currency"`
+	// PaymentMethod is the canonical payment method selected for the DEX side of the
+	// trade (resolved by the bid-side pre-trade check). Used by chat-venue DEXes to
+	// pick the correct message template from payment_method_chat_templates.
+	PaymentMethod string `json:"payment_method"`
 	// Cex is the cex value for the transaction.
 	Cex CexExchange `gorm:"index" json:"cex"`
 	// CexHedgingPosition is the cex hedging position value for the transaction.

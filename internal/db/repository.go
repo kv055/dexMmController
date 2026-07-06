@@ -38,6 +38,30 @@ func (r *TransactionRepository) GetPaymentMethodByName(ctx context.Context, name
 	return &pm, nil
 }
 
+// GetChatTemplate returns the active chat request template for a given exchange
+// and canonical payment method name. Returns ("", nil) when no template is
+// configured so the caller can fall back to the default template.
+func (r *TransactionRepository) GetChatTemplate(ctx context.Context, exchange, paymentMethodName string) (string, error) {
+	exchange = strings.TrimSpace(exchange)
+	paymentMethodName = strings.TrimSpace(paymentMethodName)
+	if exchange == "" || paymentMethodName == "" {
+		return "", nil
+	}
+	var template string
+	if err := r.db.WithContext(ctx).Raw(`
+		SELECT t.template
+		FROM payment_method_chat_templates t
+		JOIN payment_methods pm ON pm.id = t.payment_method_id
+		WHERE t.exchange = ?
+		  AND pm.name = ?
+		  AND t.is_active
+		LIMIT 1
+	`, exchange, paymentMethodName).Scan(&template).Error; err != nil {
+		return "", fmt.Errorf("load chat template for %s/%s: %w", exchange, paymentMethodName, err)
+	}
+	return template, nil
+}
+
 // PickPaymentMethod returns the linked+active payment method with the highest
 // priority among names (name ASC breaks ties). Returns (nil, nil) when none
 // of the names is eligible.

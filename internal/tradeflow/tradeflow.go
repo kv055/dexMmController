@@ -162,6 +162,12 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	if ok, failed := preTradePassed(report, method); !ok {
 		return nil, fmt.Errorf("tradeflow: pre-trade checks failed: %s", strings.Join(failed, "; "))
 	}
+	// If the caller did not explicitly pick a payment method, the pre-trade check
+	// resolved the highest-priority linked+active catalog entry. Persist that name so
+	// chat-venue DEXes can pick the correct template later.
+	if strings.TrimSpace(order.PaymentMethod) == "" && strings.TrimSpace(report.ResolvedPaymentMethod) != "" {
+		order.PaymentMethod = report.ResolvedPaymentMethod
+	}
 
 	// target is the address the CEX withdrawal is sent to.
 	target, err := tf.resolveWithdrawTarget(ctx, order, method, report)
