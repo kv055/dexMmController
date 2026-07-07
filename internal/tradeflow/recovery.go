@@ -10,6 +10,7 @@ import (
 
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
+	"dexMmController/internal/obs"
 	"dexMmController/internal/txroute"
 )
 
@@ -70,7 +71,8 @@ func loadRecoveryContext(tx *db.Transaction) (*recoveryContext, error) {
 // fill was already recorded (so the buy definitely happened), it resumes from the
 // hedge step. If the spot outcome is unknown it cannot safely re-buy, so it parks the
 // row at CexTradeflowNeedsReview for a human. It never calls MarketBuyBTC.
-func (tf *TradeFlow) ResumeFromTradeflowStarted(ctx context.Context, tx *db.Transaction) error {
+func (tf *TradeFlow) ResumeFromTradeflowStarted(ctx context.Context, tx *db.Transaction) (err error) {
+	defer func() { obs.TradeflowRecoveries.WithLabelValues("tradeflow_started", obs.Result(err)).Inc() }()
 	if tf.store == nil {
 		return fmt.Errorf("tradeflow: recovery requires a transaction store")
 	}
@@ -109,7 +111,8 @@ func (tf *TradeFlow) ResumeFromTradeflowStarted(ctx context.Context, tx *db.Tran
 // that errored during Run may have actually opened (delayed fill / lost confirmation).
 // If the position is now present at the expected side and size, it records the hedge
 // and advances to CexTradeSuccessful. Otherwise it leaves the row for manual review.
-func (tf *TradeFlow) RecoverHedge(ctx context.Context, tx *db.Transaction) error {
+func (tf *TradeFlow) RecoverHedge(ctx context.Context, tx *db.Transaction) (err error) {
+	defer func() { obs.TradeflowRecoveries.WithLabelValues("hedge", obs.Result(err)).Inc() }()
 	if tf.store == nil {
 		return fmt.Errorf("tradeflow: recovery requires a transaction store")
 	}
@@ -150,7 +153,8 @@ func (tf *TradeFlow) RecoverHedge(ctx context.Context, tx *db.Transaction) error
 // can't double-withdraw on venues without an idempotency key; if a matching
 // withdrawal already exists it records that and advances, otherwise it issues the
 // withdrawal with the stable per-transaction key.
-func (tf *TradeFlow) ResumeWithdrawal(ctx context.Context, tx *db.Transaction) error {
+func (tf *TradeFlow) ResumeWithdrawal(ctx context.Context, tx *db.Transaction) (err error) {
+	defer func() { obs.TradeflowRecoveries.WithLabelValues("withdrawal", obs.Result(err)).Inc() }()
 	if tf.store == nil {
 		return fmt.Errorf("tradeflow: recovery requires a transaction store")
 	}

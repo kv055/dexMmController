@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"dexMmController/internal/exchangeconnectors/cex"
+	"dexMmController/internal/obs"
 
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
@@ -44,6 +45,7 @@ func (c *FuturesClient) StreamPositions(ctx context.Context) (<-chan cex.HedgePo
 				return
 			}
 			emitDisconnected(ctx, out, "kraken_futures", hedgeInstrument, err)
+			obs.WSReconnects.WithLabelValues("kraken_futures_positions").Inc()
 			log.Printf("kraken futures position stream disconnected: %v; reconnecting in %s", err, backoff)
 			select {
 			case <-ctx.Done():

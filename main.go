@@ -36,12 +36,16 @@ import (
 	"dexMmController/internal/healthcheck"
 	"dexMmController/internal/hedgestream"
 	"dexMmController/internal/lndhealth"
+	"dexMmController/internal/obs"
 	"dexMmController/internal/openclaw"
 	"dexMmController/internal/premiumoffers"
 	"dexMmController/internal/tradeflow"
 	lnd "dexMmController/internal/wallethub"
 
+	"commons/logging"
+	"commons/metrics"
 	"commons/telegram"
+	"commons/tracing"
 )
 
 // paymentMethodSnapshot converts a payment_methods DB row into the pre-trade
@@ -105,6 +109,20 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// ── Observability ─────────────────────────────────────────────────────────
+	// Structured JSON logs on stdout (Alloy → Loki). slog.SetDefault also routes
+	// the stdlib log package through the same handler, so existing log.Printf
+	// call sites come out as JSON too.
+	logging.Init("mmcontroller")
+	if shutdownTracing, err := tracing.Init(ctx, "mmcontroller"); err != nil {
+		log.Printf("warning: tracing init: %v", err)
+	} else {
+		defer func() { _ = shutdownTracing(context.Background()) }()
+	}
+	metricsReg := metrics.NewServiceRegistry("mmcontroller")
+	obs.Register(metricsReg.Registry)
+	telegram.RegisterMetrics(metricsReg.Registry)
+
 	// ── Database ──────────────────────────────────────────────────────────────
 	database, err := db.InitDB(databaseURL)
 	if err != nil {
@@ -113,6 +131,7 @@ func main() {
 	defer db.Close(database)
 
 	repo := db.NewTransactionRepository(database)
+	obs.RegisterTradeStats(metricsReg.Registry, repo)
 
 	lndAccount, err := repo.EnsureAccount(ctx, db.LNDAccountProvider)
 	if err != nil {
@@ -353,6 +372,7 @@ func main() {
 		WithTelegramRelay(telegramSvc, anomalyNotifier).
 		WithBisq(bq)
 	apiServer := api.NewServer(apiAddr, repo).
+		WithMetrics(metricsReg).
 		WithAccountHealth(exchangeAccountHealth).
 		WithCexAccount(cexAccountService).
 		WithTradeFlow(tradeFlow).
@@ -403,6 +423,7 @@ func main() {
 
 		apiServer.WithLNDWallet(lndClient)
 		lndHealthChecker.SetClient(lndClient)
+		obs.SetLNDStatsSource(lndStatsFetcher(lndClient))
 		bidChecker.SetWallet(cexaccount.WalletSourceFunc(func(ctx context.Context) ([]string, error) {
 			props, err := lndClient.ListWalletAddresses(ctx)
 			if err != nil {
@@ -476,6 +497,44 @@ func main() {
 	watcher := premiumoffers.NewWatcher(repo, bq, hh, rs, offerPremiumWSSURL, offerPremiumWSSSecret)
 	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("premium-offer watcher failed: %v", err)
+	}
+}
+
+// lndStatsFetcher adapts the live wallet client to the obs LND collector. Wired
+// here (not in obs) because obs must not import wallethub — wallethub pulls in
+// the CEX connectors, which already record into obs.
+func lndStatsFetcher(client *lnd.Client) obs.LNDStatsFunc {
+	parseSat := func(raw string) float64 {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return 0
+		}
+		return v
+	}
+	return func(ctx context.Context) obs.LNDStats {
+		var s obs.LNDStats
+		if err := client.HealthCheck(ctx); err != nil {
+			return s
+		}
+		s.Up = true
+		if channels, err := client.ListChannels(ctx); err == nil {
+			for _, c := range channels {
+				if c.Active {
+					s.ChannelsActive++
+				} else {
+					s.ChannelsInactive++
+				}
+			}
+		}
+		if bal, err := client.OnChainBalance(ctx); err == nil && bal != nil {
+			s.ConfirmedSat = parseSat(bal.ConfirmedBalance)
+			s.UnconfirmedSat = parseSat(bal.UnconfirmedBalance)
+		}
+		if bal, err := client.ChannelBalance(ctx); err == nil && bal != nil {
+			s.LocalSat = parseSat(bal.LocalBalance.Sat)
+			s.RemoteSat = parseSat(bal.RemoteBalance.Sat)
+		}
+		return s
 	}
 }
 

@@ -466,6 +466,25 @@ func (r *TransactionRepository) GetPnlStats() (map[string]interface{}, error) {
 	}, nil
 }
 
+// CountTransactionsByStatus returns the number of transactions per lifecycle status.
+func (r *TransactionRepository) CountTransactionsByStatus() (map[string]int64, error) {
+	var rows []struct {
+		Status string
+		Count  int64
+	}
+	if err := r.db.Model(&Transaction{}).
+		Select("status, COUNT(*) as count").
+		Group("status").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to count transactions by status: %w", err)
+	}
+	out := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		out[row.Status] = row.Count
+	}
+	return out, nil
+}
+
 // GetWalletAddressByLabel retrieves a wallet address by label.
 func (r *TransactionRepository) GetWalletAddressByLabel(label string) (*WalletAddress, error) {
 	var wallet WalletAddress

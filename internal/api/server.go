@@ -17,6 +17,7 @@ import (
 	"dexMmController/internal/hedgestream"
 	"dexMmController/internal/lndhealth"
 
+	"commons/metrics"
 	"commons/telegram"
 )
 
@@ -59,6 +60,10 @@ type Server struct {
 	telegramSettingsRepo telegramSettingsBackend
 	telegramStore        *telegram.Store
 	telegramExtraSetters []telegramClientSetter
+
+	// metrics is the commons service registry; when set, Run serves /metrics and
+	// wraps the mux with the RED request middleware.
+	metrics *metrics.ServiceRegistry
 }
 
 // LNDInitResult is returned by the on-demand wallet creation hook.
@@ -129,6 +134,13 @@ func (s *Server) WithLNDManagement(m LNDManagement) *Server {
 	return s
 }
 
+// WithMetrics attaches the Prometheus service registry: Run then serves
+// GET /metrics and counts/times every request through the shared middleware.
+func (s *Server) WithMetrics(reg *metrics.ServiceRegistry) *Server {
+	s.metrics = reg
+	return s
+}
+
 // WithBisqPayments attaches the bisq1 payment-account client used by the
 // /api/bisq/payment-accounts routes.
 func (s *Server) WithBisqPayments(client bisqPaymentClient) *Server {
@@ -170,9 +182,15 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("DELETE /api/bisq/payment-accounts/{id}", s.handleBisqDeletePaymentAccount)
 	mux.HandleFunc("GET /ws/cex/hedge-stream", s.handleCexHedgeStream)
 
+	var handler http.Handler = mux
+	if s.metrics != nil {
+		mux.Handle("GET /metrics", s.metrics.Handler())
+		handler = s.metrics.Middleware(handler)
+	}
+
 	server := &http.Server{
 		Addr:              s.addr,
-		Handler:           corsMiddleware(mux),
+		Handler:           corsMiddleware(handler),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

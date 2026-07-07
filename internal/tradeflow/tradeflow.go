@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"dexMmController/internal/cexaccount"
+	"dexMmController/internal/obs"
 	"dexMmController/internal/txroute"
 	lnd "dexMmController/internal/wallethub"
 )
@@ -129,11 +130,17 @@ func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 		return nil, err
 	}
 
-	switch strings.ToLower(strings.TrimSpace(order.MarketSide)) {
-	case "bid":
-		return tf.runBid(ctx, order)
-	case "ask":
-		return tf.runAsk(ctx, order)
+	switch side := strings.ToLower(strings.TrimSpace(order.MarketSide)); side {
+	case "bid", "ask":
+		var res *Result
+		var err error
+		if side == "bid" {
+			res, err = tf.runBid(ctx, order)
+		} else {
+			res, err = tf.runAsk(ctx, order)
+		}
+		obs.TradeflowRuns.WithLabelValues(side, obs.Result(err)).Inc()
+		return res, err
 	default:
 		return nil, fmt.Errorf("tradeflow: unsupported market side %q", order.MarketSide)
 	}
@@ -194,7 +201,10 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	}
 
 	// Step 2: spot market buy.
+	spotStart := time.Now()
 	spot, err := tf.svc.MarketBuyBTC(ctx, order.Provider, order.BTCAmount, order.FiatCurrency, order.RequiredCapitalEUR, order.PaymentMethod, order.PaymentMethods)
+	obs.OrderDuration.WithLabelValues(order.Provider, "spot").Observe(time.Since(spotStart).Seconds())
+	obs.OrdersPlaced.WithLabelValues(order.Provider, "spot", obs.Result(err)).Inc()
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: spot buy failed: %w", err)
 	}
@@ -217,6 +227,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	// hard failure means we hold unhedged BTC — recorded as HedgeFailedNeedsReview.
 	hedge, err := tf.openHedgeWithRetry(ctx, order)
 	if err != nil {
+		obs.HedgeFailures.WithLabelValues(order.HedgeVenue).Inc()
 		if persist {
 			if perr := markHedgeFailed(tf.store, txID, spot); perr != nil {
 				slog.Error("tradeflow: failed to persist HedgeFailedNeedsReview", "transaction_id", txID, "err", perr)
@@ -249,7 +260,10 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	if txID > 0 {
 		clientReqID = fmt.Sprintf("tradeflow-%d", txID)
 	}
+	wdStart := time.Now()
 	wd, err := tf.svc.WithdrawSpotToLND(ctx, order.Provider, filledBTC, target, clientReqID)
+	obs.OrderDuration.WithLabelValues(order.Provider, "withdrawal").Observe(time.Since(wdStart).Seconds())
+	obs.OrdersPlaced.WithLabelValues(order.Provider, "withdrawal", obs.Result(err)).Inc()
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: withdrawal failed (spot order_id=%s, hedge open): %w", spot.OrderID, err)
 	}
@@ -338,7 +352,10 @@ func (tf *TradeFlow) openHedgeWithRetry(ctx context.Context, order Order) (*cexa
 
 	var lastErr error
 	for attempt := 1; attempt <= hedgeMaxAttempts; attempt++ {
+		attemptStart := time.Now()
 		hedge, err := tf.svc.OpenHedge(ctx, order.HedgeVenue, order.HedgeSide, order.HedgeNotionalBTC, order.Leverage)
+		obs.OrderDuration.WithLabelValues(order.HedgeVenue, "hedge").Observe(time.Since(attemptStart).Seconds())
+		obs.OrdersPlaced.WithLabelValues(order.HedgeVenue, "hedge", obs.Result(err)).Inc()
 		if err == nil {
 			return hedge, nil
 		}
