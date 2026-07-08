@@ -13,6 +13,8 @@ type PaymentMethod struct {
 	Name string `json:"name"`
 	// MergeRegex merges raw offer labels into this method (nullable).
 	MergeRegex *string `json:"merge_regex"`
+	// AliasList holds operator-managed exact text aliases for canonicalization.
+	AliasList []string `gorm:"type:text[]" json:"alias_list"`
 	// Category is the display category (Cash, Bank Transfer, Fiat Transmitter, Gift Cards, Crypto, Others).
 	Category string `json:"category"`
 	// BankAccountID links a Bank Transfer method to bank_accounts(id).
