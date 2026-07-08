@@ -50,6 +50,10 @@ func (f *fakePaymentSetup) WalletAddressByID(_ context.Context, id int64) (*Wall
 
 func ptr(v int64) *int64 { return &v }
 
+type fakeCommunicationGateway bool
+
+func (f fakeCommunicationGateway) Enabled() bool { return bool(f) }
+
 // okPaymentSetup returns a catalog where Revolut and SEPA are linked+active
 // and valid.
 func okPaymentSetup() *fakePaymentSetup {
@@ -81,6 +85,7 @@ func newTestChecker(
 		PermissionCheckerFunc(func(context.Context, string) (map[string]string, error) { return perms() }),
 		paymentSetup,
 	)
+	c.SetCommunicationGateway(fakeCommunicationGateway(true))
 	if walletAddrs != nil {
 		c.SetWallet(WalletSourceFunc(func(context.Context) ([]string, error) { return walletAddrs() }))
 	}
@@ -115,8 +120,8 @@ func TestRunAllChecksPass(t *testing.T) {
 	if !report.OK {
 		t.Fatalf("expected OK, got %+v", report)
 	}
-	if len(report.Checks) != 4 {
-		t.Fatalf("expected 4 checks, got %d", len(report.Checks))
+	if len(report.Checks) != 5 {
+		t.Fatalf("expected 5 checks, got %d", len(report.Checks))
 	}
 	for _, chk := range report.Checks {
 		if !chk.Passed {
@@ -145,8 +150,8 @@ func TestRunRunsToCompletion(t *testing.T) {
 	if report.OK {
 		t.Fatal("expected report.OK=false")
 	}
-	if len(report.Checks) != 4 {
-		t.Fatalf("expected all 4 checks reported, got %d", len(report.Checks))
+	if len(report.Checks) != 5 {
+		t.Fatalf("expected all 5 checks reported, got %d", len(report.Checks))
 	}
 	byName := map[string]CheckResult{}
 	for _, chk := range report.Checks {
@@ -166,6 +171,9 @@ func TestRunRunsToCompletion(t *testing.T) {
 	}
 	if chk := byName["payment_setup"]; !chk.Passed {
 		t.Errorf("payment_setup should pass with configured account, got %+v", chk)
+	}
+	if chk := byName["communication_gateway"]; !chk.Passed {
+		t.Errorf("communication_gateway should pass with configured channel, got %+v", chk)
 	}
 }
 
@@ -188,11 +196,53 @@ func TestRunPartialFailureReportsBoth(t *testing.T) {
 	if !passed["permissions"] || !passed["capital"] || !passed["payment_setup"] {
 		t.Errorf("expected permissions+capital+payment_setup to pass, got %+v", passed)
 	}
+	if !passed["communication_gateway"] {
+		t.Errorf("expected communication_gateway to pass, got %+v", passed)
+	}
 	if passed["whitelist"] {
 		t.Error("expected whitelist to fail")
 	}
 	if report.LNDWithdrawAddress != "" {
 		t.Errorf("LNDWithdrawAddress should be empty when whitelist fails, got %q", report.LNDWithdrawAddress)
+	}
+}
+
+func TestCommunicationGatewayMissingFails(t *testing.T) {
+	c := newTestChecker(
+		func() (float64, error) { return 1000, nil },
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPerms,
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPaymentSetup(),
+	)
+	c.SetCommunicationGateway(nil)
+	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil)
+	if report.OK {
+		t.Fatal("expected OK=false when communication gateway is missing")
+	}
+	for _, chk := range report.Checks {
+		if chk.Name == "communication_gateway" {
+			if chk.Passed || !strings.Contains(chk.Message, "no active Telegram communication channel") {
+				t.Fatalf("communication_gateway check = %+v", chk)
+			}
+			return
+		}
+	}
+	t.Fatal("communication_gateway check missing")
+}
+
+func TestCommunicationGatewayDisabledFailsRunAll(t *testing.T) {
+	c := newTestChecker(
+		func() (float64, error) { return 1000, nil },
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPerms,
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPaymentSetup(),
+	)
+	c.SetCommunicationGateway(fakeCommunicationGateway(false))
+	err := c.RunAll(context.Background(), "kraken", "EUR", 500, "Revolut", nil)
+	if err == nil || !strings.Contains(err.Error(), "no active Telegram communication channel") {
+		t.Fatalf("RunAll error = %v", err)
 	}
 }
 

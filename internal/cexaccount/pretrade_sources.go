@@ -5,7 +5,6 @@ import (
 	"fmt"
 )
 
-
 // BalanceFetcher returns the available fiat balance for a CEX provider and currency.
 type BalanceFetcher interface {
 	FiatAvailable(ctx context.Context, provider, currency string) (float64, error)
@@ -19,6 +18,12 @@ type WhitelistFetcher interface {
 // WalletSource returns the current on-chain addresses of the local wallet.
 type WalletSource interface {
 	OnChainAddresses(ctx context.Context) ([]string, error)
+}
+
+// CommunicationGateway reports whether the operator can be reached before an
+// automated trade starts.
+type CommunicationGateway interface {
+	Enabled() bool
 }
 
 // BalanceFetcherFunc implements BalanceFetcher as a plain function.

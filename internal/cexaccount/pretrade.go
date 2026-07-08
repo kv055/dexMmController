@@ -12,12 +12,13 @@ import (
 
 // BidChecker runs all pre-trade checks for the bid side (buying BTC on a CEX).
 type BidChecker struct {
-	balance      BalanceFetcher
-	whitelist    WhitelistFetcher
-	permissions  PermissionChecker
-	paymentSetup PaymentSetupFetcher
-	walletMu     sync.RWMutex
-	wallet       WalletSource
+	balance       BalanceFetcher
+	whitelist     WhitelistFetcher
+	permissions   PermissionChecker
+	paymentSetup  PaymentSetupFetcher
+	communication CommunicationGateway
+	walletMu      sync.RWMutex
+	wallet        WalletSource
 }
 
 // NewBidChecker creates a BidChecker. The wallet source is set lazily via SetWallet
@@ -36,6 +37,12 @@ func (c *BidChecker) SetWallet(ws WalletSource) {
 	c.walletMu.Lock()
 	c.wallet = ws
 	c.walletMu.Unlock()
+}
+
+// SetCommunicationGateway injects the operator communication channel state.
+// Safe to call with hot-reloadable stores such as telegram.Store.
+func (c *BidChecker) SetCommunicationGateway(gateway CommunicationGateway) {
+	c.communication = gateway
 }
 
 // CheckResult is the outcome of a single named pre-trade check.
@@ -71,6 +78,7 @@ func (c *BidChecker) Run(ctx context.Context, provider, currency string, require
 	}{
 		{"permissions", "API key permissions", func() error { return c.checkPermissions(ctx, provider) }},
 		{"capital", "Sufficient capital", func() error { return c.checkCapital(ctx, provider, currency, requiredCapital) }},
+		{"communication_gateway", "Communication gateway", func() error { return c.checkCommunicationGateway(ctx) }},
 	}
 
 	report := Report{OK: true, Checks: make([]CheckResult, 0, len(checks)+2)}
@@ -167,6 +175,13 @@ func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string
 			"insufficient %s balance on %s: available %.2f, capital requirement %.2f (spot buy + hedge collateral + security deposit)",
 			fiat, provider, available, required,
 		)
+	}
+	return nil
+}
+
+func (c *BidChecker) checkCommunicationGateway(ctx context.Context) error {
+	if c.communication == nil || !c.communication.Enabled() {
+		return fmt.Errorf("pre-trade check failed: no active Telegram communication channel is configured; configure the Telegram bot token and chat ID before trading")
 	}
 	return nil
 }

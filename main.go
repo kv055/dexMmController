@@ -345,6 +345,7 @@ func main() {
 			},
 		},
 	)
+	bidChecker.SetCommunicationGateway(telegramStore)
 	cexAccountService.WithBidChecker(bidChecker)
 	dexRelayWorker := dexrelay.NewWorker(repo, cexAccountService, btc, dexTaker, dexPaymentResolver)
 	lndHealthChecker := lndhealth.NewChecker(repo, nil, lndhealth.Config{
