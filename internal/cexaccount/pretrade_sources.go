@@ -106,6 +106,13 @@ type PaymentSetupFetcher interface {
 	WalletAddressByID(ctx context.Context, id int64) (*WalletAddressSnapshot, error)
 }
 
+// ChatTemplateFetcher loads the configured chat-request template for a payment
+// method on a chat-style DEX venue (RoboSats, Bisq2). Satisfied directly by
+// db.TransactionRepository.
+type ChatTemplateFetcher interface {
+	GetChatTemplate(ctx context.Context, exchange, paymentMethodName string) (string, error)
+}
+
 // PaymentSetupFetcherFuncs implements PaymentSetupFetcher as plain functions.
 type PaymentSetupFetcherFuncs struct {
 	MethodFn func(ctx context.Context, name string) (*PaymentMethodSnapshot, error)

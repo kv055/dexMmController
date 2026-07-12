@@ -109,11 +109,12 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 
 // preTradeCheckRequest is the JSON body for POST /api/cex/pre-trade-check.
 type preTradeCheckRequest struct {
-	Provider           string  `json:"provider"`
-	FiatCurrency       string  `json:"fiat_currency"`
-	RequiredCapitalEUR float64 `json:"required_capital_eur"`
-	PaymentMethod      string  `json:"payment_method"`
+	Provider           string   `json:"provider"`
+	FiatCurrency       string   `json:"fiat_currency"`
+	RequiredCapitalEUR float64  `json:"required_capital_eur"`
+	PaymentMethod      string   `json:"payment_method"`
 	PaymentMethods     []string `json:"payment_methods"`
+	Dex                string   `json:"dex"`
 }
 
 // handleCexPreTradeCheck runs all bid-side pre-trade checks (read-only) and reports
@@ -145,7 +146,7 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	report, err := s.cexAccount.PreTradeCheck(r.Context(), provider, req.FiatCurrency, req.RequiredCapitalEUR, strings.TrimSpace(req.PaymentMethod), req.PaymentMethods)
+	report, err := s.cexAccount.PreTradeCheck(r.Context(), provider, req.FiatCurrency, req.RequiredCapitalEUR, strings.TrimSpace(req.PaymentMethod), req.PaymentMethods, strings.TrimSpace(req.Dex))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return

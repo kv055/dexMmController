@@ -344,6 +344,7 @@ func main() {
 				}, nil
 			},
 		},
+		repo,
 	)
 	bidChecker.SetCommunicationGateway(telegramStore)
 	cexAccountService.WithBidChecker(bidChecker)

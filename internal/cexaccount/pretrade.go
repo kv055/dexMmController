@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"commons/paymentmethods"
+	"dexMmController/internal/db"
 )
 
 // BidChecker runs all pre-trade checks for the bid side (buying BTC on a CEX).
@@ -16,6 +17,7 @@ type BidChecker struct {
 	whitelist     WhitelistFetcher
 	permissions   PermissionChecker
 	paymentSetup  PaymentSetupFetcher
+	chatTemplates ChatTemplateFetcher
 	communication CommunicationGateway
 	walletMu      sync.RWMutex
 	wallet        WalletSource
@@ -23,12 +25,13 @@ type BidChecker struct {
 
 // NewBidChecker creates a BidChecker. The wallet source is set lazily via SetWallet
 // because the LND client initialises asynchronously after startup.
-func NewBidChecker(balance BalanceFetcher, whitelist WhitelistFetcher, permissions PermissionChecker, paymentSetup PaymentSetupFetcher) *BidChecker {
+func NewBidChecker(balance BalanceFetcher, whitelist WhitelistFetcher, permissions PermissionChecker, paymentSetup PaymentSetupFetcher, chatTemplates ChatTemplateFetcher) *BidChecker {
 	return &BidChecker{
-		balance:      balance,
-		whitelist:    whitelist,
-		permissions:  permissions,
-		paymentSetup: paymentSetup,
+		balance:       balance,
+		whitelist:     whitelist,
+		permissions:   permissions,
+		paymentSetup:  paymentSetup,
+		chatTemplates: chatTemplates,
 	}
 }
 
@@ -70,8 +73,10 @@ type Report struct {
 //
 // paymentMethod names the single method to validate; when it is empty and
 // paymentMethods (the offer's accepted list) is non-empty, the linked+active
-// catalog row with the highest priority is picked.
-func (c *BidChecker) Run(ctx context.Context, provider, currency string, requiredCapital float64, paymentMethod string, paymentMethods []string) Report {
+// catalog row with the highest priority is picked. dex is the DEX venue slug
+// (e.g. "bisq2", "robosats") the offer belongs to — used only to scope the
+// message-template check to chat-style venues.
+func (c *BidChecker) Run(ctx context.Context, provider, currency string, requiredCapital float64, paymentMethod string, paymentMethods []string, dex string) Report {
 	checks := []struct {
 		name, label string
 		run         func() error
@@ -116,13 +121,21 @@ func (c *BidChecker) Run(ctx context.Context, provider, currency string, require
 	}
 	report.Checks = append(report.Checks, paymentRes)
 
+	templateRes := CheckResult{Name: "message_template", Label: "Payment message template", Passed: true}
+	if err := c.checkMessageTemplate(ctx, dex, resolved); err != nil {
+		templateRes.Passed = false
+		templateRes.Message = err.Error()
+		report.OK = false
+	}
+	report.Checks = append(report.Checks, templateRes)
+
 	return report
 }
 
 // RunAll runs every check and returns an aggregated error listing all failures,
 // or nil when all checks pass.
-func (c *BidChecker) RunAll(ctx context.Context, provider, currency string, requiredCapital float64, paymentMethod string, paymentMethods []string) error {
-	report := c.Run(ctx, provider, currency, requiredCapital, paymentMethod, paymentMethods)
+func (c *BidChecker) RunAll(ctx context.Context, provider, currency string, requiredCapital float64, paymentMethod string, paymentMethods []string, dex string) error {
+	report := c.Run(ctx, provider, currency, requiredCapital, paymentMethod, paymentMethods, dex)
 	if report.OK {
 		return nil
 	}
@@ -361,6 +374,36 @@ func (c *BidChecker) checkBankAccountSetup(ctx context.Context, method string, r
 		return fmt.Errorf(
 			"pre-trade check failed: the bank account linked to %s has no IBAN; complete it under Trading Accounts",
 			method,
+		)
+	}
+	return nil
+}
+
+// checkMessageTemplate confirms a chat-style DEX venue (RoboSats, Bisq2) has a
+// saved message template for the resolved payment method. Structured venues
+// (Bisq, HodlHodl) exchange payment details via the trade contract instead of
+// chat, so the check does not apply there. A missing template still lets the
+// trade proceed with a generic default request message — this only flags it
+// so the operator can personalize it beforehand.
+func (c *BidChecker) checkMessageTemplate(ctx context.Context, dex, paymentMethod string) error {
+	if strings.TrimSpace(paymentMethod) == "" {
+		return nil
+	}
+	platform := db.DexPlatformFromSlug(dex)
+	if platform != db.DexBisq2 && platform != db.DexRoboSats {
+		return nil
+	}
+	if c.chatTemplates == nil {
+		return fmt.Errorf("chat template checker not configured")
+	}
+	template, err := c.chatTemplates.GetChatTemplate(ctx, string(platform), paymentMethod)
+	if err != nil {
+		return fmt.Errorf("loading message template for %s pre-trade check: %w", paymentMethod, err)
+	}
+	if strings.TrimSpace(template) == "" {
+		return fmt.Errorf(
+			"pre-trade check failed: no message template is saved for %s on %s; add one in the payment method categorization panel or the generic default request will be sent",
+			paymentMethod, platform,
 		)
 	}
 	return nil

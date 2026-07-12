@@ -84,6 +84,7 @@ func newTestChecker(
 		WhitelistFetcherFunc(func(context.Context, string) ([]string, error) { return whitelist() }),
 		PermissionCheckerFunc(func(context.Context, string) (map[string]string, error) { return perms() }),
 		paymentSetup,
+		nil,
 	)
 	c.SetCommunicationGateway(fakeCommunicationGateway(true))
 	if walletAddrs != nil {
@@ -99,12 +100,18 @@ func okPerms() (map[string]string, error) {
 // paymentCheck extracts the payment_setup result from a report.
 func paymentCheck(t *testing.T, report Report) CheckResult {
 	t.Helper()
+	return paymentCheckNamed(t, report, "payment_setup")
+}
+
+// paymentCheckNamed extracts the named check result from a report.
+func paymentCheckNamed(t *testing.T, report Report, name string) CheckResult {
+	t.Helper()
 	for _, chk := range report.Checks {
-		if chk.Name == "payment_setup" {
+		if chk.Name == name {
 			return chk
 		}
 	}
-	t.Fatal("payment_setup check missing from report")
+	t.Fatalf("%s check missing from report", name)
 	return CheckResult{}
 }
 
@@ -116,12 +123,12 @@ func TestRunAllChecksPass(t *testing.T) {
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
 		okPaymentSetup(),
 	)
-	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil)
+	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil, "")
 	if !report.OK {
 		t.Fatalf("expected OK, got %+v", report)
 	}
-	if len(report.Checks) != 5 {
-		t.Fatalf("expected 5 checks, got %d", len(report.Checks))
+	if len(report.Checks) != 6 {
+		t.Fatalf("expected 6 checks, got %d", len(report.Checks))
 	}
 	for _, chk := range report.Checks {
 		if !chk.Passed {
@@ -146,12 +153,12 @@ func TestRunRunsToCompletion(t *testing.T) {
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
 		okPaymentSetup(),
 	)
-	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil)
+	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil, "")
 	if report.OK {
 		t.Fatal("expected report.OK=false")
 	}
-	if len(report.Checks) != 5 {
-		t.Fatalf("expected all 5 checks reported, got %d", len(report.Checks))
+	if len(report.Checks) != 6 {
+		t.Fatalf("expected all 6 checks reported, got %d", len(report.Checks))
 	}
 	byName := map[string]CheckResult{}
 	for _, chk := range report.Checks {
@@ -185,7 +192,7 @@ func TestRunPartialFailureReportsBoth(t *testing.T) {
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
 		okPaymentSetup(),
 	)
-	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil)
+	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil, "")
 	if report.OK {
 		t.Fatal("expected OK=false due to whitelist")
 	}
@@ -207,6 +214,66 @@ func TestRunPartialFailureReportsBoth(t *testing.T) {
 	}
 }
 
+type fakeChatTemplates map[string]string
+
+func (f fakeChatTemplates) GetChatTemplate(_ context.Context, exchange, paymentMethodName string) (string, error) {
+	return f[exchange+"|"+paymentMethodName], nil
+}
+
+func TestMessageTemplateNotApplicableForStructuredVenue(t *testing.T) {
+	c := newTestChecker(
+		func() (float64, error) { return 1000, nil },
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPerms,
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPaymentSetup(),
+	)
+	// No chat template store configured — a structured venue (Bisq v1) must still pass.
+	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil, "bisq")
+	chk := paymentCheckNamed(t, report, "message_template")
+	if !chk.Passed {
+		t.Errorf("expected message_template to pass for a structured venue, got %+v", chk)
+	}
+}
+
+func TestMessageTemplateMissingFailsForChatVenue(t *testing.T) {
+	c := newTestChecker(
+		func() (float64, error) { return 1000, nil },
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPerms,
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPaymentSetup(),
+	)
+	c.chatTemplates = fakeChatTemplates{}
+	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil, "bisq2")
+	if report.OK {
+		t.Fatal("expected OK=false when no message template is saved for a chat venue")
+	}
+	chk := paymentCheckNamed(t, report, "message_template")
+	if chk.Passed || !strings.Contains(chk.Message, "no message template is saved") {
+		t.Fatalf("message_template check = %+v", chk)
+	}
+}
+
+func TestMessageTemplatePresentPassesForChatVenue(t *testing.T) {
+	c := newTestChecker(
+		func() (float64, error) { return 1000, nil },
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPerms,
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPaymentSetup(),
+	)
+	c.chatTemplates = fakeChatTemplates{"RoboSats|Revolut": "custom template"}
+	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil, "robosats")
+	if !report.OK {
+		t.Fatalf("expected OK, got %+v", report)
+	}
+	chk := paymentCheckNamed(t, report, "message_template")
+	if !chk.Passed {
+		t.Errorf("expected message_template to pass, got %+v", chk)
+	}
+}
+
 func TestCommunicationGatewayMissingFails(t *testing.T) {
 	c := newTestChecker(
 		func() (float64, error) { return 1000, nil },
@@ -216,7 +283,7 @@ func TestCommunicationGatewayMissingFails(t *testing.T) {
 		okPaymentSetup(),
 	)
 	c.SetCommunicationGateway(nil)
-	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil)
+	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil, "")
 	if report.OK {
 		t.Fatal("expected OK=false when communication gateway is missing")
 	}
@@ -240,7 +307,7 @@ func TestCommunicationGatewayDisabledFailsRunAll(t *testing.T) {
 		okPaymentSetup(),
 	)
 	c.SetCommunicationGateway(fakeCommunicationGateway(false))
-	err := c.RunAll(context.Background(), "kraken", "EUR", 500, "Revolut", nil)
+	err := c.RunAll(context.Background(), "kraken", "EUR", 500, "Revolut", nil, "")
 	if err == nil || !strings.Contains(err.Error(), "no active Telegram communication channel") {
 		t.Fatalf("RunAll error = %v", err)
 	}
@@ -254,7 +321,7 @@ func TestRunAllAggregatesAllFailures(t *testing.T) {
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
 		okPaymentSetup(),
 	)
-	err := c.RunAll(context.Background(), "kraken", "EUR", 500, "Revolut", nil)
+	err := c.RunAll(context.Background(), "kraken", "EUR", 500, "Revolut", nil, "")
 	if err == nil {
 		t.Fatal("expected aggregated error")
 	}
@@ -271,7 +338,7 @@ func TestCheckEvaluationErrorReportedAsFailure(t *testing.T) {
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
 		okPaymentSetup(),
 	)
-	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil)
+	report := c.Run(context.Background(), "kraken", "EUR", 500, "Revolut", nil, "")
 	if report.OK {
 		t.Fatal("expected OK=false")
 	}
@@ -294,7 +361,7 @@ func runPaymentCheck(t *testing.T, setup PaymentSetupFetcher, method string, met
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
 		setup,
 	)
-	report := c.Run(context.Background(), "kraken", "EUR", 500, method, methods)
+	report := c.Run(context.Background(), "kraken", "EUR", 500, method, methods, "")
 	return report, paymentCheck(t, report)
 }
 

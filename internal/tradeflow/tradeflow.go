@@ -86,8 +86,8 @@ type WithdrawalResult struct {
 
 // Service is the subset of cexaccount.Service used by TradeFlow.
 type Service interface {
-	PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64, paymentMethod string, paymentMethods []string) (*cexaccount.Report, error)
-	MarketBuyBTC(ctx context.Context, rawProvider string, btcAmount float64, fiatCurrency string, requiredCapitalEUR float64, paymentMethod string, paymentMethods []string) (*cexaccount.SpotOrderResult, error)
+	PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64, paymentMethod string, paymentMethods []string, dex string) (*cexaccount.Report, error)
+	MarketBuyBTC(ctx context.Context, rawProvider string, btcAmount float64, fiatCurrency string, requiredCapitalEUR float64, paymentMethod string, paymentMethods []string, dex string) (*cexaccount.SpotOrderResult, error)
 	OpenHedge(ctx context.Context, venue, side string, btcNotional, leverage float64) (*cexaccount.HedgeOpenResult, error)
 	LiveHedgePosition(ctx context.Context, venue string) (*cexaccount.HedgeSnapshot, error)
 	WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress, clientRequestID string) (*lnd.WithdrawFromExchangeResult, error)
@@ -162,7 +162,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	method := txroute.BidMethod(order.Dex)
 
 	// Step 1: pre-trade checks (read-only; result logged for observability).
-	report, err := tf.svc.PreTradeCheck(ctx, order.Provider, order.FiatCurrency, order.RequiredCapitalEUR, order.PaymentMethod, order.PaymentMethods)
+	report, err := tf.svc.PreTradeCheck(ctx, order.Provider, order.FiatCurrency, order.RequiredCapitalEUR, order.PaymentMethod, order.PaymentMethods, order.Dex)
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: pre-trade check error: %w", err)
 	}
@@ -202,7 +202,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 
 	// Step 2: spot market buy.
 	spotStart := time.Now()
-	spot, err := tf.svc.MarketBuyBTC(ctx, order.Provider, order.BTCAmount, order.FiatCurrency, order.RequiredCapitalEUR, order.PaymentMethod, order.PaymentMethods)
+	spot, err := tf.svc.MarketBuyBTC(ctx, order.Provider, order.BTCAmount, order.FiatCurrency, order.RequiredCapitalEUR, order.PaymentMethod, order.PaymentMethods, order.Dex)
 	obs.OrderDuration.WithLabelValues(order.Provider, "spot").Observe(time.Since(spotStart).Seconds())
 	obs.OrdersPlaced.WithLabelValues(order.Provider, "spot", obs.Result(err)).Inc()
 	if err != nil {
