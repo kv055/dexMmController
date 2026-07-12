@@ -91,6 +91,14 @@ func main() {
 	// session-cookie path or when running without INTERNAL_API_SECRET
 	// (unified-api then fails the dial closed unless ALLOW_INSECURE_INTERNAL).
 	offerPremiumWSSSecret := os.Getenv("INTERNAL_API_SECRET")
+	// The same secret gates every inbound API/WS route (except health, metrics
+	// and the self-authenticating webhooks). Running without it leaves wallet
+	// and trading endpoints open to anything on the Docker network, so refuse
+	// to start unless that is explicitly opted into for local dev.
+	internalAPISecret := strings.TrimSpace(os.Getenv("INTERNAL_API_SECRET"))
+	if internalAPISecret == "" && !strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_INSECURE_INTERNAL")), "true") {
+		log.Fatal("INTERNAL_API_SECRET is not set; refusing to serve the API unauthenticated (set ALLOW_INSECURE_INTERNAL=true to override for local dev)")
+	}
 	apiAddr := envOr("API_ADDR", ":5001")
 	lndHost := envOr("LND_HOST", "")
 	lndTLSCertPath := envOr("LND_TLS_CERT_PATH", "")
@@ -374,6 +382,7 @@ func main() {
 		WithTelegramRelay(telegramSvc, anomalyNotifier).
 		WithBisq(bq)
 	apiServer := api.NewServer(apiAddr, repo).
+		WithInternalSecret(internalAPISecret).
 		WithMetrics(metricsReg).
 		WithAccountHealth(exchangeAccountHealth).
 		WithCexAccount(cexAccountService).

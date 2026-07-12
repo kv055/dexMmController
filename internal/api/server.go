@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,6 +65,13 @@ type Server struct {
 	// metrics is the commons service registry; when set, Run serves /metrics and
 	// wraps the mux with the RED request middleware.
 	metrics *metrics.ServiceRegistry
+
+	// internalSecret gates every route except /health, /metrics and the two
+	// webhook endpoints that carry their own credential. Callers on the Docker
+	// network (dexMonitor proxy, account health) must send it as
+	// X-Internal-Secret. Empty means the gate is disabled; main refuses to
+	// start that way unless ALLOW_INSECURE_INTERNAL=true.
+	internalSecret string
 }
 
 // LNDInitResult is returned by the on-demand wallet creation hook.
@@ -148,6 +156,13 @@ func (s *Server) WithBisqPayments(client bisqPaymentClient) *Server {
 	return s
 }
 
+// WithInternalSecret sets the shared secret required on X-Internal-Secret for
+// all API and WS routes (webhooks and health/metrics excepted).
+func (s *Server) WithInternalSecret(secret string) *Server {
+	s.internalSecret = strings.TrimSpace(secret)
+	return s
+}
+
 // Run runs value.
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -182,7 +197,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("DELETE /api/bisq/payment-accounts/{id}", s.handleBisqDeletePaymentAccount)
 	mux.HandleFunc("GET /ws/cex/hedge-stream", s.handleCexHedgeStream)
 
-	var handler http.Handler = mux
+	var handler http.Handler = s.internalSecretMiddleware(mux)
 	if s.metrics != nil {
 		mux.Handle("GET /metrics", s.metrics.Handler())
 		handler = s.metrics.Middleware(handler)
@@ -364,6 +379,36 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 
 	stats["incomplete_count"] = len(incomplete)
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// internalSecretExempt lists the routes that must stay reachable without the
+// shared secret: health/metrics probes, and the two webhooks that authenticate
+// their caller themselves (dex-release via Bearer token, Telegram via
+// X-Telegram-Bot-Api-Secret-Token).
+func internalSecretExempt(path string) bool {
+	return path == "/health" ||
+		path == "/metrics" ||
+		path == "/api/webhooks/dex-release" ||
+		path == "/telegram-webhook"
+}
+
+// internalSecretMiddleware rejects any non-exempt request whose
+// X-Internal-Secret header does not match the configured secret. With an empty
+// secret the gate is disabled (dev/tests only; main fails startup in that
+// state unless ALLOW_INSECURE_INTERNAL=true).
+func (s *Server) internalSecretMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.internalSecret == "" || internalSecretExempt(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		provided := r.Header.Get("X-Internal-Secret")
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(s.internalSecret)) != 1 {
+			writeError(w, http.StatusUnauthorized, fmt.Errorf("missing or invalid internal secret"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

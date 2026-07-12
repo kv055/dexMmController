@@ -14,6 +14,10 @@ func (s *Server) WithTelegramRelay(relay *telegram.ChatRelay) *Server {
 }
 
 func (s *Server) handleTelegramWebhook(w http.ResponseWriter, r *http.Request) {
+	if !telegram.WebhookAuthorized(r) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	if s.telegramRelay == nil {
 		w.WriteHeader(http.StatusOK)
 		return
