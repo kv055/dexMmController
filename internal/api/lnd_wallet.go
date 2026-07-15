@@ -56,44 +56,44 @@ type lndPeerSummary struct {
 }
 
 type lndChannelSummary struct {
-	RemotePubkey      string `json:"remote_pubkey"`
-	RemoteAlias       string `json:"remote_alias"`
-	PeerAddress       string `json:"peer_address"`
-	CapacitySat       int64  `json:"capacity_sat"`
-	LocalBalanceSat   int64  `json:"local_balance_sat"`
-	RemoteBalanceSat  int64  `json:"remote_balance_sat"`
-	Active            bool   `json:"active"`
-	Private           bool   `json:"private"`
-	Health            string `json:"health"`
-	ChannelPoint      string `json:"channel_point"`
-	TotalSentSat      int64  `json:"total_sent_sat"`
-	TotalReceivedSat  int64  `json:"total_received_sat"`
+	RemotePubkey     string `json:"remote_pubkey"`
+	RemoteAlias      string `json:"remote_alias"`
+	PeerAddress      string `json:"peer_address"`
+	CapacitySat      int64  `json:"capacity_sat"`
+	LocalBalanceSat  int64  `json:"local_balance_sat"`
+	RemoteBalanceSat int64  `json:"remote_balance_sat"`
+	Active           bool   `json:"active"`
+	Private          bool   `json:"private"`
+	Health           string `json:"health"`
+	ChannelPoint     string `json:"channel_point"`
+	TotalSentSat     int64  `json:"total_sent_sat"`
+	TotalReceivedSat int64  `json:"total_received_sat"`
 }
 
 type lndPendingChannelSummary struct {
-	RemotePubkey string `json:"remote_pubkey"`
-	RemoteAlias  string `json:"remote_alias"`
-	CapacitySat  int64  `json:"capacity_sat"`
-	LocalBalance int64  `json:"local_balance_sat"`
-	RemoteBalance int64 `json:"remote_balance_sat"`
-	State        string `json:"state"`
+	RemotePubkey  string `json:"remote_pubkey"`
+	RemoteAlias   string `json:"remote_alias"`
+	CapacitySat   int64  `json:"capacity_sat"`
+	LocalBalance  int64  `json:"local_balance_sat"`
+	RemoteBalance int64  `json:"remote_balance_sat"`
+	State         string `json:"state"`
 }
 
 type lndWalletAddressEntry struct {
-	Address     string `json:"address"`
-	Kind        string `json:"kind"`
-	Label       string `json:"label,omitempty"`
-	BalanceSat  int64  `json:"balance_sat"`
-	IsInternal  bool   `json:"is_internal,omitempty"`
+	Address    string `json:"address"`
+	Kind       string `json:"kind"`
+	Label      string `json:"label,omitempty"`
+	BalanceSat int64  `json:"balance_sat"`
+	IsInternal bool   `json:"is_internal,omitempty"`
 }
 
 type lndWalletStatusResponse struct {
-	Node             lndNodeSummary             `json:"node"`
-	Peers            []lndPeerSummary           `json:"peers"`
-	Channels         []lndChannelSummary        `json:"channels"`
-	PendingChannels  []lndPendingChannelSummary `json:"pending_channels"`
-	Addresses        []lndWalletAddressEntry    `json:"addresses"`
-	CheckedAt        string                     `json:"checked_at"`
+	Node            lndNodeSummary             `json:"node"`
+	Peers           []lndPeerSummary           `json:"peers"`
+	Channels        []lndChannelSummary        `json:"channels"`
+	PendingChannels []lndPendingChannelSummary `json:"pending_channels"`
+	Addresses       []lndWalletAddressEntry    `json:"addresses"`
+	CheckedAt       string                     `json:"checked_at"`
 }
 
 type createLNDAddressRequest struct {
@@ -288,12 +288,26 @@ func (s *Server) handleLNDCloseChannel(w http.ResponseWriter, r *http.Request) {
 }
 
 type lndWalletStateResponse struct {
-	LNDReachable bool   `json:"lnd_reachable"`
-	LNDState     string `json:"lnd_state"`
-	WalletExists bool   `json:"wallet_exists"`
-	PasswordSet  bool   `json:"password_set"`
-	ClientReady  bool   `json:"client_ready"`
-	CanCreate    bool   `json:"can_create"`
+	LNDReachable  bool   `json:"lnd_reachable"`
+	LNDState      string `json:"lnd_state"`
+	WalletExists  bool   `json:"wallet_exists"`
+	PasswordSet   bool   `json:"password_set"`
+	ClientReady   bool   `json:"client_ready"`
+	CanCreate     bool   `json:"can_create"`
+	LastInitError string `json:"last_init_error,omitempty"`
+}
+
+func (s *Server) handleServiceVersions(w http.ResponseWriter, r *http.Request) {
+	versions := ServiceVersions{}
+	if s.serviceVersions != nil {
+		versions = s.serviceVersions(r.Context())
+	}
+	if client := s.currentLNDWallet(); client != nil {
+		if info, err := client.NodeInfo(r.Context()); err == nil {
+			versions.LND = info.Version
+		}
+	}
+	writeJSON(w, http.StatusOK, versions)
 }
 
 type lndWalletInitResponse struct {
@@ -321,6 +335,9 @@ func (s *Server) handleLNDWalletState(w http.ResponseWriter, r *http.Request) {
 			resp.WalletExists = state != "NON_EXISTING"
 			resp.CanCreate = state == "NON_EXISTING"
 		}
+	}
+	if !resp.ClientReady && s.lndLastInitError != nil {
+		resp.LastInitError = strings.TrimSpace(s.lndLastInitError())
 	}
 
 	writeJSON(w, http.StatusOK, resp)

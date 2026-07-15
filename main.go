@@ -391,6 +391,43 @@ func main() {
 		WithLNDHealth(lndHealthChecker).
 		WithDexRelease(dexReleaseWorker, dexReleaseToken).
 		WithBisqPayments(bq).
+		WithServiceVersions(func(versionCtx context.Context) api.ServiceVersions {
+			result := api.ServiceVersions{
+				Bisq1: strings.TrimPrefix(envOr("BISQ_VERSION", ""), "v"),
+				Bisq2: strings.TrimPrefix(envOr("BISQ2_VERSION", ""), "v"),
+				LND:   strings.TrimPrefix(envOr("LND_VERSION", ""), "v"),
+			}
+			type versionResult struct{ service, version string }
+			results := make(chan versionResult, 2)
+			probe := func(service string, fetch func(context.Context) (string, error)) {
+				go func() {
+					probeCtx, cancel := context.WithTimeout(versionCtx, 3*time.Second)
+					defer cancel()
+					version, err := fetch(probeCtx)
+					if err == nil {
+						results <- versionResult{service: service, version: version}
+					}
+				}()
+			}
+			probe("bisq1", bq.Version)
+			probe("bisq2", b2.Version)
+			deadline := time.NewTimer(4 * time.Second)
+			defer deadline.Stop()
+			for remaining := 2; remaining > 0; {
+				select {
+				case item := <-results:
+					if item.service == "bisq1" {
+						result.Bisq1 = item.version
+					} else {
+						result.Bisq2 = item.version
+					}
+					remaining--
+				case <-deadline.C:
+					remaining = 0
+				}
+			}
+			return result
+		}).
 		WithTelegramRelay(chatRelay).
 		WithTelegramSettings(telegramSettingsRepo, telegramStore, anomalyNotifier)
 
@@ -400,7 +437,18 @@ func main() {
 	// once at startup when a password already exists, and on demand from the UI via
 	// POST /api/lnd/wallet/init.
 	var lndBackupOnce sync.Once
-	lndInit := func(reqCtx context.Context) (api.LNDInitResult, error) {
+	var lndInitStatusMu sync.RWMutex
+	var lastLNDInitError string
+	lndInit := func(reqCtx context.Context) (result api.LNDInitResult, err error) {
+		defer func() {
+			lndInitStatusMu.Lock()
+			defer lndInitStatusMu.Unlock()
+			if err != nil {
+				lastLNDInitError = err.Error()
+				return
+			}
+			lastLNDInitError = ""
+		}()
 		password, aezeed, err := repo.LNDWalletCredentials(reqCtx)
 		if err != nil {
 			return api.LNDInitResult{}, err
@@ -462,6 +510,11 @@ func main() {
 		Init: lndInit,
 		StateProbe: func(probeCtx context.Context) (string, error) {
 			return lnd.ProbeState(probeCtx, lndHost, lndTLSCertPath)
+		},
+		LastInitError: func() string {
+			lndInitStatusMu.RLock()
+			defer lndInitStatusMu.RUnlock()
+			return lastLNDInitError
 		},
 	})
 

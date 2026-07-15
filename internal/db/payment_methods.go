@@ -1,6 +1,10 @@
 package db
 
-import "time"
+import (
+	"time"
+
+	"commons/paymentmethods"
+)
 
 // PaymentMethod is one row of the payment_methods catalog (owned by
 // dexUnifiedApi schema file 20_payment_methods.sql, seeded from
@@ -14,7 +18,7 @@ type PaymentMethod struct {
 	// MergeRegex merges raw offer labels into this method (nullable).
 	MergeRegex *string `json:"merge_regex"`
 	// AliasList holds operator-managed exact text aliases for canonicalization.
-	AliasList []string `gorm:"type:text[]" json:"alias_list"`
+	AliasList paymentmethods.TextArray `gorm:"type:text[]" json:"alias_list"`
 	// Category is the display category (Cash, Bank Transfer, Fiat Transmitter, Gift Cards, Crypto, Others).
 	Category string `json:"category"`
 	// BankAccountID links a Bank Transfer method to bank_accounts(id).

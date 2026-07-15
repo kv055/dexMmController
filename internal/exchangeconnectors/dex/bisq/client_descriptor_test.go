@@ -2,6 +2,16 @@ package bisq
 
 import "testing"
 
+func TestVersionDescriptor(t *testing.T) {
+	if msg := newMessage("GetVersionRequest"); msg == nil {
+		t.Fatal("descriptor missing GetVersionRequest")
+	}
+	reply := newMessage("GetVersionReply")
+	if reply.Descriptor().Fields().ByName("version") == nil {
+		t.Fatal("descriptor missing GetVersionReply.version")
+	}
+}
+
 // TestFundingAddressDescriptor builds the proto descriptor (protodesc.NewFile panics on
 // a malformed set) and verifies the new Wallets/GetFundingAddresses messages resolve.
 func TestFundingAddressDescriptor(t *testing.T) {

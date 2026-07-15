@@ -181,21 +181,36 @@ func decodeOptionalText(raw json.RawMessage) string {
 
 // Ping checks that the Bisq2 REST API is reachable.
 func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.Version(ctx)
+	return err
+}
+
+// Version returns the Bisq2 Easy API release reported by its settings endpoint.
+func (c *Client) Version(ctx context.Context) (string, error) {
 	if c.baseURL == "" {
-		return fmt.Errorf("bisq2: base URL is not configured")
+		return "", fmt.Errorf("bisq2: base URL is not configured")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiURL("/settings/version"), nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	c.authorized(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("bisq2: version probe: status %d", resp.StatusCode)
+		return "", fmt.Errorf("bisq2: version probe: status %d", resp.StatusCode)
 	}
-	return nil
+	var body struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", fmt.Errorf("bisq2: decode version: %w", err)
+	}
+	if strings.TrimSpace(body.Version) == "" {
+		return "", fmt.Errorf("bisq2: version response is empty")
+	}
+	return body.Version, nil
 }

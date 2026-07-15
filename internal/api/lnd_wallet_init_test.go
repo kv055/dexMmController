@@ -52,6 +52,21 @@ func TestHandleLNDWalletStateWalletExistsWhenLocked(t *testing.T) {
 	}
 }
 
+func TestHandleLNDWalletStateIncludesLastInitializationError(t *testing.T) {
+	s := (&Server{}).WithLNDManagement(LNDManagement{
+		StateProbe:    func(context.Context) (string, error) { return "LOCKED", nil },
+		LastInitError: func() string { return "unlocking wallet: invalid passphrase" },
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/lnd/wallet/state", nil)
+	rec := httptest.NewRecorder()
+	s.handleLNDWalletState(rec, req)
+
+	state := decodeState(t, rec.Body.Bytes())
+	if state.LastInitError != "unlocking wallet: invalid passphrase" {
+		t.Fatalf("last_init_error = %q", state.LastInitError)
+	}
+}
+
 func TestHandleLNDWalletStateUnreachableWhenProbeFails(t *testing.T) {
 	s := (&Server{}).WithLNDManagement(LNDManagement{
 		StateProbe: func(context.Context) (string, error) { return "", errors.New("dial tcp: refused") },

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -274,7 +275,11 @@ func (c *BidChecker) checkPaymentSetup(ctx context.Context, paymentMethod string
 
 	row, err := c.paymentSetup.PaymentMethodByName(ctx, method)
 	if err != nil {
-		return fmt.Errorf("loading payment method %s for pre-trade check: %w", method, err)
+		log.Printf("pre-trade payment setup: load payment method %q: %v", method, err)
+		return fmt.Errorf(
+			"pre-trade check failed: %s payment configuration could not be read; retry, then check the mm-controller logs if the problem persists",
+			method,
+		)
 	}
 	if row == nil {
 		return fmt.Errorf(

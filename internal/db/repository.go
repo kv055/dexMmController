@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"commons/credentialcrypto"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -169,6 +170,18 @@ func (r *TransactionRepository) GetActiveAPIKeysForProvider(ctx context.Context,
 		Order("api_keys.updated_at DESC, api_keys.id DESC").
 		Find(&keys).Error; err != nil {
 		return nil, fmt.Errorf("load active API keys for %s: %w", provider, err)
+	}
+	for i := range keys {
+		var err error
+		if keys[i].APIKey, err = credentialcrypto.Decrypt(keys[i].APIKey); err != nil {
+			return nil, fmt.Errorf("decrypt API key for %s: %w", provider, err)
+		}
+		if keys[i].APISecret, err = credentialcrypto.Decrypt(keys[i].APISecret); err != nil {
+			return nil, fmt.Errorf("decrypt API secret for %s: %w", provider, err)
+		}
+		if keys[i].Passphrase, err = credentialcrypto.Decrypt(keys[i].Passphrase); err != nil {
+			return nil, fmt.Errorf("decrypt API passphrase for %s: %w", provider, err)
+		}
 	}
 	return keys, nil
 }

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"commons/credentialcrypto"
 )
 
 // LNDChannelBackup is a stored static channel backup row.
@@ -27,7 +29,10 @@ func (r *TransactionRepository) LNDWalletCredentials(ctx context.Context) (passw
 	if err != nil {
 		return "", "", fmt.Errorf("load LND account: %w", err)
 	}
-	password = strings.TrimSpace(account.Password)
+	password, err = credentialcrypto.Decrypt(strings.TrimSpace(account.Password))
+	if err != nil {
+		return "", "", fmt.Errorf("decrypt LND wallet password: %w", err)
+	}
 
 	var seedPhrase string
 	if err := r.db.WithContext(ctx).Raw(`
@@ -39,7 +44,11 @@ func (r *TransactionRepository) LNDWalletCredentials(ctx context.Context) (passw
 	`, account.ID).Scan(&seedPhrase).Error; err != nil {
 		return password, "", fmt.Errorf("load LND seed: %w", err)
 	}
-	return password, strings.TrimSpace(seedPhrase), nil
+	mnemonic, err = credentialcrypto.Decrypt(strings.TrimSpace(seedPhrase))
+	if err != nil {
+		return password, "", fmt.Errorf("decrypt LND seed: %w", err)
+	}
+	return strings.TrimSpace(password), strings.TrimSpace(mnemonic), nil
 }
 
 // EnsureLNDSeed stores the aezeed in seeds when it is not already present.
@@ -51,16 +60,33 @@ func (r *TransactionRepository) EnsureLNDSeed(ctx context.Context, accountID int
 	if accountID <= 0 {
 		return errors.New("LND account id is required")
 	}
+
+	var stored []string
+	if err := r.db.WithContext(ctx).Raw(`
+		SELECT seed_phrase
+		FROM seeds
+		WHERE account_id = ?
+	`, accountID).Scan(&stored).Error; err != nil {
+		return fmt.Errorf("load existing LND seeds: %w", err)
+	}
+	for _, value := range stored {
+		plaintext, err := credentialcrypto.Decrypt(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("decrypt existing LND seed: %w", err)
+		}
+		if strings.TrimSpace(plaintext) == mnemonic {
+			return nil
+		}
+	}
+
+	encryptedMnemonic, err := credentialcrypto.Encrypt(mnemonic)
+	if err != nil {
+		return fmt.Errorf("encrypt LND seed: %w", err)
+	}
 	if err := r.db.WithContext(ctx).Exec(`
 		INSERT INTO seeds (account_id, seed_phrase, wallet_created_at)
-		SELECT ?, ?, NULL
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM seeds
-			WHERE account_id = ?
-			  AND seed_phrase = ?
-		)
-	`, accountID, mnemonic, accountID, mnemonic).Error; err != nil {
+		VALUES (?, ?, NULL)
+	`, accountID, encryptedMnemonic).Error; err != nil {
 		return fmt.Errorf("insert LND seed: %w", err)
 	}
 	return nil

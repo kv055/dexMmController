@@ -155,6 +155,8 @@ type ListPaymentsResponse struct {
 
 // NodeInfoResponse represents a node info response.
 type NodeInfoResponse struct {
+	// Version is the running LND release.
+	Version string `json:"version"`
 	// IdentityPubkey is the identity pubkey value for the node info response.
 	IdentityPubkey string `json:"identity_pubkey"`
 	// Alias is the alias value for the node info response.

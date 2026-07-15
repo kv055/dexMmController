@@ -38,9 +38,11 @@ type Server struct {
 	lndWallet   lndWalletClient
 
 	// LND on-demand management hooks, set by main via WithLNDManagement.
-	lndInit       func(ctx context.Context) (LNDInitResult, error)
-	lndStateProbe func(ctx context.Context) (string, error)
-	lndInitMu     sync.Mutex
+	lndInit          func(ctx context.Context) (LNDInitResult, error)
+	lndStateProbe    func(ctx context.Context) (string, error)
+	lndLastInitError func() string
+	serviceVersions  func(context.Context) ServiceVersions
+	lndInitMu        sync.Mutex
 
 	// Stage-6 release webhook (fiat-controller → release worker), set via WithDexRelease.
 	dexRelease      dexReleaseEnqueuer
@@ -87,6 +89,16 @@ type LNDManagement struct {
 	Init func(ctx context.Context) (LNDInitResult, error)
 	// StateProbe reports LND's wallet state (e.g. NON_EXISTING, LOCKED, RPC_ACTIVE).
 	StateProbe func(ctx context.Context) (string, error)
+	// LastInitError returns the latest LND initialization failure, if any. It lets the
+	// UI distinguish a password mismatch from other LND bootstrap failures.
+	LastInitError func() string
+}
+
+// ServiceVersions is the release information exposed for the local exchange services.
+type ServiceVersions struct {
+	Bisq1 string `json:"bisq1"`
+	Bisq2 string `json:"bisq2"`
+	LND   string `json:"lnd"`
 }
 
 // ErrLNDWalletPasswordMissing signals the wallet cannot be created because no password
@@ -139,6 +151,13 @@ func (s *Server) WithLNDHealth(checker lndWalletHealthChecker) *Server {
 func (s *Server) WithLNDManagement(m LNDManagement) *Server {
 	s.lndInit = m.Init
 	s.lndStateProbe = m.StateProbe
+	s.lndLastInitError = m.LastInitError
+	return s
+}
+
+// WithServiceVersions attaches the probes used by the service-version endpoint.
+func (s *Server) WithServiceVersions(probe func(context.Context) ServiceVersions) *Server {
+	s.serviceVersions = probe
 	return s
 }
 
@@ -174,6 +193,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/accounts/health_check", s.handleAccountHealthCheck)
 	mux.HandleFunc("GET /api/lnd/wallet", s.handleLNDWalletStatus)
 	mux.HandleFunc("GET /api/lnd/wallet/state", s.handleLNDWalletState)
+	mux.HandleFunc("GET /api/service-versions", s.handleServiceVersions)
 	mux.HandleFunc("POST /api/lnd/wallet/init", s.handleLNDWalletInit)
 	mux.HandleFunc("POST /api/lnd/addresses", s.handleLNDCreateAddress)
 	mux.HandleFunc("POST /api/lnd/channels/open", s.handleLNDOpenChannel)
@@ -233,12 +253,12 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 type accountHealthResponse struct {
-	Provider  string                              `json:"provider"`
-	Status    string                              `json:"status"`
-	Healthy   bool                                `json:"healthy"`
-	Message   string                              `json:"message"`
+	Provider  string                           `json:"provider"`
+	Status    string                           `json:"status"`
+	Healthy   bool                             `json:"healthy"`
+	Message   string                           `json:"message"`
 	Keys      []cexaccount.KeyPermissionResult `json:"keys,omitempty"`
-	CheckedAt string                              `json:"checked_at"`
+	CheckedAt string                           `json:"checked_at"`
 }
 
 func (s *Server) handleAccountHealthCheck(w http.ResponseWriter, r *http.Request) {

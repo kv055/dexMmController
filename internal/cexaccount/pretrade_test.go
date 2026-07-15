@@ -11,13 +11,17 @@ import (
 // methods link to, mirroring the DB-backed fetcher's (nil, nil) not-found
 // semantics.
 type fakePaymentSetup struct {
-	methods  map[string]*PaymentMethodSnapshot
-	accounts map[int64]*FiatAccountSnapshot
-	banks    map[int64]*BankAccountSnapshot
-	wallets  map[int64]*WalletAddressSnapshot
+	methods   map[string]*PaymentMethodSnapshot
+	accounts  map[int64]*FiatAccountSnapshot
+	banks     map[int64]*BankAccountSnapshot
+	wallets   map[int64]*WalletAddressSnapshot
+	methodErr error
 }
 
 func (f *fakePaymentSetup) PaymentMethodByName(_ context.Context, name string) (*PaymentMethodSnapshot, error) {
+	if f.methodErr != nil {
+		return nil, f.methodErr
+	}
 	return f.methods[name], nil
 }
 
@@ -473,6 +477,22 @@ func TestPaymentSetupRequiresMethod(t *testing.T) {
 	_, chk := runPaymentCheck(t, okPaymentSetup(), "", nil)
 	if chk.Passed || !strings.Contains(chk.Message, "payment method is required") {
 		t.Fatalf("payment_setup check = %+v", chk)
+	}
+}
+
+func TestPaymentSetupCatalogReadErrorIsOperatorFriendly(t *testing.T) {
+	setup := okPaymentSetup()
+	setup.methodErr = fmt.Errorf(`sql: Scan error on column index 13, name "alias_list": unsupported Scan`)
+
+	_, chk := runPaymentCheck(t, setup, "Revolut", nil)
+	if chk.Passed {
+		t.Fatalf("payment_setup check unexpectedly passed: %+v", chk)
+	}
+	if !strings.Contains(chk.Message, "Revolut payment configuration could not be read") {
+		t.Fatalf("payment_setup message is not actionable: %q", chk.Message)
+	}
+	if strings.Contains(chk.Message, "sql:") || strings.Contains(chk.Message, "alias_list") {
+		t.Fatalf("payment_setup message leaks database internals: %q", chk.Message)
 	}
 }
 

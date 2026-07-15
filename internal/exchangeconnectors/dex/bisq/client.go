@@ -208,6 +208,16 @@ func (c *Client) GetPaymentAccounts(ctx context.Context) ([]PaymentAccount, erro
 	return out, nil
 }
 
+// Version returns the Bisq daemon release reported by its gRPC API.
+func (c *Client) Version(ctx context.Context) (string, error) {
+	req := newMessage("GetVersionRequest")
+	resp := newMessage("GetVersionReply")
+	if err := c.invoke(ctx, "/io.bisq.protobuffer.GetVersion/GetVersion", req, resp); err != nil {
+		return "", err
+	}
+	return resp.Get(resp.Descriptor().Fields().ByName("version")).String(), nil
+}
+
 // SepaAccountParams carries the discrete fields needed to create a SEPA payment account on
 // the bisq daemon. Bisq derives the trade currency (EUR) and accepted SEPA countries itself.
 type SepaAccountParams struct {
@@ -677,6 +687,10 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 		Name:    strptr("bisq_minimal.proto"),
 		Package: strptr("io.bisq.protobuffer"),
 		MessageType: []*descriptorpb.DescriptorProto{
+			message("GetVersionRequest", nil),
+			message("GetVersionReply", []*descriptorpb.FieldDescriptorProto{
+				field("version", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}),
 			message("OfferInfo", []*descriptorpb.FieldDescriptorProto{
 				field("id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				field("direction", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
@@ -812,6 +826,12 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 			}),
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
+			{
+				Name: strptr("GetVersion"),
+				Method: []*descriptorpb.MethodDescriptorProto{
+					method("GetVersion", ".io.bisq.protobuffer.GetVersionRequest", ".io.bisq.protobuffer.GetVersionReply"),
+				},
+			},
 			{
 				Name: strptr("Offers"),
 				Method: []*descriptorpb.MethodDescriptorProto{
