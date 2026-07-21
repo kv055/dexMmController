@@ -25,7 +25,9 @@ import (
 // Server represents a server.
 type Server struct {
 	addr          string
+	repoMu        sync.RWMutex
 	repo          *db.TransactionRepository
+	startup       *StartupState
 	accountHealth accountHealthChecker
 	cexAccount    *cexaccount.Service
 	tradeFlow     TradeFlowRunner
@@ -129,10 +131,36 @@ type healthResponse struct {
 
 // NewServer creates a server.
 func NewServer(addr string, repo *db.TransactionRepository) *Server {
-	return &Server{
-		addr: addr,
-		repo: repo,
+	server := &Server{
+		addr:    addr,
+		repo:    repo,
+		startup: NewStartupState(),
 	}
+	if repo != nil {
+		server.startup.SetDatabaseReady(true, "database_ready", nil)
+	}
+	return server
+}
+
+// WithRepository installs the repository after the HTTP listener has started.
+func (s *Server) WithRepository(repo *db.TransactionRepository) *Server {
+	s.repoMu.Lock()
+	s.repo = repo
+	s.repoMu.Unlock()
+	return s
+}
+
+func (s *Server) currentRepo() *db.TransactionRepository {
+	s.repoMu.RLock()
+	defer s.repoMu.RUnlock()
+	return s.repo
+}
+
+func (s *Server) WithStartupState(state *StartupState) *Server {
+	if state != nil {
+		s.startup = state
+	}
+	return s
 }
 
 // WithAccountHealth attaches the account health service to the API server.
@@ -185,6 +213,8 @@ func (s *Server) WithInternalSecret(secret string) *Server {
 // Run runs value.
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /livez", s.handleLivez)
+	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /api/transactions", s.handleTransactions)
 	mux.HandleFunc("GET /api/transactions/{id}", s.handleTransactionByID)
@@ -217,7 +247,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("DELETE /api/bisq/payment-accounts/{id}", s.handleBisqDeletePaymentAccount)
 	mux.HandleFunc("GET /ws/cex/hedge-stream", s.handleCexHedgeStream)
 
-	var handler http.Handler = s.internalSecretMiddleware(mux)
+	var handler http.Handler = s.startupGate(s.internalSecretMiddleware(mux))
 	if s.metrics != nil {
 		mux.Handle("GET /metrics", s.metrics.Handler())
 		handler = s.metrics.Middleware(handler)
@@ -310,20 +340,25 @@ func (s *Server) handleAccountHealthCheck(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	transactionCount, err := s.repo.GetTransactionCount()
+	repo := s.currentRepo()
+	if repo == nil || !s.startup.Snapshot().DatabaseReady {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("database is not ready"))
+		return
+	}
+	transactionCount, err := repo.GetTransactionCount()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
-	incomplete, err := s.repo.GetIncompleteTransactions()
+	incomplete, err := repo.GetIncompleteTransactions()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
 	primaryWalletPresent := false
-	if wallet, err := s.repo.GetPrimaryWalletAddress(); err == nil && wallet != nil && wallet.Address != "" {
+	if wallet, err := repo.GetPrimaryWalletAddress(); err == nil && wallet != nil && wallet.Address != "" {
 		primaryWalletPresent = true
 	}
 
@@ -335,14 +370,28 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (s *Server) handleLivez(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+	snapshot := s.startup.Snapshot()
+	status := http.StatusServiceUnavailable
+	if snapshot.DatabaseReady && snapshot.LNDReady {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, snapshot)
+}
+
 func (s *Server) handleTransactions(w http.ResponseWriter, r *http.Request) {
+	repo := s.currentRepo()
 	limit := queryInt(r, "limit", 100)
 	if limit > 500 {
 		limit = 500
 	}
 	offset := queryInt(r, "offset", 0)
 
-	transactions, total, err := s.repo.ListTransactions(db.TransactionFilters{
+	transactions, total, err := repo.ListTransactions(db.TransactionFilters{
 		Limit:          limit,
 		Offset:         offset,
 		Status:         r.URL.Query().Get("status"),
@@ -365,13 +414,14 @@ func (s *Server) handleTransactions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTransactionByID(w http.ResponseWriter, r *http.Request) {
+	repo := s.currentRepo()
 	id, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid transaction id"))
 		return
 	}
 
-	transaction, err := s.repo.GetTransaction(uint(id))
+	transaction, err := repo.GetTransaction(uint(id))
 	if err != nil {
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "transaction not found") {
@@ -385,13 +435,14 @@ func (s *Server) handleTransactionByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
-	stats, err := s.repo.GetPnlStats()
+	repo := s.currentRepo()
+	stats, err := repo.GetPnlStats()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
-	incomplete, err := s.repo.GetIncompleteTransactions()
+	incomplete, err := repo.GetIncompleteTransactions()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -406,10 +457,23 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 // their caller themselves (dex-release via Bearer token, Telegram via
 // X-Telegram-Bot-Api-Secret-Token).
 func internalSecretExempt(path string) bool {
-	return path == "/health" ||
+	return path == "/health" || path == "/livez" || path == "/readyz" ||
 		path == "/metrics" ||
 		path == "/api/webhooks/dex-release" ||
 		path == "/telegram-webhook"
+}
+
+// startupGate keeps the process observable while Postgres reconnects. Once the
+// repository is installed, LND routes pass through while their client is still
+// bootstrapping and retain their precise wallet diagnostics.
+func (s *Server) startupGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.startup.Snapshot().DatabaseReady || r.URL.Path == "/livez" || r.URL.Path == "/readyz" || r.URL.Path == "/health" || r.URL.Path == "/metrics" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("database is not ready"))
+	})
 }
 
 // internalSecretMiddleware rejects any non-exempt request whose

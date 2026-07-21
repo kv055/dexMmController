@@ -154,7 +154,7 @@ func (s *Server) handleLNDWalletStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("LND wallet client is not configured"))
 		return
 	}
-	status, err := buildLNDWalletStatus(r.Context(), client, s.repo)
+	status, err := buildLNDWalletStatus(r.Context(), client, s.currentRepo())
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
@@ -195,7 +195,12 @@ func (s *Server) handleLNDCreateAddress(w http.ResponseWriter, r *http.Request) 
 		label = fmt.Sprintf("Generated-%d", time.Now().Unix())
 	}
 	record := &db.WalletAddress{Label: label, Address: address}
-	if err := s.repo.SaveWalletAddress(record); err != nil {
+	repo := s.currentRepo()
+	if repo == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("database is not ready"))
+		return
+	}
+	if err := repo.SaveWalletAddress(record); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -322,8 +327,8 @@ func (s *Server) handleLNDWalletState(w http.ResponseWriter, r *http.Request) {
 		ClientReady: s.currentLNDWallet() != nil,
 	}
 
-	if s.repo != nil {
-		if password, _, err := s.repo.LNDWalletCredentials(r.Context()); err == nil {
+	if repo := s.currentRepo(); repo != nil {
+		if password, _, err := repo.LNDWalletCredentials(r.Context()); err == nil {
 			resp.PasswordSet = strings.TrimSpace(password) != ""
 		}
 	}
@@ -356,8 +361,8 @@ func (s *Server) handleLNDWalletInit(w http.ResponseWriter, r *http.Request) {
 
 	if s.currentLNDWallet() != nil {
 		address := ""
-		if s.repo != nil {
-			if wallet, err := s.repo.GetPrimaryWalletAddress(); err == nil && wallet != nil {
+		if repo := s.currentRepo(); repo != nil {
+			if wallet, err := repo.GetPrimaryWalletAddress(); err == nil && wallet != nil {
 				address = wallet.Address
 			}
 		}
@@ -375,6 +380,21 @@ func (s *Server) handleLNDWalletInit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, lndWalletInitResponse{PrimaryAddress: result.PrimaryAddress})
+}
+
+// InitializeLND executes the same serialized path used by the UI endpoint.
+// Startup callers use it so an automatic retry can never race an operator's
+// explicit unlock/init request.
+func (s *Server) InitializeLND(ctx context.Context) (LNDInitResult, error) {
+	if s.lndInit == nil {
+		return LNDInitResult{}, fmt.Errorf("LND wallet init is not configured")
+	}
+	s.lndInitMu.Lock()
+	defer s.lndInitMu.Unlock()
+	if s.currentLNDWallet() != nil {
+		return LNDInitResult{}, nil
+	}
+	return s.lndInit(ctx)
 }
 
 // lndInitErrorStatus maps wallet-init failures to HTTP status codes.

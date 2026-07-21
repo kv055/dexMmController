@@ -46,6 +46,8 @@ import (
 	"commons/metrics"
 	"commons/telegram"
 	"commons/tracing"
+
+	"gorm.io/gorm"
 )
 
 // paymentMethodSnapshot converts a payment_methods DB row into the pre-trade
@@ -130,11 +132,26 @@ func main() {
 	metricsReg := metrics.NewServiceRegistry("mmcontroller")
 	obs.Register(metricsReg.Registry)
 	telegram.RegisterMetrics(metricsReg.Registry)
+	startupState := api.NewStartupState()
+	startupState.RegisterMetrics(metricsReg.Registry)
+	// Start the listener before any network dependency. This keeps liveness,
+	// readiness and startup diagnostics available during daemon restarts.
+	apiServer := api.NewServer(apiAddr, nil).
+		WithInternalSecret(internalAPISecret).
+		WithMetrics(metricsReg).
+		WithStartupState(startupState)
+	go func() {
+		if err := apiServer.Run(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("api server failed: %v", err)
+			stop()
+		}
+	}()
 
 	// ── Database ──────────────────────────────────────────────────────────────
-	database, err := db.InitDB(databaseURL)
+	database, err := connectDatabaseWithRetry(ctx, databaseURL, startupState)
 	if err != nil {
-		log.Fatalf("failed to initialize database: %v", err)
+		log.Printf("database bootstrap stopped: %v", err)
+		return
 	}
 	defer db.Close(database)
 
@@ -381,9 +398,7 @@ func main() {
 		WithPaymentResolver(dexPaymentResolver).
 		WithTelegramRelay(telegramSvc, anomalyNotifier).
 		WithBisq(bq)
-	apiServer := api.NewServer(apiAddr, repo).
-		WithInternalSecret(internalAPISecret).
-		WithMetrics(metricsReg).
+	apiServer = apiServer.WithRepository(repo).
 		WithAccountHealth(exchangeAccountHealth).
 		WithCexAccount(cexAccountService).
 		WithTradeFlow(tradeFlow).
@@ -437,6 +452,7 @@ func main() {
 	// once at startup when a password already exists, and on demand from the UI via
 	// POST /api/lnd/wallet/init.
 	var lndBackupOnce sync.Once
+	var lndWorkersOnce sync.Once
 	var lndInitStatusMu sync.RWMutex
 	var lastLNDInitError string
 	lndInit := func(reqCtx context.Context) (result api.LNDInitResult, err error) {
@@ -445,9 +461,11 @@ func main() {
 			defer lndInitStatusMu.Unlock()
 			if err != nil {
 				lastLNDInitError = err.Error()
+				startupState.SetLNDReady(false, "lnd_bootstrap", err)
 				return
 			}
 			lastLNDInitError = ""
+			startupState.SetLNDReady(true, "ready", nil)
 		}()
 		password, aezeed, err := repo.LNDWalletCredentials(reqCtx)
 		if err != nil {
@@ -477,7 +495,7 @@ func main() {
 			}
 		}
 		if err := persistLNDChannelBackup(reqCtx, repo, lndClient, int64(lndAccount.ID)); err != nil {
-			log.Printf("warning: LND channel backup failed: %v", err)
+			return api.LNDInitResult{}, fmt.Errorf("persist LND channel backup: %w", err)
 		}
 
 		apiServer.WithLNDWallet(lndClient)
@@ -500,6 +518,10 @@ func main() {
 		lndBackupOnce.Do(func() {
 			go runPeriodicLNDChannelBackup(ctx, lndBackupInterval, repo, lndClient, int64(lndAccount.ID))
 		})
+		lndWorkersOnce.Do(func() {
+			lndHealthChecker.RunAndLog(ctx)
+			go lndHealthChecker.RunPeriodic(ctx, accountHealthInterval)
+		})
 
 		if primaryAddress != "" {
 			log.Printf("primary CEX deposit address ready: %s", primaryAddress)
@@ -517,13 +539,13 @@ func main() {
 			return lastLNDInitError
 		},
 	})
+	startupState.SetDatabaseReady(true, "lnd_bootstrap", nil)
 
 	if strings.TrimSpace(walletPassword) != "" {
-		if _, err := lndInit(ctx); err != nil {
-			log.Printf("warning: failed to initialize LND wallet at startup: %v", err)
-		}
+		go retryLNDInitialization(ctx, apiServer, startupState)
 	} else {
 		log.Println("LND wallet password not set; skipping wallet bootstrap — create it from the UI")
+		startupState.SetLNDReady(false, "awaiting_lnd_password", api.ErrLNDWalletPasswordMissing)
 	}
 
 	// ── Periodic healthcheck + dexrelay ─────────────────────────────────────────
@@ -537,19 +559,10 @@ func main() {
 	_ = dexRelayWorker
 	_ = healthcheckInterval
 
-	lndHealthChecker.RunAndLog(ctx)
-	go lndHealthChecker.RunPeriodic(ctx, accountHealthInterval)
 	go exchangeAccountHealth.RunPeriodic(ctx, accountHealthInterval)
 	// The Stage-6 release worker only acts on webhook-delivered jobs (no autonomous
 	// money-moving poll), so it runs unconditionally — unlike the team-gated dexrelay loop.
 	go dexReleaseWorker.Run(ctx)
-
-	go func() {
-		if err := apiServer.Run(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("api server failed: %v", err)
-			stop()
-		}
-	}()
 
 	// ── Offer Premium WSS Stream ──────────────────────────────────────────────
 	if offerPremiumWSSURL == "" {
@@ -608,6 +621,74 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// connectDatabaseWithRetry makes dependency outages observable instead of
+// turning them into controller restart loops. Local configuration/auth failures
+// are still returned immediately because waiting cannot repair them.
+func connectDatabaseWithRetry(ctx context.Context, databaseURL string, state *api.StartupState) (*gorm.DB, error) {
+	delay := time.Second
+	for {
+		database, err := db.InitDB(databaseURL)
+		if err == nil {
+			state.SetDatabaseReady(true, "database_ready", nil)
+			log.Println("database dependency is ready")
+			return database, nil
+		}
+		if nonRetryableDatabaseError(err) {
+			state.SetDatabaseReady(false, "database_configuration_error", err)
+			return nil, err
+		}
+		state.SetDatabaseReady(false, "waiting_for_database", err)
+		log.Printf("database unavailable: %v; retrying in %s", err, delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		if delay < 30*time.Second {
+			delay *= 2
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+		}
+	}
+}
+
+func nonRetryableDatabaseError(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "password authentication failed") ||
+		strings.Contains(message, "database does not exist") ||
+		strings.Contains(message, "invalid dsn")
+}
+
+func retryLNDInitialization(ctx context.Context, server *api.Server, state *api.StartupState) {
+	delay := time.Second
+	for {
+		state.SetLNDReady(false, "lnd_bootstrap", nil)
+		result, err := server.InitializeLND(ctx)
+		if err == nil {
+			log.Printf("LND wallet bootstrap complete (primary address %s)", result.PrimaryAddress)
+			return
+		}
+		state.SetLNDReady(false, "waiting_for_lnd", err)
+		log.Printf("LND wallet bootstrap failed: %v; retrying in %s", err, delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if delay < 30*time.Second {
+			delay *= 2
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+		}
+	}
 }
 
 // resolveDatabaseURL picks the Postgres connection string.
