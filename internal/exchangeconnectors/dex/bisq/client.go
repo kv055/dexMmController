@@ -76,6 +76,13 @@ type PaymentAccount struct {
 	TradeCurrency string
 }
 
+// PaymentMethod is one fiat payment method advertised by the Bisq daemon.
+type PaymentMethod struct {
+	ID             string
+	MaxTradePeriod int64
+	MaxTradeLimit  int64
+}
+
 // Trade represents a trade.
 type Trade struct {
 	// TradeID is the trade id value for the trade.
@@ -206,6 +213,64 @@ func (c *Client) GetPaymentAccounts(ctx context.Context) ([]PaymentAccount, erro
 		out = append(out, paymentAccountFromMessage(list.Get(i).Message()))
 	}
 	return out, nil
+}
+
+// GetPaymentMethods returns the fiat payment methods supported by the connected daemon.
+func (c *Client) GetPaymentMethods(ctx context.Context) ([]PaymentMethod, error) {
+	req := newMessage("GetPaymentMethodsRequest")
+	resp := newMessage("GetPaymentMethodsReply")
+	if err := c.invoke(ctx, "/io.bisq.protobuffer.PaymentAccounts/GetPaymentMethods", req, resp); err != nil {
+		return nil, err
+	}
+
+	list := resp.Get(resp.Descriptor().Fields().ByName("payment_methods")).List()
+	out := make([]PaymentMethod, 0, list.Len())
+	for i := 0; i < list.Len(); i++ {
+		msg := list.Get(i).Message()
+		out = append(out, PaymentMethod{
+			ID:             stringField(msg, "id"),
+			MaxTradePeriod: int64Field(msg, "max_trade_period"),
+			MaxTradeLimit:  int64Field(msg, "max_trade_limit"),
+		})
+	}
+	return out, nil
+}
+
+// GetPaymentAccountForm retrieves the daemon-generated JSON template for a fiat method.
+func (c *Client) GetPaymentAccountForm(ctx context.Context, paymentMethodID string) (string, error) {
+	if strings.TrimSpace(paymentMethodID) == "" {
+		return "", errors.New("bisq: payment method ID is required")
+	}
+	req := newMessage("GetPaymentAccountFormRequest")
+	setString(req, "payment_method_id", paymentMethodID)
+	resp := newMessage("GetPaymentAccountFormReply")
+	if err := c.invoke(ctx, "/io.bisq.protobuffer.PaymentAccounts/GetPaymentAccountForm", req, resp); err != nil {
+		return "", err
+	}
+	form := stringField(resp, "payment_account_form_json")
+	if strings.TrimSpace(form) == "" {
+		return "", errors.New("bisq: payment account form is empty")
+	}
+	return form, nil
+}
+
+// CreatePaymentAccount creates a fiat account from a daemon-compatible JSON form.
+func (c *Client) CreatePaymentAccount(ctx context.Context, paymentAccountForm string) (*PaymentAccount, error) {
+	if strings.TrimSpace(paymentAccountForm) == "" {
+		return nil, errors.New("bisq: payment account form is required")
+	}
+	req := newMessage("CreatePaymentAccountRequest")
+	setString(req, "payment_account_form", paymentAccountForm)
+	resp := newMessage("CreatePaymentAccountReply")
+	if err := c.invoke(ctx, "/io.bisq.protobuffer.PaymentAccounts/CreatePaymentAccount", req, resp); err != nil {
+		return nil, err
+	}
+	paField := resp.Descriptor().Fields().ByName("payment_account")
+	if !resp.Has(paField) {
+		return nil, errors.New("bisq: create payment account returned no account")
+	}
+	account := paymentAccountFromMessage(resp.Get(paField).Message())
+	return &account, nil
 }
 
 // Version returns the Bisq daemon release reported by its gRPC API.
@@ -745,6 +810,22 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 			message("GetPaymentAccountsReply", []*descriptorpb.FieldDescriptorProto{
 				repeatedMessageField("payment_accounts", 1, ".io.bisq.protobuffer.PaymentAccount"),
 			}),
+			message("GetPaymentMethodsRequest", nil),
+			message("GetPaymentMethodsReply", []*descriptorpb.FieldDescriptorProto{
+				repeatedMessageField("payment_methods", 1, ".io.bisq.protobuffer.PaymentMethod"),
+			}),
+			message("GetPaymentAccountFormRequest", []*descriptorpb.FieldDescriptorProto{
+				field("payment_method_id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}),
+			message("GetPaymentAccountFormReply", []*descriptorpb.FieldDescriptorProto{
+				field("payment_account_form_json", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}),
+			message("CreatePaymentAccountRequest", []*descriptorpb.FieldDescriptorProto{
+				field("payment_account_form", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}),
+			message("CreatePaymentAccountReply", []*descriptorpb.FieldDescriptorProto{
+				messageField("payment_account", 1, ".io.bisq.protobuffer.PaymentAccount"),
+			}),
 			// CreateSepaPaymentAccount / DeletePaymentAccount are provided by the dexArbTrading
 			// bisq source patch (bisq-patches/payment-accounts-sepa-delete.patch); the stock
 			// daemon exposes neither.
@@ -843,6 +924,9 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 				Name: strptr("PaymentAccounts"),
 				Method: []*descriptorpb.MethodDescriptorProto{
 					method("GetPaymentAccounts", ".io.bisq.protobuffer.GetPaymentAccountsRequest", ".io.bisq.protobuffer.GetPaymentAccountsReply"),
+					method("GetPaymentMethods", ".io.bisq.protobuffer.GetPaymentMethodsRequest", ".io.bisq.protobuffer.GetPaymentMethodsReply"),
+					method("GetPaymentAccountForm", ".io.bisq.protobuffer.GetPaymentAccountFormRequest", ".io.bisq.protobuffer.GetPaymentAccountFormReply"),
+					method("CreatePaymentAccount", ".io.bisq.protobuffer.CreatePaymentAccountRequest", ".io.bisq.protobuffer.CreatePaymentAccountReply"),
 					method("CreateSepaPaymentAccount", ".io.bisq.protobuffer.CreateSepaPaymentAccountRequest", ".io.bisq.protobuffer.CreateSepaPaymentAccountReply"),
 					method("DeletePaymentAccount", ".io.bisq.protobuffer.DeletePaymentAccountRequest", ".io.bisq.protobuffer.DeletePaymentAccountReply"),
 				},

@@ -50,7 +50,7 @@ type Server struct {
 	dexRelease      dexReleaseEnqueuer
 	dexReleaseToken string
 
-	// bisqPayments is the bisq1 gRPC client used to list/create/delete payment accounts in
+	// bisqPayments is the bisq1 gRPC client used to list/form/create/delete payment accounts in
 	// the bisq daemon's own profile, set via WithBisqPayments. Nil when the DEX stack is
 	// disabled, in which case the payment-account routes answer 503.
 	bisqPayments bisqPaymentClient
@@ -197,7 +197,7 @@ func (s *Server) WithMetrics(reg *metrics.ServiceRegistry) *Server {
 }
 
 // WithBisqPayments attaches the bisq1 payment-account client used by the
-// /api/bisq/payment-accounts routes.
+// /api/bisq/payment-account and payment-method routes.
 func (s *Server) WithBisqPayments(client bisqPaymentClient) *Server {
 	s.bisqPayments = client
 	return s
@@ -243,6 +243,8 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/telegram/set-webhook", s.handleTelegramSetWebhook)
 	mux.HandleFunc("POST /api/telegram/test", s.handleTelegramTest)
 	mux.HandleFunc("GET /api/bisq/payment-accounts", s.handleBisqPaymentAccounts)
+	mux.HandleFunc("GET /api/bisq/payment-methods", s.handleBisqPaymentMethods)
+	mux.HandleFunc("GET /api/bisq/payment-methods/{id}/form", s.handleBisqPaymentAccountForm)
 	mux.HandleFunc("POST /api/bisq/payment-accounts", s.handleBisqCreatePaymentAccount)
 	mux.HandleFunc("DELETE /api/bisq/payment-accounts/{id}", s.handleBisqDeletePaymentAccount)
 	mux.HandleFunc("GET /ws/cex/hedge-stream", s.handleCexHedgeStream)

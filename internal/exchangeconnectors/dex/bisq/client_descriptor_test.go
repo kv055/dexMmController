@@ -26,12 +26,26 @@ func TestFundingAddressDescriptor(t *testing.T) {
 // DeletePaymentAccount messages resolve and their request fields are settable.
 func TestPaymentAccountMutationDescriptor(t *testing.T) {
 	for _, name := range []string{
+		"GetPaymentMethodsRequest", "GetPaymentMethodsReply",
+		"GetPaymentAccountFormRequest", "GetPaymentAccountFormReply",
+		"CreatePaymentAccountRequest", "CreatePaymentAccountReply",
 		"CreateSepaPaymentAccountRequest", "CreateSepaPaymentAccountReply",
 		"DeletePaymentAccountRequest", "DeletePaymentAccountReply",
 	} {
 		if msg := newMessage(name); msg == nil {
 			t.Fatalf("descriptor missing message %s", name)
 		}
+	}
+
+	formReq := newMessage("GetPaymentAccountFormRequest")
+	setString(formReq, "payment_method_id", "REVOLUT")
+	if got := stringField(formReq, "payment_method_id"); got != "REVOLUT" {
+		t.Fatalf("payment_method_id = %q", got)
+	}
+	createReq := newMessage("CreatePaymentAccountRequest")
+	setString(createReq, "payment_account_form", `{"paymentMethodId":"REVOLUT"}`)
+	if got := stringField(createReq, "payment_account_form"); got == "" {
+		t.Fatal("generic payment_account_form was not set")
 	}
 
 	req := newMessage("CreateSepaPaymentAccountRequest")
