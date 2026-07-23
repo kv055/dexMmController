@@ -111,21 +111,7 @@ func (s *Server) updateTelegramSettings(w http.ResponseWriter, r *http.Request) 
 
 	// Apply in-process so dexMmController's own client/relay pick up the change
 	// immediately (the poller would also catch it within ~10s).
-	cfg := telegram.Config{
-		Token:      updated.BotToken,
-		ChatID:     updated.ChatID,
-		WebhookURL: updated.DexmmWebhookURL,
-	}
-	s.telegramStore.Set(cfg)
-	client := s.telegramStore.Client()
-	if s.telegramRelay != nil {
-		s.telegramRelay.SetClient(client)
-	}
-	for _, setter := range s.telegramExtraSetters {
-		if setter != nil {
-			setter.SetClient(client)
-		}
-	}
+	s.applyTelegramConfig(updated)
 
 	// Re-register the DEXMM webhook with Telegram when fully configured.
 	if s.telegramStore.Enabled() && strings.TrimSpace(updated.DexmmWebhookURL) != "" {
@@ -142,6 +128,19 @@ func (s *Server) updateTelegramSettings(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, rowToResponse(updated, s.telegramStore))
+}
+
+func (s *Server) applyTelegramConfig(row db.TelegramSettings) {
+	s.telegramStore.Set(telegram.Config{Token: row.BotToken, ChatID: row.ChatID, WebhookURL: row.DexmmWebhookURL})
+	client := s.telegramStore.Client()
+	if s.telegramRelay != nil {
+		s.telegramRelay.SetClient(client)
+	}
+	for _, setter := range s.telegramExtraSetters {
+		if setter != nil {
+			setter.SetClient(client)
+		}
+	}
 }
 
 // handleTelegramSetWebhook re-registers one service's webhook URL with Telegram.

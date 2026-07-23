@@ -65,6 +65,8 @@ type Server struct {
 	telegramSettingsRepo telegramSettingsBackend
 	telegramStore        *telegram.Store
 	telegramExtraSetters []telegramClientSetter
+	telegramPairingMu    sync.Mutex
+	telegramPairing      *telegramPairing
 
 	// metrics is the commons service registry; when set, Run serves /metrics and
 	// wraps the mux with the RED request middleware.
@@ -240,6 +242,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /telegram-webhook", s.handleTelegramWebhook)
 	mux.HandleFunc("GET /api/telegram/config", s.handleTelegramSettingsConfig)
 	mux.HandleFunc("PUT /api/telegram/config", s.handleTelegramSettingsConfig)
+	mux.HandleFunc("POST /api/telegram/pair", s.handleTelegramPair)
 	mux.HandleFunc("POST /api/telegram/set-webhook", s.handleTelegramSetWebhook)
 	mux.HandleFunc("POST /api/telegram/test", s.handleTelegramTest)
 	mux.HandleFunc("GET /api/bisq/payment-accounts", s.handleBisqPaymentAccounts)

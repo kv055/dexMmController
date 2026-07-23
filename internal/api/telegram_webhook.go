@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"commons/telegram"
 )
@@ -18,15 +19,19 @@ func (s *Server) handleTelegramWebhook(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	if s.telegramRelay == nil {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
 	var u telegram.Update
 	if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	s.telegramRelay.HandleUpdate(r.Context(), u)
+	if msg := u.Message; msg != nil && msg.Chat != nil && strings.EqualFold(msg.Chat.Type, "private") && s.consumeTelegramPairing(msg.Text) {
+		if err := s.pairTelegramChat(r.Context(), msg.Chat.ID); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}
+	if s.telegramRelay != nil {
+		s.telegramRelay.HandleUpdate(r.Context(), u)
+	}
 	w.WriteHeader(http.StatusOK)
 }
