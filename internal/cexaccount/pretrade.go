@@ -14,14 +14,15 @@ import (
 
 // BidChecker runs all pre-trade checks for the bid side (buying BTC on a CEX).
 type BidChecker struct {
-	balance       BalanceFetcher
-	whitelist     WhitelistFetcher
-	permissions   PermissionChecker
-	paymentSetup  PaymentSetupFetcher
-	chatTemplates ChatTemplateFetcher
-	communication CommunicationGateway
-	walletMu      sync.RWMutex
-	wallet        WalletSource
+	balance        BalanceFetcher
+	whitelist      WhitelistFetcher
+	permissions    PermissionChecker
+	paymentSetup   PaymentSetupFetcher
+	chatTemplates  ChatTemplateFetcher
+	communication  CommunicationGateway
+	fiatController FiatControllerChecker
+	walletMu       sync.RWMutex
+	wallet         WalletSource
 }
 
 // NewBidChecker creates a BidChecker. The wallet source is set lazily via SetWallet
@@ -47,6 +48,11 @@ func (c *BidChecker) SetWallet(ws WalletSource) {
 // Safe to call with hot-reloadable stores such as telegram.Store.
 func (c *BidChecker) SetCommunicationGateway(gateway CommunicationGateway) {
 	c.communication = gateway
+}
+
+// SetFiatControllerChecker injects the fiat-arrival safety check.
+func (c *BidChecker) SetFiatControllerChecker(checker FiatControllerChecker) {
+	c.fiatController = checker
 }
 
 // CheckResult is the outcome of a single named pre-trade check.
@@ -121,6 +127,14 @@ func (c *BidChecker) Run(ctx context.Context, provider, currency string, require
 		report.OK = false
 	}
 	report.Checks = append(report.Checks, paymentRes)
+
+	notificationRes := CheckResult{Name: "fiat_controller", Label: "Payment notification channels", Passed: true}
+	if err := c.checkFiatController(ctx, resolved); err != nil {
+		notificationRes.Passed = false
+		notificationRes.Message = err.Error()
+		report.OK = false
+	}
+	report.Checks = append(report.Checks, notificationRes)
 
 	templateRes := CheckResult{Name: "message_template", Label: "Payment message template", Passed: true}
 	if err := c.checkMessageTemplate(ctx, dex, resolved); err != nil {
@@ -198,6 +212,16 @@ func (c *BidChecker) checkCommunicationGateway(ctx context.Context) error {
 		return fmt.Errorf("pre-trade check failed: no active Telegram communication channel is configured; configure the Telegram bot token and chat ID before trading")
 	}
 	return nil
+}
+
+func (c *BidChecker) checkFiatController(ctx context.Context, paymentMethod string) error {
+	if c.fiatController == nil {
+		return fmt.Errorf("pre-trade check failed: Fiat Controller checker is not configured")
+	}
+	if strings.TrimSpace(paymentMethod) == "" {
+		return fmt.Errorf("pre-trade check failed: cannot validate notification channels without a resolved payment method")
+	}
+	return c.fiatController.Check(ctx, paymentMethod)
 }
 
 func (c *BidChecker) checkWhitelist(ctx context.Context, provider string) (string, error) {

@@ -5,6 +5,12 @@ import (
 	"fmt"
 )
 
+// FiatControllerChecker verifies every notification channel selected on the
+// account linked to the resolved canonical payment method.
+type FiatControllerChecker interface {
+	Check(ctx context.Context, paymentMethod string) error
+}
+
 // BalanceFetcher returns the available fiat balance for a CEX provider and currency.
 type BalanceFetcher interface {
 	FiatAvailable(ctx context.Context, provider, currency string) (float64, error)

@@ -58,6 +58,10 @@ type fakeCommunicationGateway bool
 
 func (f fakeCommunicationGateway) Enabled() bool { return bool(f) }
 
+type fakeFiatControllerChecker struct{ err error }
+
+func (f fakeFiatControllerChecker) Check(context.Context, string) error { return f.err }
+
 // okPaymentSetup returns a catalog where Revolut and SEPA are linked+active
 // and valid.
 func okPaymentSetup() *fakePaymentSetup {
@@ -91,6 +95,7 @@ func newTestChecker(
 		nil,
 	)
 	c.SetCommunicationGateway(fakeCommunicationGateway(true))
+	c.SetFiatControllerChecker(fakeFiatControllerChecker{})
 	if walletAddrs != nil {
 		c.SetWallet(WalletSourceFunc(func(context.Context) ([]string, error) { return walletAddrs() }))
 	}
@@ -131,8 +136,8 @@ func TestRunAllChecksPass(t *testing.T) {
 	if !report.OK {
 		t.Fatalf("expected OK, got %+v", report)
 	}
-	if len(report.Checks) != 6 {
-		t.Fatalf("expected 6 checks, got %d", len(report.Checks))
+	if len(report.Checks) != 7 {
+		t.Fatalf("expected 7 checks, got %d", len(report.Checks))
 	}
 	for _, chk := range report.Checks {
 		if !chk.Passed {
@@ -161,8 +166,8 @@ func TestRunRunsToCompletion(t *testing.T) {
 	if report.OK {
 		t.Fatal("expected report.OK=false")
 	}
-	if len(report.Checks) != 6 {
-		t.Fatalf("expected all 6 checks reported, got %d", len(report.Checks))
+	if len(report.Checks) != 7 {
+		t.Fatalf("expected all 7 checks reported, got %d", len(report.Checks))
 	}
 	byName := map[string]CheckResult{}
 	for _, chk := range report.Checks {

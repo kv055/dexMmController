@@ -79,6 +79,8 @@ func main() {
 	krakenBaseURL := envOr("KRAKEN_API_BASE_URL", "")
 	coinbaseBaseURL := envOr("COINBASE_API_BASE_URL", "")
 	coinbaseExchangeBaseURL := envOr("COINBASE_EXCHANGE_API_BASE_URL", "")
+	fiatControllerURL := envOr("FIAT_CONTROLLER_URL", "http://fiat-controller:8080")
+	fiatControllerHeartbeatSecret := envOr("FIAT_CONTROLLER_HEARTBEAT_SECRET", envOr("PUSHPUSH_HEARTBEAT_SECRET", ""))
 	bisqGRPCHost := envOr("BISQ_GRPC_HOST", "localhost:9998")
 	bisqAPIPassword := envOr("BISQ_API_PASSWORD", "")
 	robosatsURL := envOr("ROBOSATS_URL", "")
@@ -372,6 +374,11 @@ func main() {
 		repo,
 	)
 	bidChecker.SetCommunicationGateway(telegramStore)
+	bidChecker.SetFiatControllerChecker(cexaccount.NewHTTPFiatControllerChecker(
+		fiatControllerURL,
+		fiatControllerHeartbeatSecret,
+		&http.Client{Timeout: 5 * time.Second},
+	))
 	cexAccountService.WithBidChecker(bidChecker)
 	dexRelayWorker := dexrelay.NewWorker(repo, cexAccountService, btc, dexTaker, dexPaymentResolver)
 	lndHealthChecker := lndhealth.NewChecker(repo, nil, lndhealth.Config{

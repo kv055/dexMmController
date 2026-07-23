@@ -1,0 +1,78 @@
+package cexaccount
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+)
+
+// HTTPFiatControllerChecker checks liveness and all notification channels
+// selected on the resolved payment account.
+type HTTPFiatControllerChecker struct {
+	baseURL string
+	secret  string
+	client  *http.Client
+}
+
+func NewHTTPFiatControllerChecker(baseURL, secret string, client *http.Client) *HTTPFiatControllerChecker {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return &HTTPFiatControllerChecker{baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"), secret: secret, client: client}
+}
+
+func (c *HTTPFiatControllerChecker) Check(ctx context.Context, paymentMethod string) error {
+	if c.baseURL == "" {
+		return fmt.Errorf("pre-trade check failed: Fiat Controller URL is not configured")
+	}
+	if err := c.get(ctx, "/health", nil); err != nil {
+		return fmt.Errorf("pre-trade check failed: Fiat Controller is unavailable: %w", err)
+	}
+	var health struct {
+		SelectedChannels []string `json:"selected_channels"`
+		Channels         map[string]struct {
+			Healthy bool `json:"healthy"`
+		} `json:"channels"`
+	}
+	path := "/notification-health?payment_method=" + url.QueryEscape(strings.TrimSpace(paymentMethod))
+	if err := c.get(ctx, path, &health); err != nil {
+		return fmt.Errorf("pre-trade check failed: could not read payment notification health: %w", err)
+	}
+	if len(health.SelectedChannels) == 0 {
+		return fmt.Errorf("pre-trade check failed: payment account has no selected notification channel")
+	}
+	for _, channel := range health.SelectedChannels {
+		state, ok := health.Channels[channel]
+		if !ok || !state.Healthy {
+			return fmt.Errorf("pre-trade check failed: selected %s notification channel is unhealthy or has never succeeded", channel)
+		}
+	}
+	return nil
+}
+
+func (c *HTTPFiatControllerChecker) get(ctx context.Context, path string, output any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	if c.secret != "" {
+		req.Header.Set("X-Webhook-Secret", c.secret)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
+	}
+	if output != nil {
+		if err := json.NewDecoder(resp.Body).Decode(output); err != nil {
+			return fmt.Errorf("decode response: %w", err)
+		}
+	}
+	return nil
+}
