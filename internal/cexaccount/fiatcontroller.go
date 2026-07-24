@@ -25,12 +25,25 @@ func NewHTTPFiatControllerChecker(baseURL, secret string, client *http.Client) *
 }
 
 func (c *HTTPFiatControllerChecker) Check(ctx context.Context, paymentMethod string) error {
+	if err := c.CheckService(ctx); err != nil {
+		return err
+	}
+	return c.CheckNotificationHealth(ctx, paymentMethod)
+}
+
+// CheckService verifies that the Fiat Controller HTTP service is reachable.
+func (c *HTTPFiatControllerChecker) CheckService(ctx context.Context) error {
 	if c.baseURL == "" {
 		return fmt.Errorf("pre-trade check failed: Fiat Controller URL is not configured")
 	}
 	if err := c.get(ctx, "/health", nil); err != nil {
 		return fmt.Errorf("pre-trade check failed: Fiat Controller is unavailable: %w", err)
 	}
+	return nil
+}
+
+// CheckNotificationHealth verifies all selected payment-notification channels.
+func (c *HTTPFiatControllerChecker) CheckNotificationHealth(ctx context.Context, paymentMethod string) error {
 	var health struct {
 		SelectedChannels []string `json:"selected_channels"`
 		Channels         map[string]struct {

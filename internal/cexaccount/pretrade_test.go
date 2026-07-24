@@ -136,8 +136,8 @@ func TestRunAllChecksPass(t *testing.T) {
 	if !report.OK {
 		t.Fatalf("expected OK, got %+v", report)
 	}
-	if len(report.Checks) != 7 {
-		t.Fatalf("expected 7 checks, got %d", len(report.Checks))
+	if len(report.Checks) != 8 {
+		t.Fatalf("expected 8 checks, got %d", len(report.Checks))
 	}
 	for _, chk := range report.Checks {
 		if !chk.Passed {
@@ -166,8 +166,8 @@ func TestRunRunsToCompletion(t *testing.T) {
 	if report.OK {
 		t.Fatal("expected report.OK=false")
 	}
-	if len(report.Checks) != 7 {
-		t.Fatalf("expected all 7 checks reported, got %d", len(report.Checks))
+	if len(report.Checks) != 8 {
+		t.Fatalf("expected all 8 checks reported, got %d", len(report.Checks))
 	}
 	byName := map[string]CheckResult{}
 	for _, chk := range report.Checks {

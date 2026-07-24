@@ -128,8 +128,16 @@ func (c *BidChecker) Run(ctx context.Context, provider, currency string, require
 	}
 	report.Checks = append(report.Checks, paymentRes)
 
+	serviceRes := CheckResult{Name: "fiat_controller_service", Label: "Fiat Controller service", Passed: true}
+	if err := c.checkFiatControllerService(ctx); err != nil {
+		serviceRes.Passed = false
+		serviceRes.Message = err.Error()
+		report.OK = false
+	}
+	report.Checks = append(report.Checks, serviceRes)
+
 	notificationRes := CheckResult{Name: "fiat_controller", Label: "Payment notification channels", Passed: true}
-	if err := c.checkFiatController(ctx, resolved); err != nil {
+	if err := c.checkFiatControllerNotifications(ctx, resolved); err != nil {
 		notificationRes.Passed = false
 		notificationRes.Message = err.Error()
 		report.OK = false
@@ -214,12 +222,25 @@ func (c *BidChecker) checkCommunicationGateway(ctx context.Context) error {
 	return nil
 }
 
-func (c *BidChecker) checkFiatController(ctx context.Context, paymentMethod string) error {
+func (c *BidChecker) checkFiatControllerService(ctx context.Context) error {
+	if c.fiatController == nil {
+		return fmt.Errorf("pre-trade check failed: Fiat Controller checker is not configured")
+	}
+	if checker, ok := c.fiatController.(FiatControllerHealthChecker); ok {
+		return checker.CheckService(ctx)
+	}
+	return nil
+}
+
+func (c *BidChecker) checkFiatControllerNotifications(ctx context.Context, paymentMethod string) error {
 	if c.fiatController == nil {
 		return fmt.Errorf("pre-trade check failed: Fiat Controller checker is not configured")
 	}
 	if strings.TrimSpace(paymentMethod) == "" {
 		return fmt.Errorf("pre-trade check failed: cannot validate notification channels without a resolved payment method")
+	}
+	if checker, ok := c.fiatController.(FiatControllerHealthChecker); ok {
+		return checker.CheckNotificationHealth(ctx, paymentMethod)
 	}
 	return c.fiatController.Check(ctx, paymentMethod)
 }

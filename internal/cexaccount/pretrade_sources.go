@@ -11,6 +11,14 @@ type FiatControllerChecker interface {
 	Check(ctx context.Context, paymentMethod string) error
 }
 
+// FiatControllerHealthChecker exposes the Fiat Controller's two independent
+// pre-trade safety checks. Implementations that only satisfy FiatControllerChecker
+// remain supported as a single, combined notification check.
+type FiatControllerHealthChecker interface {
+	CheckService(ctx context.Context) error
+	CheckNotificationHealth(ctx context.Context, paymentMethod string) error
+}
+
 // BalanceFetcher returns the available fiat balance for a CEX provider and currency.
 type BalanceFetcher interface {
 	FiatAvailable(ctx context.Context, provider, currency string) (float64, error)
