@@ -4,13 +4,17 @@ package hodlhodl
 
 import (
 	"bufio"
+	"commons/exchangecredentials"
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // loadEnv reads key=value pairs from the project root .env file into a map.
@@ -18,7 +22,7 @@ func loadEnv(t *testing.T) map[string]string {
 	t.Helper()
 	// Walk up from this test file to the project root.
 	_, thisFile, _, _ := runtime.Caller(0)
-	root := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..")
 	f, err := os.Open(filepath.Join(root, ".env"))
 	if err != nil {
 		t.Skipf("no .env file found, skipping integration test: %v", err)
@@ -44,12 +48,24 @@ func loadEnv(t *testing.T) map[string]string {
 func integrationClient(t *testing.T) *Client {
 	t.Helper()
 	env := loadEnv(t)
-	apiKey := env["HODLHODL_API_KEY"]
-	if apiKey == "" {
-		t.Skip("HODLHODL_API_KEY not set in .env, skipping")
+	databaseURL := env["DATABASE_URL"]
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set in .env, skipping")
+	}
+	if appKey := env["APP_ENCRYPTION_KEY"]; appKey != "" {
+		t.Setenv("APP_ENCRYPTION_KEY", appKey)
+	}
+	database, err := sql.Open("pgx", databaseURL)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	credentials, err := exchangecredentials.NewStore(database).Resolve("HodlHodl")
+	if err != nil {
+		t.Skipf("no active HodlHodl database credentials, skipping: %v", err)
 	}
 	baseURL := env["HODLHODL_URL"] // empty → default
-	return NewClient(baseURL, apiKey)
+	return NewClient(baseURL, credentials.APIKey).WithSignatureKey(credentials.APISecret)
 }
 
 func TestIntegration_GetPublicOffer(t *testing.T) {

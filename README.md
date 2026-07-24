@@ -130,22 +130,12 @@ Important variables:
 - `HEALTHCHECK_INTERVAL`
 - `ACCOUNT_HEALTH_INTERVAL`
 - `OPENCLAW_URL`
-- `HUMMINGBOT_URL`
-- `HUMMINGBOT_USERNAME`
-- `HUMMINGBOT_PASSWORD`
 - `HODLHODL_URL`
-- `HODLHODL_API_KEY`
-- `HODLHODL_API_SIGNATURE_KEY`
 - `BISQ_GRPC_HOST`
 - `BISQ_API_PASSWORD`
 - `ROBOSATS_URL`
-- `ROBOSATS_AUTH_TOKEN`
 - `BINANCE_API_BASE_URL`
-- `BINANCE_API_KEY`
-- `BINANCE_SECRET_KEY`
 - `KRAKEN_API_BASE_URL`
-- `KRAKEN_API_KEY`
-- `KRAKEN_SECRET_KEY`
 - `LND_HOST`
 - `LND_TLS_CERT_PATH`
 - `LND_MACAROON_PATH`
@@ -156,7 +146,12 @@ Important variables:
 - `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP_FILE`
 - `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP`
 
-The root Compose stack mounts LND data and secret files into the MM controller container and runs the service with host networking so it can reach LND and dashboard endpoints on localhost.
+The root Compose stack mounts LND data into the MM controller container and
+reaches the LND and dashboard services over the Compose bridge network.
+
+Exchange API keys, API secrets, and passphrases are loaded exclusively from the
+shared `accounts` and `api_keys` tables. Manage them through the dexMonitor
+Accounts panel; exchange credentials are not read from `.env`.
 
 ## Local Development
 
@@ -199,4 +194,6 @@ Shared schema files live in `dexUnifiedApi`.
 - The selected DEX offer is currently the one with the highest `net_premium_percent`.
 - The controller keeps reconnecting to the WebSocket while the process is alive.
 - Failed offer execution is retained in the database for inspection instead of being discarded.
-- Keep LND and exchange credentials out of git. Use mounted secret files and local `.env` files.
+- Keep LND and exchange credentials out of git. LND bootstrap inputs use mounted
+  secret files; exchange API credentials are encrypted in Postgres and managed
+  through the dexMonitor Accounts panel.

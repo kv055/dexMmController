@@ -11,6 +11,13 @@ import (
 	"context"
 )
 
+func TestNewFuturesClientUsesSuppliedCredentials(t *testing.T) {
+	client := NewFuturesClient(" db-key ", " db-secret ", " db-passphrase ")
+	if client.apiKey != "db-key" || client.apiSecret != "db-secret" || client.passphrase != "db-passphrase" {
+		t.Fatalf("credentials = %q/%q/%q, want supplied database credentials", client.apiKey, client.apiSecret, client.passphrase)
+	}
+}
+
 func TestCoinbaseFuturesPlaceOrderShort(t *testing.T) {
 	var gotOrderBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

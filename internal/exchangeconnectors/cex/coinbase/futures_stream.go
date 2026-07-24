@@ -35,7 +35,7 @@ type coinbaseINTXPosition struct {
 // channel is then closed.
 func (c *FuturesClient) StreamPositions(ctx context.Context) (<-chan cex.HedgePositionUpdate, error) {
 	if strings.TrimSpace(c.apiKey) == "" || strings.TrimSpace(c.apiSecret) == "" {
-		return nil, fmt.Errorf("coinbase futures: missing API credentials (set COINBASE_FUTURES_API_KEY/SECRET)")
+		return nil, fmt.Errorf("coinbase futures: active database API credentials are missing")
 	}
 	out := make(chan cex.HedgePositionUpdate, 8)
 	go func() {

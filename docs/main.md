@@ -15,10 +15,13 @@ This file defines 3 type(s), implements 13 function or method entry point(s).
 
 - Uses time windows, timestamps, or duration calculations.
 - Accepts context for cancellation, deadlines, or request scoping.
+- Loads active exchange API credentials from the shared `accounts` and
+  `api_keys` tables. Runtime exchange clients do not fall back to `.env`
+  credentials.
 
 ## Types
 
-### `robosatsTokenRepo`
+### `exchangeAPIKeyRepo`
 
 Definition: `interface { GetActiveAPIKeysForProvider(ctx context.Context, provider string) ([]db.APIKey, error) }`
 
@@ -46,9 +49,18 @@ Signature: `func envOr(key, fallback string) string`
 
 ### `robosatsAuthTokenFromDB`
 
-This function is part of the `main` package implementation.
+Loads the active RoboSats token from the shared API-key table. Database errors
+are returned and an absent key produces an empty token; there is no environment
+fallback.
 
-Signature: `func robosatsAuthTokenFromDB(ctx context.Context, repo robosatsTokenRepo, fallback string) (string, error)`
+Signature: `func robosatsAuthTokenFromDB(ctx context.Context, repo exchangeAPIKeyRepo) (string, error)`
+
+### `hodlHodlClientFromDB`
+
+Builds the HodlHodl runtime client from the newest active database API key and
+signature key. It returns an error when no complete credential pair exists.
+
+Signature: `func hodlHodlClientFromDB(ctx context.Context, repo exchangeAPIKeyRepo, baseURL string) (*hodlhodl.Client, error)`
 
 ### `mustEnv`
 
@@ -135,4 +147,3 @@ Signature: `func hashFileSHA256(path string) (string, int64, error)`
 - `dexMmController/internal/openclaw`
 - `dexMmController/internal/premiumoffers`
 - `dexMmController/internal/wallethub`
-

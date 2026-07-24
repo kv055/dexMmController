@@ -30,31 +30,19 @@ type FuturesClient struct {
 	http      *http.Client
 }
 
-// NewFuturesClient creates a FuturesClient from environment variables.
+// NewFuturesClient creates a FuturesClient from database-loaded credentials.
 // KRAKEN_FUTURES_API_BASE_URL overrides the production endpoint (useful for testing).
-// Falls back to KRAKEN_API_KEY / KRAKEN_API_SECRET when the FUTURES-specific vars are absent.
-func NewFuturesClient() *FuturesClient {
+func NewFuturesClient(apiKey, apiSecret string) *FuturesClient {
 	baseURL := os.Getenv("KRAKEN_FUTURES_API_BASE_URL")
 	if baseURL == "" {
 		baseURL = defaultFuturesBaseURL
 	}
-	apiKey := firstFuturesEnv("KRAKEN_FUTURES_API_KEY", "KRAKEN_API_KEY")
-	apiSecret := firstFuturesEnv("KRAKEN_FUTURES_API_SECRET", "KRAKEN_API_SECRET")
 	return &FuturesClient{
 		baseURL:   baseURL,
-		apiKey:    apiKey,
-		apiSecret: apiSecret,
+		apiKey:    strings.TrimSpace(apiKey),
+		apiSecret: strings.TrimSpace(apiSecret),
 		http:      &http.Client{Timeout: 15 * time.Second},
 	}
-}
-
-func firstFuturesEnv(keys ...string) string {
-	for _, k := range keys {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // PlaceOrder places a market order on Kraken Futures for the given symbol.

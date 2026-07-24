@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -29,25 +28,15 @@ type FuturesClient struct {
 	http       *http.Client
 }
 
-// NewFuturesClient creates a FuturesClient from environment variables.
-// COINBASE_FUTURES_API_* vars take precedence; COINBASE_API_* are the fallback.
-func NewFuturesClient() *FuturesClient {
+// NewFuturesClient creates a FuturesClient from database-loaded credentials.
+func NewFuturesClient(apiKey, apiSecret, passphrase string) *FuturesClient {
 	return &FuturesClient{
 		baseURL:    defaultINTXBaseURL,
-		apiKey:     firstCBEnv("COINBASE_FUTURES_API_KEY", "COINBASE_API_KEY"),
-		apiSecret:  firstCBEnv("COINBASE_FUTURES_API_SECRET", "COINBASE_API_SECRET"),
-		passphrase: firstCBEnv("COINBASE_FUTURES_API_PASSPHRASE", "COINBASE_API_PASSPHRASE"),
+		apiKey:     strings.TrimSpace(apiKey),
+		apiSecret:  strings.TrimSpace(apiSecret),
+		passphrase: strings.TrimSpace(passphrase),
 		http:       &http.Client{Timeout: 15 * time.Second},
 	}
-}
-
-func firstCBEnv(keys ...string) string {
-	for _, k := range keys {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // PlaceOrder places a market IOC order on Coinbase INTX for the given instrument.

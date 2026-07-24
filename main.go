@@ -26,9 +26,6 @@ import (
 	"dexMmController/internal/dexrelay"
 	"dexMmController/internal/dexrelease"
 	"dexMmController/internal/exchangeconnectors/cex"
-	"dexMmController/internal/exchangeconnectors/cex/binance"
-	"dexMmController/internal/exchangeconnectors/cex/coinbase"
-	"dexMmController/internal/exchangeconnectors/cex/kraken"
 	"dexMmController/internal/exchangeconnectors/dex/bisq"
 	"dexMmController/internal/exchangeconnectors/dex/bisq2"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
@@ -69,9 +66,7 @@ func main() {
 	// ── Config ────────────────────────────────────────────────────────────────
 	databaseURL := resolveDatabaseURL()
 	openclawURL := envOr("OPENCLAW_URL", "")
-	hhAPIKey := envOr("HODLHODL_API_KEY", "")
 	hhBaseURL := envOr("HODLHODL_URL", "")
-	hhSignatureKey := envOr("HODLHODL_SIGNATURE_KEY", "")
 	hhEscrowSeed := envOr("HODLHODL_ESCROW_SEED", "")
 	hhEscrowPaymentPassword := envOr("HODLHODL_ESCROW_PAYMENT_PASSWORD", "")
 	dexReleaseToken := envOr("DEX_RELEASE_WEBHOOK_TOKEN", "")
@@ -84,7 +79,6 @@ func main() {
 	bisqGRPCHost := envOr("BISQ_GRPC_HOST", "localhost:9998")
 	bisqAPIPassword := envOr("BISQ_API_PASSWORD", "")
 	robosatsURL := envOr("ROBOSATS_URL", "")
-	robosatsAuthToken := envOr("ROBOSATS_AUTH_TOKEN", "")
 	bisq2RESTHost := envOr("BISQ2_REST_HOST", "")
 	bisq2APIPassword := envOr("BISQ2_API_PASSWORD", "")
 	telegramCfg := telegram.LoadConfig("DEXMM")
@@ -204,13 +198,17 @@ func main() {
 	btc := bitcoin.NewNetworkDataFetcher()
 
 	// ── HodlHodl ─────────────────────────────────────────────────────────────
-	hh := hodlhodl.NewClient(hhBaseURL, hhAPIKey).WithSignatureKey(hhSignatureKey)
+	hh, err := hodlHodlClientFromDB(ctx, repo, hhBaseURL)
+	if err != nil {
+		log.Printf("warning: failed to load HodlHodl credentials from database: %v", err)
+		hh = hodlhodl.NewClient(hhBaseURL, "")
+	}
 
 	// ── Bisq / RoboSats ──────────────────────────────────────────────────────
 	bq := bisq.NewClient(bisqGRPCHost, bisqAPIPassword)
-	dbRobosatsAuthToken, err := robosatsAuthTokenFromDB(ctx, repo, robosatsAuthToken)
+	dbRobosatsAuthToken, err := robosatsAuthTokenFromDB(ctx, repo)
 	if err != nil {
-		log.Printf("warning: failed to load Robosats token from database; using environment fallback: %v", err)
+		log.Printf("warning: failed to load Robosats token from database: %v", err)
 	}
 	rs := robosats.NewClient(robosats.Config{
 		BaseURL:   robosatsURL,
@@ -385,17 +383,17 @@ func main() {
 		ExtendedMasterKeyFile: lndExtendedMasterKeyFile,
 	})
 	// hedgeStreamManager multiplexes each futures venue's live position feed to any
-	// number of WebSocket subscribers. Sources reuse the futures clients' env-var
-	// credentials (same as OpenHedge); each is started lazily on first subscriber.
+	// number of WebSocket subscribers. Each lazy source resolves the active database
+	// credential when the first subscriber starts it.
 	hedgeStreamManager := hedgestream.NewManager(map[string]hedgestream.SourceFunc{
 		"kraken_futures": func(ctx context.Context) (<-chan cex.HedgePositionUpdate, error) {
-			return kraken.NewFuturesClient().StreamPositions(ctx)
+			return cexAccountService.StreamHedgePositions(ctx, "kraken_futures")
 		},
 		"binance_futures": func(ctx context.Context) (<-chan cex.HedgePositionUpdate, error) {
-			return binance.NewFuturesClient().StreamPositions(ctx)
+			return cexAccountService.StreamHedgePositions(ctx, "binance_futures")
 		},
 		"coinbase_futures": func(ctx context.Context) (<-chan cex.HedgePositionUpdate, error) {
-			return coinbase.NewFuturesClient().StreamPositions(ctx)
+			return cexAccountService.StreamHedgePositions(ctx, "coinbase_futures")
 		},
 	})
 	tradeFlow := tradeflow.New(cexAccountService, repo).
@@ -723,21 +721,36 @@ func resolveDatabaseURL() string {
 	)
 }
 
-type robosatsTokenRepo interface {
+type exchangeAPIKeyRepo interface {
 	GetActiveAPIKeysForProvider(ctx context.Context, provider string) ([]db.APIKey, error)
 }
 
-func robosatsAuthTokenFromDB(ctx context.Context, repo robosatsTokenRepo, fallback string) (string, error) {
+func hodlHodlClientFromDB(ctx context.Context, repo exchangeAPIKeyRepo, baseURL string) (*hodlhodl.Client, error) {
+	keys, err := repo.GetActiveAPIKeysForProvider(ctx, "HodlHodl")
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range keys {
+		apiKey := strings.TrimSpace(key.APIKey)
+		signatureKey := strings.TrimSpace(key.APISecret)
+		if apiKey != "" && signatureKey != "" {
+			return hodlhodl.NewClient(baseURL, apiKey).WithSignatureKey(signatureKey), nil
+		}
+	}
+	return nil, fmt.Errorf("no active HodlHodl API credentials configured")
+}
+
+func robosatsAuthTokenFromDB(ctx context.Context, repo exchangeAPIKeyRepo) (string, error) {
 	keys, err := repo.GetActiveAPIKeysForProvider(ctx, "Robosats")
 	if err != nil {
-		return fallback, err
+		return "", err
 	}
 	for _, key := range keys {
 		if token := strings.TrimSpace(key.APIKey); token != "" {
 			return token, nil
 		}
 	}
-	return fallback, nil
+	return "", nil
 }
 
 // mustEnv returns the value of the environment variable key or exits if unset.

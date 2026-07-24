@@ -29,7 +29,7 @@ const (
 // then closed.
 func (c *FuturesClient) StreamPositions(ctx context.Context) (<-chan cex.HedgePositionUpdate, error) {
 	if strings.TrimSpace(c.apiKey) == "" {
-		return nil, fmt.Errorf("binance futures: missing API key (set BINANCE_FUTURES_API_KEY)")
+		return nil, fmt.Errorf("binance futures: active database API key is missing")
 	}
 	out := make(chan cex.HedgePositionUpdate, 8)
 	go func() {

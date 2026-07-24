@@ -179,7 +179,7 @@ func (t *Taker) takeRoboSats(ctx context.Context, offerID string) (*TakeResult, 
 	}
 	client := t.robosats
 	if token, err := t.latestRoboSatsToken(ctx); err != nil {
-		log.Printf("dexaccount: failed to load Robosats token from database; using configured client token: %v", err)
+		log.Printf("dexaccount: failed to refresh Robosats token from database; retaining current database-loaded client token: %v", err)
 	} else if token != "" {
 		client = t.robosats.WithAuthToken(token)
 	}

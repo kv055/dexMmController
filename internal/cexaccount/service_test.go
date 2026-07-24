@@ -13,6 +13,41 @@ import (
 	"dexMmController/internal/exchangeconnectors/cex/kraken"
 )
 
+type credentialRepo struct {
+	keysByProvider map[string][]db.APIKey
+}
+
+func (r credentialRepo) GetActiveAPIKeysForProvider(_ context.Context, provider string) ([]db.APIKey, error) {
+	return r.keysByProvider[provider], nil
+}
+
+func (credentialRepo) GetTransactionsByCEX(string) ([]db.Transaction, error) {
+	return nil, nil
+}
+
+func TestFuturesKeyUsesActiveDatabaseCredentials(t *testing.T) {
+	service := NewService(credentialRepo{keysByProvider: map[string][]db.APIKey{
+		"Kraken":   {{APIKey: "kraken-key", APISecret: "kraken-secret"}},
+		"Binance":  {{APIKey: "binance-key", APISecret: "binance-secret"}},
+		"Coinbase": {{APIKey: "spot-key", APISecret: "spot-secret"}, {APIKey: "intx-key", APISecret: "intx-secret", Passphrase: "intx-pass"}},
+	}}, Config{})
+
+	tests := map[string]db.APIKey{
+		"kraken_futures":   {APIKey: "kraken-key", APISecret: "kraken-secret"},
+		"binance_futures":  {APIKey: "binance-key", APISecret: "binance-secret"},
+		"coinbase_futures": {APIKey: "intx-key", APISecret: "intx-secret", Passphrase: "intx-pass"},
+	}
+	for venue, want := range tests {
+		got, err := service.futuresKey(context.Background(), venue)
+		if err != nil {
+			t.Fatalf("futuresKey(%q): %v", venue, err)
+		}
+		if got.APIKey != want.APIKey || got.APISecret != want.APISecret || got.Passphrase != want.Passphrase {
+			t.Fatalf("futuresKey(%q) = %#v, want %#v", venue, got, want)
+		}
+	}
+}
+
 func TestCanonicalProvider(t *testing.T) {
 	tests := map[string]string{
 		"kraken":    "Kraken",
@@ -132,13 +167,13 @@ func TestMarketBuyBTCRequiresCapitalRequirement(t *testing.T) {
 func TestBalancesFromCoinbase(t *testing.T) {
 	resp := balancesFromCoinbase([]coinbase.Account{
 		{
-			Currency: "BTC",
-			Active:   true,
+			Currency:         "BTC",
+			Active:           true,
 			AvailableBalance: coinbase.AccountAmount{Value: "0.25", Currency: "BTC"},
 		},
 		{
-			Currency: "EUR",
-			Active:   true,
+			Currency:         "EUR",
+			Active:           true,
 			AvailableBalance: coinbase.AccountAmount{Value: "42.10", Currency: "EUR"},
 		},
 	})

@@ -11,6 +11,13 @@ import (
 	"testing"
 )
 
+func TestNewFuturesClientUsesSuppliedCredentials(t *testing.T) {
+	client := NewFuturesClient(" db-key ", " db-secret ")
+	if client.apiKey != "db-key" || client.apiSecret != "db-secret" {
+		t.Fatalf("credentials = %q/%q, want supplied database credentials", client.apiKey, client.apiSecret)
+	}
+}
+
 func TestKrakenFuturesPlaceOrderShort(t *testing.T) {
 	var gotOrderBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

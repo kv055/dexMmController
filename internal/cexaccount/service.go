@@ -892,6 +892,10 @@ func (s *Service) OpenHedge(ctx context.Context, venue, side string, btcNotional
 	if cap := maxHedgeBTC(); btcNotional > cap {
 		return nil, fmt.Errorf("btc_notional %.8f exceeds the configured per-order cap of %.8f BTC", btcNotional, cap)
 	}
+	key, err := s.futuresKey(ctx, venue)
+	if err != nil {
+		return nil, err
+	}
 
 	result := &HedgeOpenResult{
 		Venue:       venue,
@@ -902,7 +906,7 @@ func (s *Service) OpenHedge(ctx context.Context, venue, side string, btcNotional
 
 	switch venue {
 	case "kraken_futures":
-		client := kraken.NewFuturesClient()
+		client := kraken.NewFuturesClient(key.APIKey, key.APISecret)
 		order, err := client.PlaceOrder(ctx, "PI_XBTUSD", side, btcNotional)
 		if err != nil {
 			return nil, err
@@ -913,7 +917,7 @@ func (s *Service) OpenHedge(ctx context.Context, venue, side string, btcNotional
 		result.Raw = order.Raw
 
 	case "coinbase_futures":
-		client := coinbase.NewFuturesClient()
+		client := coinbase.NewFuturesClient(key.APIKey, key.APISecret, key.Passphrase)
 		order, err := client.PlaceOrder(ctx, "BTC-PERP", side, btcNotional)
 		if err != nil {
 			return nil, err
@@ -924,7 +928,7 @@ func (s *Service) OpenHedge(ctx context.Context, venue, side string, btcNotional
 		result.Raw = order.Raw
 
 	case "binance_futures":
-		client := binance.NewFuturesClient()
+		client := binance.NewFuturesClient(key.APIKey, key.APISecret)
 		lev := int(leverage)
 		if lev <= 0 {
 			lev = 1
@@ -960,27 +964,70 @@ func (s *Service) LiveHedgePosition(ctx context.Context, venue string) (*HedgeSn
 	if !supportedHedgeVenues[venue] {
 		return nil, fmt.Errorf("unsupported hedge venue %q", venue)
 	}
+	key, err := s.futuresKey(ctx, venue)
+	if err != nil {
+		return nil, err
+	}
 
 	var (
-		update cex.HedgePositionUpdate
-		err    error
+		update   cex.HedgePositionUpdate
+		fetchErr error
 	)
 	switch venue {
 	case "kraken_futures":
-		update, err = kraken.NewFuturesClient().CurrentPosition(ctx)
+		update, fetchErr = kraken.NewFuturesClient(key.APIKey, key.APISecret).CurrentPosition(ctx)
 	case "coinbase_futures":
-		update, err = coinbase.NewFuturesClient().CurrentPosition(ctx)
+		update, fetchErr = coinbase.NewFuturesClient(key.APIKey, key.APISecret, key.Passphrase).CurrentPosition(ctx)
 	case "binance_futures":
-		update, err = binance.NewFuturesClient().CurrentPosition(ctx)
+		update, fetchErr = binance.NewFuturesClient(key.APIKey, key.APISecret).CurrentPosition(ctx)
 	}
-	if err != nil {
-		return nil, err
+	if fetchErr != nil {
+		return nil, fetchErr
 	}
 	side := strings.ToLower(strings.TrimSpace(update.Side))
 	if side == "" {
 		side = "flat"
 	}
 	return &HedgeSnapshot{Venue: venue, Side: side, SizeBTC: update.SizeBTC}, nil
+}
+
+// StreamHedgePositions starts a venue position stream using the active
+// database credential. Credentials are resolved each time a stream starts.
+func (s *Service) StreamHedgePositions(ctx context.Context, venue string) (<-chan cex.HedgePositionUpdate, error) {
+	venue = strings.ToLower(strings.TrimSpace(venue))
+	if !supportedHedgeVenues[venue] {
+		return nil, fmt.Errorf("unsupported hedge venue %q", venue)
+	}
+	key, err := s.futuresKey(ctx, venue)
+	if err != nil {
+		return nil, err
+	}
+	switch venue {
+	case "kraken_futures":
+		return kraken.NewFuturesClient(key.APIKey, key.APISecret).StreamPositions(ctx)
+	case "coinbase_futures":
+		return coinbase.NewFuturesClient(key.APIKey, key.APISecret, key.Passphrase).StreamPositions(ctx)
+	case "binance_futures":
+		return binance.NewFuturesClient(key.APIKey, key.APISecret).StreamPositions(ctx)
+	default:
+		return nil, fmt.Errorf("unsupported hedge venue %q", venue)
+	}
+}
+
+func (s *Service) futuresKey(ctx context.Context, venue string) (db.APIKey, error) {
+	switch venue {
+	case "kraken_futures":
+		_, key, err := s.firstActiveKey(ctx, "Kraken")
+		return key, err
+	case "binance_futures":
+		_, key, err := s.firstActiveKey(ctx, "Binance")
+		return key, err
+	case "coinbase_futures":
+		_, key, err := s.firstActiveKeyWithPassphrase(ctx, "Coinbase")
+		return key, err
+	default:
+		return db.APIKey{}, fmt.Errorf("unsupported hedge venue %q", venue)
+	}
 }
 
 func (s *Service) firstActiveKey(ctx context.Context, rawProvider string) (string, db.APIKey, error) {
@@ -1130,7 +1177,6 @@ func balancesFromKraken(balances kraken.Balance) *BalancesResponse {
 	}
 	return resp
 }
-
 
 func hedgePositionFromTransaction(tx db.Transaction) HedgePosition {
 	position := HedgePosition{

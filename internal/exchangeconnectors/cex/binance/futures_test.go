@@ -10,6 +10,13 @@ import (
 	"testing"
 )
 
+func TestNewFuturesClientUsesSuppliedCredentials(t *testing.T) {
+	client := NewFuturesClient(" db-key ", " db-secret ")
+	if client.apiKey != "db-key" || client.secretKey != "db-secret" {
+		t.Fatalf("credentials = %q/%q, want supplied database credentials", client.apiKey, client.secretKey)
+	}
+}
+
 func TestBinanceFuturesPlaceOrderShort(t *testing.T) {
 	leverageCalled := false
 	var gotOrderBody string

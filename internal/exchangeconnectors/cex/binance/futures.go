@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -21,8 +20,6 @@ import (
 const defaultFuturesBaseURL = "https://fapi.binance.com"
 
 // FuturesClient places orders on Binance USDⓈ-M Futures (fapi.binance.com).
-// It reuses the same API key as the spot client when BINANCE_FUTURES_* vars are absent,
-// provided that key has futures trading enabled (enableFutures=true).
 type FuturesClient struct {
 	baseURL   string
 	apiKey    string
@@ -30,23 +27,14 @@ type FuturesClient struct {
 	http      *http.Client
 }
 
-// NewFuturesClient creates a FuturesClient from environment variables.
-func NewFuturesClient() *FuturesClient {
+// NewFuturesClient creates a FuturesClient from database-loaded credentials.
+func NewFuturesClient(apiKey, apiSecret string) *FuturesClient {
 	return &FuturesClient{
 		baseURL:   defaultFuturesBaseURL,
-		apiKey:    firstBNBEnv("BINANCE_FUTURES_API_KEY", "BINANCE_API_KEY"),
-		secretKey: firstBNBEnv("BINANCE_FUTURES_API_SECRET", "BINANCE_API_SECRET"),
+		apiKey:    strings.TrimSpace(apiKey),
+		secretKey: strings.TrimSpace(apiSecret),
 		http:      &http.Client{Timeout: 15 * time.Second},
 	}
-}
-
-func firstBNBEnv(keys ...string) string {
-	for _, k := range keys {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // PlaceOrder places a market order on Binance USDⓈ-M Futures.

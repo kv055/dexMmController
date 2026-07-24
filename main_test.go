@@ -203,7 +203,7 @@ func TestRobosatsAuthTokenFromDBPrefersNewestActiveDBToken(t *testing.T) {
 			{ID: 2, APIKey: " db-token "},
 			{ID: 1, APIKey: "older-token"},
 		},
-	}, "env-token")
+	})
 	if err != nil {
 		t.Fatalf("robosatsAuthTokenFromDB: %v", err)
 	}
@@ -212,22 +212,22 @@ func TestRobosatsAuthTokenFromDBPrefersNewestActiveDBToken(t *testing.T) {
 	}
 }
 
-func TestRobosatsAuthTokenFromDBFallsBack(t *testing.T) {
-	got, err := robosatsAuthTokenFromDB(context.Background(), fakeRobosatsTokenRepo{}, "env-token")
+func TestRobosatsAuthTokenFromDBReturnsEmptyWithoutDBToken(t *testing.T) {
+	got, err := robosatsAuthTokenFromDB(context.Background(), fakeRobosatsTokenRepo{})
 	if err != nil {
 		t.Fatalf("robosatsAuthTokenFromDB: %v", err)
 	}
-	if got != "env-token" {
-		t.Fatalf("token = %q, want env-token", got)
+	if got != "" {
+		t.Fatalf("token = %q, want empty", got)
 	}
 
 	got, err = robosatsAuthTokenFromDB(context.Background(), fakeRobosatsTokenRepo{
 		err: errors.New("db down"),
-	}, "env-token")
+	})
 	if err == nil {
 		t.Fatal("err = nil, want db error")
 	}
-	if got != "env-token" {
-		t.Fatalf("token = %q, want env-token after db error", got)
+	if got != "" {
+		t.Fatalf("token = %q, want empty after db error", got)
 	}
 }
