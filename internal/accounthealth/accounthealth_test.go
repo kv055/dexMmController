@@ -298,7 +298,7 @@ func TestCheckProviderCoinbaseHedgeUnsupported(t *testing.T) {
 
 	repo := &fakeRepo{
 		accountProvider: "Coinbase",
-		keys:            []db.APIKey{{ID: 4, APIKey: "organizations/org/apiKeys/key", APISecret: testECPrivateKeyPEM(t), IsActive: true}},
+		keys:            []db.APIKey{{ID: 4, APIKey: "organizations/org/apiKeys/key", APISecret: testECPrivateKeyPEM(t), IsActive: true}}, // gitleaks:allow -- test-only placeholder
 	}
 	checker := accounthealth.NewChecker(repo, cexaccount.Config{CoinbaseBaseURL: srv.URL})
 	result, err := checker.CheckProvider(context.Background(), "coinbase")

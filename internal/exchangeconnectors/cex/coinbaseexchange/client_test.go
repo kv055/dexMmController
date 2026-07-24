@@ -11,7 +11,7 @@ import (
 )
 
 func TestAddressBookParsesEntriesAndSigns(t *testing.T) {
-	const secret = "dGVzdC1zZWNyZXQta2V5LWZvci1obWFjLXNpZ25pbmc=" // base64 of arbitrary bytes
+	const secret = "dGVzdC1zZWNyZXQta2V5LWZvci1obWFjLXNpZ25pbmc=" // gitleaks:allow -- base64 of test-only arbitrary bytes
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/address-book" {
 			t.Fatalf("path = %s, want /address-book", r.URL.Path)
@@ -54,7 +54,7 @@ func TestAddressBookParsesEntriesAndSigns(t *testing.T) {
 }
 
 func TestSignMatchesReferenceHMAC(t *testing.T) {
-	const secret = "dGVzdC1zZWNyZXQ=" // base64("test-secret")
+	const secret = "dGVzdC1zZWNyZXQ=" // gitleaks:allow -- base64("test-secret")
 	got, err := sign("1700000000", http.MethodGet, "/address-book", secret)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
