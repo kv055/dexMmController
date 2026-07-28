@@ -88,6 +88,7 @@ type KeyPermissionResult struct {
 	KeyID       uint              `json:"key_id"`
 	Name        string            `json:"name"`
 	Permissions map[string]string `json:"permissions"`
+	Error       string            `json:"error,omitempty"`
 }
 
 // HealthResult is the outcome of a single provider health check.
@@ -98,6 +99,50 @@ type HealthResult struct {
 	Message   string                `json:"message"`
 	Keys      []KeyPermissionResult `json:"keys,omitempty"`
 	CheckedAt time.Time             `json:"checked_at"`
+}
+
+// AssessCEXPermissions combines every active key's cached permissions. All
+// canonical permissions must be granted by at least one key; an unreadable key
+// also blocks trading so operators never proceed with incomplete validation.
+func AssessCEXPermissions(provider string, keys []KeyPermissionResult) (map[string]string, error) {
+	combined := make(map[string]string, len(CanonicalCEXPermissions()))
+	keyErrors := make([]string, 0)
+	for _, key := range keys {
+		if key.Error != "" {
+			keyErrors = append(keyErrors, fmt.Sprintf("key %q could not be checked: %s", key.Name, key.Error))
+		}
+		for _, permission := range CanonicalCEXPermissions() {
+			if key.Permissions[permission] == PermGranted {
+				combined[permission] = PermGranted
+			}
+		}
+	}
+
+	missing := make([]string, 0)
+	for _, permission := range CanonicalCEXPermissions() {
+		if combined[permission] == PermGranted {
+			continue
+		}
+		status := PermDenied
+		for _, key := range keys {
+			if candidate := key.Permissions[permission]; candidate == PermUnsupported {
+				status = PermUnsupported
+			} else if candidate == "" && status != PermUnsupported {
+				status = "unavailable"
+			}
+		}
+		combined[permission] = status
+		missing = append(missing, fmt.Sprintf("%s (%s)", permission, status))
+	}
+	if len(keyErrors) == 0 && len(missing) == 0 {
+		return combined, nil
+	}
+	parts := make([]string, 0, 2)
+	if len(missing) > 0 {
+		parts = append(parts, "missing permissions: "+strings.Join(missing, ", "))
+	}
+	parts = append(parts, keyErrors...)
+	return combined, fmt.Errorf("%s API key permissions failed: %s", provider, strings.Join(parts, "; "))
 }
 
 // ParseInterval parses a duration string, defaulting to 10 minutes.

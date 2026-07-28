@@ -187,12 +187,9 @@ func (r *TransactionRepository) GetActiveAPIKeysForProvider(ctx context.Context,
 }
 
 // UpdateAPIKeyPermissions stores the latest normalized permissions for an API key.
-func (r *TransactionRepository) UpdateAPIKeyPermissions(ctx context.Context, keyID uint, permissions map[string]string, checkedAt time.Time) error {
+func (r *TransactionRepository) UpdateAPIKeyPermissions(ctx context.Context, keyID uint, permissions map[string]string, checkError string, checkedAt time.Time) error {
 	if keyID == 0 {
 		return errors.New("api key id is required")
-	}
-	if len(permissions) == 0 {
-		return nil
 	}
 	raw, err := json.Marshal(permissions)
 	if err != nil {
@@ -202,9 +199,10 @@ func (r *TransactionRepository) UpdateAPIKeyPermissions(ctx context.Context, key
 		UPDATE api_keys
 		SET permissions = ?::jsonb,
 		    permissions_checked_at = ?,
+		    permission_check_error = NULLIF(?, ''),
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
-	`, string(raw), checkedAt, keyID)
+	`, string(raw), checkedAt, strings.TrimSpace(checkError), keyID)
 	if result.Error != nil {
 		return fmt.Errorf("update api key permissions for key %d: %w", keyID, result.Error)
 	}

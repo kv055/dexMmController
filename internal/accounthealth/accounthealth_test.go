@@ -3,13 +3,13 @@ package accounthealth_test
 import (
 	"context"
 	"crypto/ecdsa"
-	"fmt"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,7 +46,7 @@ func (f *fakeRepo) GetActiveAPIKeysForProvider(context.Context, string) ([]db.AP
 	return f.keys, nil
 }
 
-func (f *fakeRepo) UpdateAPIKeyPermissions(_ context.Context, keyID uint, permissions map[string]string, checkedAt time.Time) error {
+func (f *fakeRepo) UpdateAPIKeyPermissions(_ context.Context, keyID uint, permissions map[string]string, _ string, checkedAt time.Time) error {
 	f.permissionUpdates = append(f.permissionUpdates, struct {
 		keyID       uint
 		permissions map[string]string
@@ -243,13 +243,16 @@ func TestCheckProviderBinanceCanonicalPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
 	}
-	if !result.Healthy || len(result.Keys) != 1 {
-		t.Fatalf("result = %+v, want healthy with one key", result)
+	if result.Healthy || len(result.Keys) != 1 {
+		t.Fatalf("result = %+v, want unhealthy with one key", result)
 	}
 	perms := result.Keys[0].Permissions
 	if perms[cexaccount.PermSpotTrading] != cexaccount.PermGranted || perms[cexaccount.PermReadBalances] != cexaccount.PermGranted ||
 		perms[cexaccount.PermWithdraw] != cexaccount.PermDenied || perms[cexaccount.PermHedgePositions] != cexaccount.PermGranted {
 		t.Fatalf("permissions = %+v", perms)
+	}
+	if !strings.Contains(result.Message, "withdraw (denied)") {
+		t.Fatalf("message = %q, want missing withdrawal detail", result.Message)
 	}
 }
 
@@ -277,8 +280,8 @@ func TestCheckProviderKrakenProbesPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
 	}
-	if !result.Healthy || len(result.Keys) != 1 {
-		t.Fatalf("result = %+v, want healthy with one key", result)
+	if result.Healthy || len(result.Keys) != 1 {
+		t.Fatalf("result = %+v, want unhealthy with one key", result)
 	}
 	perms := result.Keys[0].Permissions
 	if perms[cexaccount.PermReadBalances] != cexaccount.PermGranted || perms[cexaccount.PermSpotTrading] != cexaccount.PermDenied ||
@@ -305,13 +308,46 @@ func TestCheckProviderCoinbaseHedgeUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
 	}
-	if !result.Healthy || len(result.Keys) != 1 {
-		t.Fatalf("result = %+v, want healthy with one key", result)
+	if result.Healthy || len(result.Keys) != 1 {
+		t.Fatalf("result = %+v, want unhealthy with one key", result)
 	}
 	perms := result.Keys[0].Permissions
 	if perms[cexaccount.PermSpotTrading] != cexaccount.PermGranted || perms[cexaccount.PermReadBalances] != cexaccount.PermGranted ||
 		perms[cexaccount.PermWithdraw] != cexaccount.PermDenied || perms[cexaccount.PermHedgePositions] != cexaccount.PermUnsupported {
 		t.Fatalf("permissions = %+v", perms)
+	}
+}
+
+func TestCheckProviderBinanceCombinesPermissionsAcrossActiveKeys(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/time" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"serverTime": time.Now().UnixMilli()})
+			return
+		}
+		switch r.Header.Get("X-MBX-APIKEY") {
+		case "trade-key":
+			_ = json.NewEncoder(w).Encode(map[string]any{"enableReading": true, "enableSpotAndMarginTrading": true, "enableWithdrawals": false, "enableFutures": false})
+		case "transfer-key":
+			_ = json.NewEncoder(w).Encode(map[string]any{"enableReading": false, "enableSpotAndMarginTrading": false, "enableWithdrawals": true, "enableFutures": true})
+		default:
+			t.Fatalf("unexpected API key %q", r.Header.Get("X-MBX-APIKEY"))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	repo := &fakeRepo{accountProvider: "Binance", keys: []db.APIKey{
+		{ID: 1, Name: "trade", APIKey: "trade-key", APISecret: "secret", IsActive: true},
+		{ID: 2, Name: "transfer", APIKey: "transfer-key", APISecret: "secret", IsActive: true},
+	}}
+	result, err := accounthealth.NewChecker(repo, cexaccount.Config{BinanceBaseURL: srv.URL}).CheckProvider(context.Background(), "binance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Healthy || len(result.Keys) != 2 {
+		t.Fatalf("result = %+v, want combined healthy result", result)
+	}
+	if len(repo.permissionUpdates) != 2 {
+		t.Fatalf("permission updates = %d, want 2", len(repo.permissionUpdates))
 	}
 }
 

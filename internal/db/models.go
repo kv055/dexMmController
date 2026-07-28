@@ -75,6 +75,8 @@ type APIKey struct {
 	Permissions json.RawMessage `gorm:"column:permissions;type:jsonb" json:"permissions,omitempty"`
 	// PermissionsCheckedAt records when permissions were last fetched from the exchange.
 	PermissionsCheckedAt *time.Time `json:"permissions_checked_at,omitempty"`
+	// PermissionCheckError records the latest inspection failure for this key.
+	PermissionCheckError *string `gorm:"column:permission_check_error" json:"permission_check_error,omitempty"`
 	// CreatedAt records the relevant time for the apikey.
 	CreatedAt time.Time `json:"created_at"`
 	// UpdatedAt records the relevant time for the apikey.

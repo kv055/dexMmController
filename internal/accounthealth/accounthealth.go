@@ -16,7 +16,7 @@ import (
 type Repository interface {
 	GetAccountByProvider(ctx context.Context, provider string) (*db.Account, error)
 	GetActiveAPIKeysForProvider(ctx context.Context, provider string) ([]db.APIKey, error)
-	UpdateAPIKeyPermissions(ctx context.Context, keyID uint, permissions map[string]string, checkedAt time.Time) error
+	UpdateAPIKeyPermissions(ctx context.Context, keyID uint, permissions map[string]string, checkError string, checkedAt time.Time) error
 	UpdateAccountHealthCheckedAt(ctx context.Context, provider string, healthy bool) (time.Time, error)
 }
 
@@ -47,16 +47,16 @@ func (c *Checker) CheckProvider(ctx context.Context, rawProvider string) (cexacc
 	}
 
 	keyResults, checkErr := c.checkActiveKeys(ctx, provider, keys)
+	if cexaccount.IsCEXProvider(provider) {
+		_, checkErr = cexaccount.AssessCEXPermissions(provider, keyResults)
+	}
 	healthy := checkErr == nil
 	checkedAt, updateErr := c.repo.UpdateAccountHealthCheckedAt(ctx, provider, healthy)
 	if updateErr != nil {
 		return cexaccount.HealthResult{}, updateErr
 	}
 	for _, keyResult := range keyResults {
-		if len(keyResult.Permissions) == 0 {
-			continue
-		}
-		if err := c.repo.UpdateAPIKeyPermissions(ctx, keyResult.KeyID, keyResult.Permissions, checkedAt); err != nil {
+		if err := c.repo.UpdateAPIKeyPermissions(ctx, keyResult.KeyID, keyResult.Permissions, keyResult.Error, checkedAt); err != nil {
 			return cexaccount.HealthResult{}, err
 		}
 	}
@@ -118,15 +118,15 @@ func (c *Checker) checkActiveKeys(ctx context.Context, provider string, keys []d
 	keyResults := make([]cexaccount.KeyPermissionResult, 0, len(keys))
 	for _, key := range keys {
 		permissions, err := c.checkKey(ctx, provider, key)
+		result := cexaccount.KeyPermissionResult{KeyID: key.ID, Name: keyDisplayName(key), Permissions: permissions}
 		if err != nil {
-			return keyResults, fmt.Errorf("%s API key #%d failed: %w", provider, key.ID, err)
+			result.Error = err.Error()
 		}
-		if permissions != nil {
-			keyResults = append(keyResults, cexaccount.KeyPermissionResult{
-				KeyID:       key.ID,
-				Name:        keyDisplayName(key),
-				Permissions: permissions,
-			})
+		keyResults = append(keyResults, result)
+	}
+	for _, result := range keyResults {
+		if result.Error != "" {
+			return keyResults, fmt.Errorf("%s API key checks failed", provider)
 		}
 	}
 	return keyResults, nil

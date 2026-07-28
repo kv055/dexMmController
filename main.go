@@ -299,27 +299,29 @@ func main() {
 			return out, nil
 		}),
 		cexaccount.PermissionCheckerFunc(func(ctx context.Context, provider string) (map[string]string, error) {
-			keys, err := repo.GetActiveAPIKeysForProvider(ctx, provider)
+			canonical, err := cexaccount.CanonicalProvider(provider)
+			if err != nil || !cexaccount.IsCEXProvider(canonical) {
+				return nil, fmt.Errorf("unsupported CEX provider %q", provider)
+			}
+			keys, err := repo.GetActiveAPIKeysForProvider(ctx, canonical)
 			if err != nil {
 				return nil, err
 			}
-			// Merge permissions from all active keys: "granted" beats everything else.
-			merged := map[string]string{}
+			results := make([]cexaccount.KeyPermissionResult, 0, len(keys))
 			for _, key := range keys {
-				if len(key.Permissions) == 0 {
-					continue
-				}
 				var perms map[string]string
-				if err := json.Unmarshal(key.Permissions, &perms); err != nil {
-					continue
-				}
-				for perm, status := range perms {
-					if merged[perm] == "" || status == "granted" {
-						merged[perm] = status
+				if len(key.Permissions) > 0 {
+					if err := json.Unmarshal(key.Permissions, &perms); err != nil {
+						return nil, fmt.Errorf("decode cached permissions for key %d: %w", key.ID, err)
 					}
 				}
+				result := cexaccount.KeyPermissionResult{KeyID: key.ID, Name: key.Name, Permissions: perms}
+				if key.PermissionCheckError != nil {
+					result.Error = *key.PermissionCheckError
+				}
+				results = append(results, result)
 			}
-			return merged, nil
+			return cexaccount.AssessCEXPermissions(canonical, results)
 		}),
 		cexaccount.PaymentSetupFetcherFuncs{
 			MethodFn: func(ctx context.Context, name string) (*cexaccount.PaymentMethodSnapshot, error) {
