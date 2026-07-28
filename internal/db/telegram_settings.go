@@ -108,6 +108,7 @@ func (r *TelegramSettingsRepository) Update(ctx context.Context, u TelegramSetti
 	// Ensure the single row exists so the first PUT (before any seeding migration
 	// ran) still succeeds; id defaults to 1 via the CHECK constraint.
 	res := r.db.WithContext(ctx).
+		Model(&TelegramSettings{}).
 		Where("id = ?", telegramSettingsRowID).
 		Updates(updates)
 	if res.Error != nil {
