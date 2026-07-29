@@ -77,15 +77,34 @@ func TestTelegramConfigGetMasksToken(t *testing.T) {
 	}
 }
 
-func TestTelegramConfigPutPersistsAndBumpsVersion(t *testing.T) {
-	repo := &fakeTelegramSettingsRepo{updated: db.TelegramSettings{
-		BotToken: "newtok", ChatID: "999", DexmmWebhookURL: "https://h/wh",
-		ConfigVersion: 3,
-	}}
-	store := telegram.NewStore(telegram.Config{}, nil) // disabled: no Telegram calls
+func TestTelegramConfigGetUsesManagedWebhookWhenRowIsEmpty(t *testing.T) {
+	repo := &fakeTelegramSettingsRepo{row: db.TelegramSettings{BotToken: "secret-token"}}
+	store := telegram.NewStore(telegram.Config{Token: "secret-token", WebhookURL: "https://203.0.113.10/telegram-webhook"}, nil)
 	s := (&Server{}).WithTelegramSettings(repo, store)
 
-	body := `{"bot_token":"newtok","chat_id":"999","dexmm_webhook_url":"https://h/wh"}`
+	req := httptest.NewRequest(http.MethodGet, "/api/telegram/config", nil)
+	rec := httptest.NewRecorder()
+	s.handleTelegramSettingsConfig(rec, req)
+
+	var body telegramSettingsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.DexmmWebhookURL != "https://203.0.113.10/telegram-webhook" {
+		t.Errorf("managed webhook = %q", body.DexmmWebhookURL)
+	}
+}
+
+func TestTelegramConfigPutPersistsAndBumpsVersion(t *testing.T) {
+	const webhookURL = "https://203.0.113.10/telegram-webhook"
+	repo := &fakeTelegramSettingsRepo{updated: db.TelegramSettings{
+		BotToken: "newtok", ChatID: "999", DexmmWebhookURL: webhookURL,
+		ConfigVersion: 3,
+	}}
+	store := telegram.NewStore(telegram.Config{WebhookURL: webhookURL}, nil) // no token → no Telegram calls
+	s := (&Server{}).WithTelegramSettings(repo, store)
+
+	body := `{"bot_token":"newtok","chat_id":"999"}`
 	req := httptest.NewRequest(http.MethodPut, "/api/telegram/config", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	s.handleTelegramSettingsConfig(rec, req)
@@ -98,6 +117,9 @@ func TestTelegramConfigPutPersistsAndBumpsVersion(t *testing.T) {
 	}
 	if repo.update.ChatID == nil || *repo.update.ChatID != "999" {
 		t.Fatalf("chat_id not forwarded: %+v", repo.update)
+	}
+	if repo.update.DexmmWebhookURL == nil || *repo.update.DexmmWebhookURL != webhookURL {
+		t.Fatalf("managed webhook not persisted: %+v", repo.update)
 	}
 	// With token+chatID present, the store should now be enabled and reflect the
 	// new config (applied in-process via Set).

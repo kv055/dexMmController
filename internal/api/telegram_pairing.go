@@ -41,7 +41,8 @@ func (s *Server) handleTelegramPair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("save a Telegram bot token before pairing"))
 		return
 	}
-	if strings.TrimSpace(row.DexmmWebhookURL) == "" {
+	webhookURL := firstNonEmpty(row.DexmmWebhookURL, s.telegramStore.Get().WebhookURL)
+	if webhookURL == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("configure a public DEXMM webhook URL before pairing"))
 		return
 	}
@@ -52,7 +53,7 @@ func (s *Server) handleTelegramPair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("validate Telegram bot token: %w", err))
 		return
 	}
-	if err := telegram.SetWebhookWithToken(ctx, row.BotToken, row.DexmmWebhookURL, nil); err != nil {
+	if err := telegram.SetWebhookWithToken(ctx, row.BotToken, webhookURL, nil); err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Errorf("register Telegram webhook: %w", err))
 		return
 	}

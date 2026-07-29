@@ -39,7 +39,6 @@ type telegramSettingsResponse struct {
 type telegramSettingsUpdateRequest struct {
 	BotToken           *string `json:"bot_token,omitempty"`
 	ChatID             *string `json:"chat_id,omitempty"`
-	DexmmWebhookURL    *string `json:"dexmm_webhook_url,omitempty"`
 	PushpushWebhookURL *string `json:"pushpush_webhook_url,omitempty"`
 }
 
@@ -98,10 +97,15 @@ func (s *Server) updateTelegramSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	managedWebhookURL := strings.TrimSpace(s.telegramStore.Get().WebhookURL)
+	if managedWebhookURL == "" {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("DEXMM webhook URL is not configured by this deployment"))
+		return
+	}
 	updated, err := s.telegramSettingsRepo.Update(r.Context(), db.TelegramSettingsUpdate{
 		BotToken:           req.BotToken,
 		ChatID:             req.ChatID,
-		DexmmWebhookURL:    req.DexmmWebhookURL,
+		DexmmWebhookURL:    &managedWebhookURL,
 		PushpushWebhookURL: req.PushpushWebhookURL,
 	})
 	if err != nil {
@@ -131,7 +135,7 @@ func (s *Server) updateTelegramSettings(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) applyTelegramConfig(row db.TelegramSettings) {
-	s.telegramStore.Set(telegram.Config{Token: row.BotToken, ChatID: row.ChatID, WebhookURL: row.DexmmWebhookURL})
+	s.telegramStore.Set(telegram.Config{Token: row.BotToken, ChatID: row.ChatID, WebhookURL: firstNonEmpty(row.DexmmWebhookURL, s.telegramStore.Get().WebhookURL)})
 	client := s.telegramStore.Client()
 	if s.telegramRelay != nil {
 		s.telegramRelay.SetClient(client)
@@ -161,7 +165,7 @@ func (s *Server) handleTelegramSetWebhook(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	url := row.DexmmWebhookURL
+	url := firstNonEmpty(row.DexmmWebhookURL, s.telegramStore.Get().WebhookURL)
 	if service == "pushpush" {
 		url = row.PushpushWebhookURL
 	}
@@ -214,13 +218,23 @@ func (s *Server) handleTelegramTest(w http.ResponseWriter, r *http.Request) {
 
 func rowToResponse(row db.TelegramSettings, store *telegram.Store) telegramSettingsResponse {
 	cfg := store.Get()
+	dexmmWebhookURL := firstNonEmpty(row.DexmmWebhookURL, cfg.WebhookURL)
 	return telegramSettingsResponse{
 		BotTokenPresent:    cfg.Token != "",
 		ChatID:             row.ChatID,
-		DexmmWebhookURL:    row.DexmmWebhookURL,
+		DexmmWebhookURL:    dexmmWebhookURL,
 		PushpushWebhookURL: row.PushpushWebhookURL,
 		DexmmWebhookSet:    strings.TrimSpace(cfg.WebhookURL) != "" && store.Enabled(),
 		PushpushWebhookSet: strings.TrimSpace(row.PushpushWebhookURL) != "" && store.Enabled(),
 		ConfigVersion:      row.ConfigVersion,
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }

@@ -225,10 +225,14 @@ func main() {
 	telegramSettingsRepo := db.NewTelegramSettingsRepository(database)
 	seedCfg := telegramCfg
 	if row, err := telegramSettingsRepo.Get(ctx); err == nil && strings.TrimSpace(row.BotToken) != "" {
+		webhookURL := strings.TrimSpace(row.DexmmWebhookURL)
+		if webhookURL == "" {
+			webhookURL = telegramCfg.WebhookURL
+		}
 		seedCfg = telegram.Config{
 			Token:      row.BotToken,
 			ChatID:     row.ChatID,
-			WebhookURL: row.DexmmWebhookURL,
+			WebhookURL: webhookURL,
 		}
 	} else if err != nil && err != db.ErrTelegramSettingsNotFound {
 		log.Printf("warning: load telegram settings: %v", err)
@@ -630,6 +634,15 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // connectDatabaseWithRetry makes dependency outages observable instead of
 // turning them into controller restart loops. Local configuration/auth failures
 // are still returned immediately because waiting cannot repair them.
@@ -933,10 +946,11 @@ func startTelegramSettingsPoller(ctx context.Context, repo *db.TelegramSettingsR
 			return
 		}
 		lastVersion = row.ConfigVersion
+		webhookURL := firstNonEmpty(row.DexmmWebhookURL, store.Get().WebhookURL)
 		store.Set(telegram.Config{
 			Token:      row.BotToken,
 			ChatID:     row.ChatID,
-			WebhookURL: row.DexmmWebhookURL,
+			WebhookURL: webhookURL,
 		})
 		client := store.Client()
 		if relay != nil {
@@ -945,8 +959,8 @@ func startTelegramSettingsPoller(ctx context.Context, repo *db.TelegramSettingsR
 		if anomaly != nil {
 			anomaly.SetClient(client)
 		}
-		if store.Enabled() && strings.TrimSpace(row.DexmmWebhookURL) != "" {
-			if err := client.SetWebhook(ctx, row.DexmmWebhookURL); err != nil {
+		if store.Enabled() && webhookURL != "" {
+			if err := client.SetWebhook(ctx, webhookURL); err != nil {
 				log.Printf("telegram poller: setWebhook: %v", err)
 			}
 		}
