@@ -17,10 +17,11 @@ import (
 var ErrUnsupportedProvider = errors.New("unsupported account health provider")
 
 const (
-	PermSpotTrading    = "spot_trading"
-	PermReadBalances   = "read_balances"
-	PermWithdraw       = "withdraw"
-	PermHedgePositions = "hedge_positions"
+	PermFetchDepositAddress = "fetch_deposit_address"
+	PermSpotTrading         = "spot_trading"
+	PermReadBalances        = "read_balances"
+	PermWithdraw            = "withdraw"
+	PermHedgePositions      = "hedge_positions"
 )
 
 const (
@@ -80,7 +81,7 @@ func IsCEXProvider(provider string) bool {
 
 // CanonicalCEXPermissions lists the canonical permission keys in display order.
 func CanonicalCEXPermissions() []string {
-	return []string{PermSpotTrading, PermReadBalances, PermWithdraw, PermHedgePositions}
+	return []string{PermFetchDepositAddress, PermSpotTrading, PermReadBalances, PermWithdraw, PermHedgePositions}
 }
 
 // KeyPermissionResult reports normalized permissions for one API key.
@@ -221,11 +222,16 @@ func CheckCEXKey(ctx context.Context, cfg Config, provider string, key db.APIKey
 		if err != nil {
 			return nil, err
 		}
+		depositStatus, err := httpPermissionProbeStatus(client.GetDepositAddress(ctx, "BTC", "BTC"))
+		if err != nil {
+			return nil, err
+		}
 		return map[string]string{
-			PermSpotTrading:    grantedIf(restrictions.EnableSpotAndMarginTrading),
-			PermReadBalances:   grantedIf(restrictions.EnableReading),
-			PermWithdraw:       grantedIf(restrictions.EnableWithdrawals),
-			PermHedgePositions: grantedIf(restrictions.EnableFutures),
+			PermFetchDepositAddress: depositStatus,
+			PermSpotTrading:         grantedIf(restrictions.EnableSpotAndMarginTrading),
+			PermReadBalances:        grantedIf(restrictions.EnableReading),
+			PermWithdraw:            grantedIf(restrictions.EnableWithdrawals),
+			PermHedgePositions:      grantedIf(restrictions.EnableFutures),
 		}, nil
 	case "Kraken":
 		return checkKrakenKey(ctx, cfg, apiKey, apiSecret)
@@ -235,11 +241,16 @@ func CheckCEXKey(ctx context.Context, cfg Config, provider string, key db.APIKey
 		if err != nil {
 			return nil, err
 		}
+		depositStatus, err := httpPermissionProbeStatus(client.CheckBTCDepositAddressAccess(ctx))
+		if err != nil {
+			return nil, err
+		}
 		return map[string]string{
-			PermSpotTrading:    grantedIf(permissions.CanTrade),
-			PermReadBalances:   grantedIf(permissions.CanView),
-			PermWithdraw:       grantedIf(permissions.CanTransfer),
-			PermHedgePositions: PermUnsupported,
+			PermFetchDepositAddress: depositStatus,
+			PermSpotTrading:         grantedIf(permissions.CanTrade),
+			PermReadBalances:        grantedIf(permissions.CanView),
+			PermWithdraw:            grantedIf(permissions.CanTransfer),
+			PermHedgePositions:      PermUnsupported,
 		}, nil
 	default:
 		return nil, ErrUnsupportedProvider
@@ -262,11 +273,17 @@ func checkKrakenKey(ctx context.Context, cfg Config, apiKey, apiSecret string) (
 		return nil, err
 	}
 
+	depositStatus, err := krakenProbeStatus(probeDepositAddressErr(ctx, client))
+	if err != nil {
+		return nil, err
+	}
+
 	return map[string]string{
-		PermSpotTrading:    spotStatus,
-		PermReadBalances:   readStatus,
-		PermWithdraw:       withdrawStatus,
-		PermHedgePositions: PermUnsupported,
+		PermFetchDepositAddress: depositStatus,
+		PermSpotTrading:         spotStatus,
+		PermReadBalances:        readStatus,
+		PermWithdraw:            withdrawStatus,
+		PermHedgePositions:      PermUnsupported,
 	}, nil
 }
 
@@ -278,6 +295,31 @@ func probeBalanceErr(ctx context.Context, client *kraken.Client) error {
 func probeWithdrawErr(ctx context.Context, client *kraken.Client) error {
 	_, err := client.GetWithdrawMethods(ctx, "XBT")
 	return err
+}
+
+func probeDepositAddressErr(ctx context.Context, client *kraken.Client) error {
+	methods, err := client.GetDepositMethods(ctx, "XBT")
+	if err != nil {
+		return err
+	}
+	if len(methods) == 0 {
+		return nil
+	}
+	_, err = client.GetDepositAddresses(ctx, "XBT", methods[0].Method, false)
+	return err
+}
+
+func httpPermissionProbeStatus(_ any, err error) (string, error) {
+	if err == nil {
+		return PermGranted, nil
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "http 401") || strings.Contains(message, "http 403") ||
+		strings.Contains(message, "permission") || strings.Contains(message, "unauthorized") ||
+		strings.Contains(message, "forbidden") {
+		return PermDenied, nil
+	}
+	return "", err
 }
 
 func krakenProbeStatus(err error) (string, error) {

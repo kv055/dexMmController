@@ -2,11 +2,11 @@ package coinbase
 
 import (
 	"context"
-	"encoding/json"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -130,6 +130,38 @@ func TestBTCDepositAddressesUsesExistingAddress(t *testing.T) {
 	}
 	if len(addresses) != 1 || addresses[0].Address != "bc1qexample" {
 		t.Fatalf("addresses = %#v, want bc1qexample", addresses)
+	}
+}
+
+func TestCheckBTCDepositAddressAccessNeverCreatesAddress(t *testing.T) {
+	var methods []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		switch r.URL.Path {
+		case "/api/v3/brokerage/accounts":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"accounts": []map[string]any{{"uuid": "btc-account", "currency": "BTC", "active": true}},
+				"has_next": false,
+			})
+		case "/v2/accounts/btc-account/addresses":
+			if r.Method != http.MethodGet {
+				t.Fatalf("deposit permission probe used mutating method %s", r.Method)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "organizations/org/apiKeys/key", testECPrivateKeyPEM(t))
+	if _, err := client.CheckBTCDepositAddressAccess(context.Background()); err != nil {
+		t.Fatalf("CheckBTCDepositAddressAccess: %v", err)
+	}
+	for _, method := range methods {
+		if method != http.MethodGet {
+			t.Fatalf("methods = %v, want GET only", methods)
+		}
 	}
 }
 

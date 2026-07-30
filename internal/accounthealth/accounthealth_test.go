@@ -247,7 +247,8 @@ func TestCheckProviderBinanceCanonicalPermissions(t *testing.T) {
 		t.Fatalf("result = %+v, want unhealthy with one key", result)
 	}
 	perms := result.Keys[0].Permissions
-	if perms[cexaccount.PermSpotTrading] != cexaccount.PermGranted || perms[cexaccount.PermReadBalances] != cexaccount.PermGranted ||
+	if perms[cexaccount.PermFetchDepositAddress] != cexaccount.PermGranted ||
+		perms[cexaccount.PermSpotTrading] != cexaccount.PermGranted || perms[cexaccount.PermReadBalances] != cexaccount.PermGranted ||
 		perms[cexaccount.PermWithdraw] != cexaccount.PermDenied || perms[cexaccount.PermHedgePositions] != cexaccount.PermGranted {
 		t.Fatalf("permissions = %+v", perms)
 	}
@@ -265,6 +266,13 @@ func TestCheckProviderKrakenProbesPermissions(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{"EGeneral:Permission denied"}, "result": map[string]any{}})
 		case "/0/private/WithdrawMethods":
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": []map[string]any{{"method": "Bitcoin"}}})
+		case "/0/private/DepositMethods":
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": []map[string]any{{"method": "Bitcoin"}}})
+		case "/0/private/DepositAddresses":
+			if r.FormValue("new") != "" {
+				t.Fatal("deposit permission probe must not request a new address")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": []map[string]any{}})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -284,7 +292,8 @@ func TestCheckProviderKrakenProbesPermissions(t *testing.T) {
 		t.Fatalf("result = %+v, want unhealthy with one key", result)
 	}
 	perms := result.Keys[0].Permissions
-	if perms[cexaccount.PermReadBalances] != cexaccount.PermGranted || perms[cexaccount.PermSpotTrading] != cexaccount.PermDenied ||
+	if perms[cexaccount.PermFetchDepositAddress] != cexaccount.PermGranted ||
+		perms[cexaccount.PermReadBalances] != cexaccount.PermGranted || perms[cexaccount.PermSpotTrading] != cexaccount.PermDenied ||
 		perms[cexaccount.PermWithdraw] != cexaccount.PermGranted || perms[cexaccount.PermHedgePositions] != cexaccount.PermUnsupported {
 		t.Fatalf("permissions = %+v", perms)
 	}
@@ -292,10 +301,19 @@ func TestCheckProviderKrakenProbesPermissions(t *testing.T) {
 
 func TestCheckProviderCoinbaseHedgeUnsupported(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v3/brokerage/key_permissions" {
-			t.Fatalf("path = %s, want key_permissions", r.URL.Path)
+		switch r.URL.Path {
+		case "/api/v3/brokerage/key_permissions":
+			_, _ = w.Write([]byte(`{"can_view":true,"can_trade":true,"can_transfer":false}`))
+		case "/api/v3/brokerage/accounts":
+			_, _ = w.Write([]byte(`{"accounts":[{"uuid":"btc-wallet","currency":"BTC","active":true}],"has_next":false}`))
+		case "/v2/accounts/btc-wallet/addresses":
+			if r.Method != http.MethodGet {
+				t.Fatalf("deposit permission probe used %s", r.Method)
+			}
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"can_view":true,"can_trade":true,"can_transfer":false}`))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -312,7 +330,8 @@ func TestCheckProviderCoinbaseHedgeUnsupported(t *testing.T) {
 		t.Fatalf("result = %+v, want unhealthy with one key", result)
 	}
 	perms := result.Keys[0].Permissions
-	if perms[cexaccount.PermSpotTrading] != cexaccount.PermGranted || perms[cexaccount.PermReadBalances] != cexaccount.PermGranted ||
+	if perms[cexaccount.PermFetchDepositAddress] != cexaccount.PermGranted ||
+		perms[cexaccount.PermSpotTrading] != cexaccount.PermGranted || perms[cexaccount.PermReadBalances] != cexaccount.PermGranted ||
 		perms[cexaccount.PermWithdraw] != cexaccount.PermDenied || perms[cexaccount.PermHedgePositions] != cexaccount.PermUnsupported {
 		t.Fatalf("permissions = %+v", perms)
 	}

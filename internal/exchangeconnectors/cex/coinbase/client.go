@@ -155,6 +155,31 @@ func (c *Client) BTCDepositAddresses(ctx context.Context) ([]DepositAddress, err
 	return []DepositAddress{created.Data}, nil
 }
 
+// CheckBTCDepositAddressAccess performs only read requests. It verifies that the
+// key can discover the BTC wallet and list its existing deposit addresses,
+// without creating an address when the list is empty.
+func (c *Client) CheckBTCDepositAddressAccess(ctx context.Context) (struct{}, error) {
+	accounts, err := c.ListAccounts(ctx)
+	if err != nil {
+		return struct{}{}, err
+	}
+	btcAccountID := findBTCAccountID(accounts)
+	if btcAccountID == "" {
+		btcAccountID, err = c.findV2BTCAccountID(ctx)
+		if err != nil {
+			return struct{}{}, err
+		}
+	}
+	if btcAccountID == "" {
+		return struct{}{}, nil
+	}
+	var listed struct {
+		Data []DepositAddress `json:"data"`
+	}
+	err = c.getJSON(ctx, http.MethodGet, "/v2/accounts/"+btcAccountID+"/addresses", nil, &listed)
+	return struct{}{}, err
+}
+
 func findBTCAccountID(accounts []Account) string {
 	for _, account := range accounts {
 		if !strings.EqualFold(strings.TrimSpace(account.Currency), "BTC") {
