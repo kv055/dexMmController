@@ -36,6 +36,7 @@ type tradeflowRequest struct {
 	SelectedOffer      json.RawMessage `json:"selected_offer,omitempty"`
 	PaymentMethod      string          `json:"payment_method"`
 	PaymentMethods     []string        `json:"payment_methods"`
+	TradeMode          string          `json:"trade_mode"`
 }
 
 func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +98,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		SelectedOffer:      req.SelectedOffer,
 		PaymentMethod:      strings.TrimSpace(req.PaymentMethod),
 		PaymentMethods:     req.PaymentMethods,
+		TradeMode:          strings.TrimSpace(req.TradeMode),
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -116,6 +118,9 @@ type preTradeCheckRequest struct {
 	PaymentMethod      string   `json:"payment_method"`
 	PaymentMethods     []string `json:"payment_methods"`
 	Dex                string   `json:"dex"`
+	TradeMode            string  `json:"trade_mode"`
+	HedgeVenue           string  `json:"hedge_venue"`
+	RequiredBTCLiquidity float64 `json:"required_btc_liquidity"`
 }
 
 // handleCexPreTradeCheck runs all bid-side pre-trade checks (read-only) and reports
@@ -147,7 +152,17 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	report, err := s.cexAccount.PreTradeCheck(r.Context(), provider, req.FiatCurrency, req.RequiredCapitalEUR, strings.TrimSpace(req.PaymentMethod), req.PaymentMethods, strings.TrimSpace(req.Dex))
+	report, err := s.cexAccount.PreTradeCheck(r.Context(), cexaccount.PreTradeParams{
+		Provider:             provider,
+		FiatCurrency:         req.FiatCurrency,
+		RequiredCapitalEUR:   req.RequiredCapitalEUR,
+		PaymentMethod:        strings.TrimSpace(req.PaymentMethod),
+		PaymentMethods:       req.PaymentMethods,
+		Dex:                  strings.TrimSpace(req.Dex),
+		TradeMode:            strings.TrimSpace(req.TradeMode),
+		HedgeVenue:           strings.TrimSpace(req.HedgeVenue),
+		RequiredBTCLiquidity: req.RequiredBTCLiquidity,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return

@@ -206,10 +206,11 @@ func TestMaxMarketBuyBTCDefault(t *testing.T) {
 func TestMarketBuyBTCRejectsInvalidAmounts(t *testing.T) {
 	t.Setenv("MAX_MARKET_BUY_BTC", "1.0")
 	svc := &Service{}
-	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 0, "EUR", 100, "Revolut", nil, ""); err == nil {
+	base := PreTradeParams{Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 100, PaymentMethod: "Revolut"}
+	if _, err := svc.MarketBuyBTC(context.Background(), 0, base); err == nil {
 		t.Fatal("expected error for zero amount")
 	}
-	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 5, "EUR", 100, "Revolut", nil, ""); err == nil {
+	if _, err := svc.MarketBuyBTC(context.Background(), 5, base); err == nil {
 		t.Fatal("expected error for amount over cap")
 	}
 }
@@ -217,7 +218,7 @@ func TestMarketBuyBTCRejectsInvalidAmounts(t *testing.T) {
 func TestMarketBuyBTCRequiresCapitalRequirement(t *testing.T) {
 	t.Setenv("MAX_MARKET_BUY_BTC", "1.0")
 	svc := &Service{}
-	if _, err := svc.MarketBuyBTC(context.Background(), "kraken", 0.01, "EUR", 0, "Revolut", nil, ""); err == nil {
+	if _, err := svc.MarketBuyBTC(context.Background(), 0.01, PreTradeParams{Provider: "kraken", FiatCurrency: "EUR", PaymentMethod: "Revolut"}); err == nil {
 		t.Fatal("expected error when required_capital_eur is not provided")
 	}
 }

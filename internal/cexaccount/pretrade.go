@@ -12,6 +12,32 @@ import (
 	"dexMmController/internal/db"
 )
 
+// Trade mode identifiers (aligned with commons/tradecost).
+const (
+	TradeModeHedgefullSingleCollateral = "hedgefull_single_collateral"
+	TradeModeHedgelessDoubleCollateral = "hedgeless_double_collateral"
+)
+
+// PreTradeParams carries every input for bid-side pre-trade checks.
+type PreTradeParams struct {
+	Provider           string
+	FiatCurrency       string
+	RequiredCapitalEUR float64
+	PaymentMethod      string
+	PaymentMethods     []string
+	Dex                string
+	// TradeMode selects permission / capital semantics. Empty defaults to
+	// hedgefull_single_collateral.
+	TradeMode string
+	// HedgeVenue is the futures venue for hedgefull mode (e.g. coinbase_futures).
+	// When it maps to a different exchange than Provider, hedge permissions are
+	// checked on that exchange separately (decoupled hedge).
+	HedgeVenue string
+	// RequiredBTCLiquidity is position_btc + security_deposit_btc. Required for
+	// the hedgeless liquidity-pool wallet check; ignored in hedgefull mode.
+	RequiredBTCLiquidity float64
+}
+
 // BidChecker runs all pre-trade checks for the bid side (buying BTC on a CEX).
 type BidChecker struct {
 	balance        BalanceFetcher
@@ -23,6 +49,33 @@ type BidChecker struct {
 	fiatController FiatControllerChecker
 	walletMu       sync.RWMutex
 	wallet         WalletSource
+	btcBalance     BTCBalanceSource
+}
+
+// NormalizeTradeMode returns a canonical trade mode, defaulting empty to hedgefull.
+func NormalizeTradeMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case TradeModeHedgelessDoubleCollateral, "hedgeless":
+		return TradeModeHedgelessDoubleCollateral
+	default:
+		return TradeModeHedgefullSingleCollateral
+	}
+}
+
+// ProviderForHedgeVenue maps a futures venue id to its spot/account provider slug.
+func ProviderForHedgeVenue(venue string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(venue)) {
+	case "kraken_futures", "kraken":
+		return "kraken", nil
+	case "coinbase_futures", "coinbase":
+		return "coinbase", nil
+	case "binance_futures", "binance":
+		return "binance", nil
+	case "":
+		return "", fmt.Errorf("hedge venue is required")
+	default:
+		return "", fmt.Errorf("unknown hedge venue %q", venue)
+	}
 }
 
 // NewBidChecker creates a BidChecker. The wallet source is set lazily via SetWallet
@@ -41,6 +94,14 @@ func NewBidChecker(balance BalanceFetcher, whitelist WhitelistFetcher, permissio
 func (c *BidChecker) SetWallet(ws WalletSource) {
 	c.walletMu.Lock()
 	c.wallet = ws
+	c.walletMu.Unlock()
+}
+
+// SetBTCBalance injects (or replaces) the LND on-chain BTC balance source used
+// by the hedgeless liquidity-pool check. Safe to call concurrently.
+func (c *BidChecker) SetBTCBalance(src BTCBalanceSource) {
+	c.walletMu.Lock()
+	c.btcBalance = src
 	c.walletMu.Unlock()
 }
 
@@ -78,22 +139,38 @@ type Report struct {
 // Run executes every pre-trade check to completion — it never short-circuits on the
 // first failure — and returns a per-check Report.
 //
-// paymentMethod names the single method to validate; when it is empty and
-// paymentMethods (the offer's accepted list) is non-empty, the linked+active
-// catalog row with the highest priority is picked. dex is the DEX venue slug
+// PaymentMethod names the single method to validate; when it is empty and
+// PaymentMethods (the offer's accepted list) is non-empty, the linked+active
+// catalog row with the highest priority is picked. Dex is the DEX venue slug
 // (e.g. "bisq2", "robosats") the offer belongs to — used only to scope the
 // message-template check to chat-style venues.
-func (c *BidChecker) Run(ctx context.Context, provider, currency string, requiredCapital float64, paymentMethod string, paymentMethods []string, dex string) Report {
+func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
+	provider := p.Provider
+	tradeMode := NormalizeTradeMode(p.TradeMode)
 	checks := []struct {
 		name, label string
 		run         func() error
 	}{
-		{"permissions", "API key permissions", func() error { return c.checkPermissions(ctx, provider) }},
-		{"capital", "Sufficient capital", func() error { return c.checkCapital(ctx, provider, currency, requiredCapital) }},
+		{"permissions", "API key permissions", func() error {
+			return c.checkPermissions(ctx, provider, tradeMode, p.HedgeVenue)
+		}},
+		{"capital", "Sufficient capital", func() error {
+			return c.checkCapital(ctx, provider, p.FiatCurrency, p.RequiredCapitalEUR, tradeMode)
+		}},
 		{"communication_gateway", "Communication gateway", func() error { return c.checkCommunicationGateway(ctx) }},
 	}
+	if tradeMode == TradeModeHedgelessDoubleCollateral {
+		checks = append(checks, struct {
+			name, label string
+			run         func() error
+		}{
+			"liquidity_pool", "BTC liquidity pool", func() error {
+				return c.checkLiquidityPool(ctx, p.RequiredBTCLiquidity)
+			},
+		})
+	}
 
-	report := Report{OK: true, Checks: make([]CheckResult, 0, len(checks)+2)}
+	report := Report{OK: true, Checks: make([]CheckResult, 0, len(checks)+5)}
 	for _, chk := range checks {
 		res := CheckResult{Name: chk.name, Label: chk.label, Passed: true}
 		if err := chk.run(); err != nil {
@@ -116,7 +193,7 @@ func (c *BidChecker) Run(ctx context.Context, provider, currency string, require
 	report.Checks = append(report.Checks, whitelistRes)
 
 	paymentRes := CheckResult{Name: "payment_setup", Label: "Payment account configured", Passed: true}
-	resolved, err := c.resolvePaymentMethod(ctx, paymentMethod, paymentMethods)
+	resolved, err := c.resolvePaymentMethod(ctx, p.PaymentMethod, p.PaymentMethods)
 	if err == nil {
 		report.ResolvedPaymentMethod = resolved
 		err = c.checkPaymentSetup(ctx, resolved)
@@ -145,7 +222,7 @@ func (c *BidChecker) Run(ctx context.Context, provider, currency string, require
 	report.Checks = append(report.Checks, notificationRes)
 
 	templateRes := CheckResult{Name: "message_template", Label: "Payment message template", Passed: true}
-	if err := c.checkMessageTemplate(ctx, dex, resolved); err != nil {
+	if err := c.checkMessageTemplate(ctx, p.Dex, resolved); err != nil {
 		templateRes.Passed = false
 		templateRes.Message = err.Error()
 		report.OK = false
@@ -157,8 +234,8 @@ func (c *BidChecker) Run(ctx context.Context, provider, currency string, require
 
 // RunAll runs every check and returns an aggregated error listing all failures,
 // or nil when all checks pass.
-func (c *BidChecker) RunAll(ctx context.Context, provider, currency string, requiredCapital float64, paymentMethod string, paymentMethods []string, dex string) error {
-	report := c.Run(ctx, provider, currency, requiredCapital, paymentMethod, paymentMethods, dex)
+func (c *BidChecker) RunAll(ctx context.Context, p PreTradeParams) error {
+	report := c.Run(ctx, p)
 	if report.OK {
 		return nil
 	}
@@ -171,33 +248,64 @@ func (c *BidChecker) RunAll(ctx context.Context, provider, currency string, requ
 	return fmt.Errorf("pre-trade checks failed: %s", strings.Join(msgs, "; "))
 }
 
-func (c *BidChecker) checkPermissions(ctx context.Context, provider string) error {
+func (c *BidChecker) loadPermissions(ctx context.Context, provider string) (map[string]string, error) {
 	perms, err := c.permissions.CEXPermissions(ctx, provider)
 	if err != nil {
-		return fmt.Errorf("reading %s API key permissions for pre-trade check: %w", provider, err)
+		return nil, fmt.Errorf("reading %s API key permissions for pre-trade check: %w", provider, err)
 	}
 	if len(perms) == 0 {
-		return fmt.Errorf("no permission data available for %s; run the account health check first", provider)
+		return nil, fmt.Errorf("no permission data available for %s; run the account health check first", provider)
 	}
+	return perms, nil
+}
 
-	if perms[PermSpotTrading] != PermGranted {
+// checkPermissions validates spot permissions on the spot provider. For hedgefull
+// mode it also requires hedge_positions on the hedge venue's exchange (same
+// account when coupled, a second account when decoupled). Hedgeless mode skips
+// the hedge permission requirement entirely.
+func (c *BidChecker) checkPermissions(ctx context.Context, provider, tradeMode, hedgeVenue string) error {
+	spotPerms, err := c.loadPermissions(ctx, provider)
+	if err != nil {
+		return err
+	}
+	if spotPerms[PermSpotTrading] != PermGranted {
 		return fmt.Errorf(
 			"pre-trade check failed: %s API key does not have spot trading permission (status: %q); check account health",
-			provider, perms[PermSpotTrading],
+			provider, spotPerms[PermSpotTrading],
 		)
 	}
 
-	if hedgeStatus := perms[PermHedgePositions]; hedgeStatus != PermGranted && hedgeStatus != PermUnsupported {
+	if tradeMode == TradeModeHedgelessDoubleCollateral {
+		return nil
+	}
+
+	hedgeProvider := provider
+	if strings.TrimSpace(hedgeVenue) != "" {
+		hp, err := ProviderForHedgeVenue(hedgeVenue)
+		if err != nil {
+			return fmt.Errorf("pre-trade check failed: %v", err)
+		}
+		hedgeProvider = hp
+	}
+
+	hedgePerms := spotPerms
+	if !strings.EqualFold(hedgeProvider, provider) {
+		hedgePerms, err = c.loadPermissions(ctx, hedgeProvider)
+		if err != nil {
+			return err
+		}
+	}
+
+	if hedgeStatus := hedgePerms[PermHedgePositions]; hedgeStatus != PermGranted && hedgeStatus != PermUnsupported {
 		return fmt.Errorf(
 			"pre-trade check failed: %s API key does not have hedge position permission (status: %q); check account health",
-			provider, hedgeStatus,
+			hedgeProvider, hedgeStatus,
 		)
 	}
-
 	return nil
 }
 
-func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string, required float64) error {
+func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string, required float64, tradeMode string) error {
 	available, err := c.balance.FiatAvailable(ctx, provider, currency)
 	if err != nil {
 		return fmt.Errorf("checking account balance before market buy: %w", err)
@@ -207,9 +315,38 @@ func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string
 		fiat = "EUR"
 	}
 	if available < required {
+		requirement := "spot buy + hedge collateral + security deposit"
+		if tradeMode == TradeModeHedgelessDoubleCollateral {
+			requirement = "fiat position collateral (hedgeless double collateral)"
+		}
 		return fmt.Errorf(
-			"insufficient %s balance on %s: available %.2f, capital requirement %.2f (spot buy + hedge collateral + security deposit)",
-			fiat, provider, available, required,
+			"insufficient %s balance on %s: available %.2f, capital requirement %.2f (%s)",
+			fiat, provider, available, required, requirement,
+		)
+	}
+	return nil
+}
+
+// checkLiquidityPool verifies the LND on-chain wallet holds at least
+// requiredBTC (DEX position + security deposit). Hedgeless-only.
+func (c *BidChecker) checkLiquidityPool(ctx context.Context, requiredBTC float64) error {
+	if requiredBTC <= 0 {
+		return fmt.Errorf("pre-trade check failed: required BTC liquidity pool size is missing or zero")
+	}
+	c.walletMu.RLock()
+	src := c.btcBalance
+	c.walletMu.RUnlock()
+	if src == nil {
+		return fmt.Errorf("pre-trade check failed: LND wallet balance is not available; initialise the LND wallet before running hedgeless trades")
+	}
+	available, err := src.ConfirmedOnChainBTC(ctx)
+	if err != nil {
+		return fmt.Errorf("reading LND on-chain balance for liquidity pool check: %w", err)
+	}
+	if available+1e-12 < requiredBTC {
+		return fmt.Errorf(
+			"insufficient LND on-chain BTC for liquidity pool: available %.8f, required %.8f (DEX position + security deposit)",
+			available, requiredBTC,
 		)
 	}
 	return nil
@@ -255,6 +392,10 @@ func (c *BidChecker) checkWhitelist(ctx context.Context, provider string) (strin
 
 	cexAddresses, err := c.whitelist.WhitelistedBTCAddresses(ctx, provider)
 	if err != nil {
+		if message := whitelistCredentialErrorMessage(provider, err); message != "" {
+			log.Printf("pre-trade whitelist check: %s: %v", provider, err)
+			return "", fmt.Errorf("%s", message)
+		}
 		return "", fmt.Errorf("fetching %s whitelist for pre-trade check: %w", provider, err)
 	}
 
@@ -270,6 +411,18 @@ func (c *BidChecker) checkWhitelist(ctx context.Context, provider string) (strin
 		"pre-trade check failed: %s whitelist contains no address from the current LND wallet; add an LND on-chain address to the %s withdrawal whitelist before trading",
 		provider, provider,
 	)
+}
+
+func whitelistCredentialErrorMessage(provider string, err error) string {
+	if err == nil || !strings.EqualFold(strings.TrimSpace(provider), "binance") {
+		return ""
+	}
+	detail := err.Error()
+	if !strings.Contains(detail, `"code":-2015`) &&
+		!strings.Contains(detail, "Invalid API-key, IP, or permissions for action") {
+		return ""
+	}
+	return "Binance API access denied. Check the API key, allowed IP, and withdrawal permissions."
 }
 
 // resolvePaymentMethod picks the single method to validate: the explicitly

@@ -34,6 +34,19 @@ type WalletSource interface {
 	OnChainAddresses(ctx context.Context) ([]string, error)
 }
 
+// BTCBalanceSource returns the confirmed on-chain BTC balance of the local
+// wallet (LND hub). Used by the hedgeless liquidity-pool pre-trade check.
+type BTCBalanceSource interface {
+	ConfirmedOnChainBTC(ctx context.Context) (float64, error)
+}
+
+// BTCBalanceSourceFunc implements BTCBalanceSource as a plain function.
+type BTCBalanceSourceFunc func(ctx context.Context) (float64, error)
+
+func (f BTCBalanceSourceFunc) ConfirmedOnChainBTC(ctx context.Context) (float64, error) {
+	return f(ctx)
+}
+
 // CommunicationGateway reports whether the operator can be reached before an
 // automated trade starts.
 type CommunicationGateway interface {

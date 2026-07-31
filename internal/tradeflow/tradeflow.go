@@ -64,6 +64,9 @@ type Order struct {
 	// PaymentMethods is the offer's full accepted-method list; when PaymentMethod
 	// is empty the highest-priority linked+active catalog entry is picked from it.
 	PaymentMethods []string
+	// TradeMode selects pre-trade permission semantics (hedgefull vs hedgeless).
+	// Empty defaults to hedgefull_single_collateral.
+	TradeMode string
 }
 
 // Result bundles the outcomes of all steps in the CEX→wallet trade cycle.
@@ -86,8 +89,8 @@ type WithdrawalResult struct {
 
 // Service is the subset of cexaccount.Service used by TradeFlow.
 type Service interface {
-	PreTradeCheck(ctx context.Context, rawProvider, fiatCurrency string, requiredCapitalEUR float64, paymentMethod string, paymentMethods []string, dex string) (*cexaccount.Report, error)
-	MarketBuyBTC(ctx context.Context, rawProvider string, btcAmount float64, fiatCurrency string, requiredCapitalEUR float64, paymentMethod string, paymentMethods []string, dex string) (*cexaccount.SpotOrderResult, error)
+	PreTradeCheck(ctx context.Context, p cexaccount.PreTradeParams) (*cexaccount.Report, error)
+	MarketBuyBTC(ctx context.Context, btcAmount float64, p cexaccount.PreTradeParams) (*cexaccount.SpotOrderResult, error)
 	OpenHedge(ctx context.Context, venue, side string, btcNotional, leverage float64) (*cexaccount.HedgeOpenResult, error)
 	LiveHedgePosition(ctx context.Context, venue string) (*cexaccount.HedgeSnapshot, error)
 	WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress, clientRequestID string) (*lnd.WithdrawFromExchangeResult, error)
@@ -161,8 +164,19 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	// own wallet, hub/swap DEXes fund our LND hub.
 	method := txroute.BidMethod(order.Dex)
 
+	preTrade := cexaccount.PreTradeParams{
+		Provider:           order.Provider,
+		FiatCurrency:       order.FiatCurrency,
+		RequiredCapitalEUR: order.RequiredCapitalEUR,
+		PaymentMethod:      order.PaymentMethod,
+		PaymentMethods:     order.PaymentMethods,
+		Dex:                order.Dex,
+		TradeMode:          order.TradeMode,
+		HedgeVenue:         order.HedgeVenue,
+	}
+
 	// Step 1: pre-trade checks (read-only; result logged for observability).
-	report, err := tf.svc.PreTradeCheck(ctx, order.Provider, order.FiatCurrency, order.RequiredCapitalEUR, order.PaymentMethod, order.PaymentMethods, order.Dex)
+	report, err := tf.svc.PreTradeCheck(ctx, preTrade)
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: pre-trade check error: %w", err)
 	}
@@ -174,6 +188,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	// chat-venue DEXes can pick the correct template later.
 	if strings.TrimSpace(order.PaymentMethod) == "" && strings.TrimSpace(report.ResolvedPaymentMethod) != "" {
 		order.PaymentMethod = report.ResolvedPaymentMethod
+		preTrade.PaymentMethod = report.ResolvedPaymentMethod
 	}
 
 	// target is the address the CEX withdrawal is sent to.
@@ -202,7 +217,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 
 	// Step 2: spot market buy.
 	spotStart := time.Now()
-	spot, err := tf.svc.MarketBuyBTC(ctx, order.Provider, order.BTCAmount, order.FiatCurrency, order.RequiredCapitalEUR, order.PaymentMethod, order.PaymentMethods, order.Dex)
+	spot, err := tf.svc.MarketBuyBTC(ctx, order.BTCAmount, preTrade)
 	obs.OrderDuration.WithLabelValues(order.Provider, "spot").Observe(time.Since(spotStart).Seconds())
 	obs.OrdersPlaced.WithLabelValues(order.Provider, "spot", obs.Result(err)).Inc()
 	if err != nil {

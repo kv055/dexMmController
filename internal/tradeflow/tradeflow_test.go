@@ -43,12 +43,12 @@ type fakeService struct {
 	lastWithdrawClientReqID string
 }
 
-func (f *fakeService) PreTradeCheck(_ context.Context, _, _ string, _ float64, _ string, _ []string, _ string) (*cexaccount.Report, error) {
+func (f *fakeService) PreTradeCheck(_ context.Context, _ cexaccount.PreTradeParams) (*cexaccount.Report, error) {
 	f.preTradeCallCount++
 	return f.preTradeReport, f.preTradeErr
 }
 
-func (f *fakeService) MarketBuyBTC(_ context.Context, _ string, _ float64, _ string, _ float64, _ string, _ []string, _ string) (*cexaccount.SpotOrderResult, error) {
+func (f *fakeService) MarketBuyBTC(_ context.Context, _ float64, _ cexaccount.PreTradeParams) (*cexaccount.SpotOrderResult, error) {
 	f.spotCallCount++
 	return f.spotResult, f.spotErr
 }

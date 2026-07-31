@@ -330,7 +330,14 @@ func main() {
 				}
 				results = append(results, result)
 			}
-			return cexaccount.AssessCEXPermissions(canonical, results)
+			// Return the assessed map even when some permissions are missing so
+			// BidChecker can require spot-only (hedgeless) or spot+hedge based on
+			// trade mode / decoupled hedge venue.
+			combined, err := cexaccount.AssessCEXPermissions(canonical, results)
+			if len(combined) == 0 {
+				return nil, err
+			}
+			return combined, nil
 		}),
 		cexaccount.PaymentSetupFetcherFuncs{
 			MethodFn: func(ctx context.Context, name string) (*cexaccount.PaymentMethodSnapshot, error) {
@@ -527,6 +534,24 @@ func main() {
 				addrs[i] = p.Address
 			}
 			return addrs, nil
+		}))
+		bidChecker.SetBTCBalance(cexaccount.BTCBalanceSourceFunc(func(ctx context.Context) (float64, error) {
+			bal, err := lndClient.OnChainBalance(ctx)
+			if err != nil {
+				return 0, err
+			}
+			if bal == nil {
+				return 0, fmt.Errorf("empty LND on-chain balance response")
+			}
+			raw := strings.TrimSpace(bal.ConfirmedBalance)
+			if raw == "" {
+				return 0, nil
+			}
+			sats, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("parse LND confirmed balance %q: %w", raw, err)
+			}
+			return float64(sats) / 1e8, nil
 		}))
 		cexAccountService.WithLND(lndClient)
 		dexRelayWorker.SetLND(dexrelay.LNDAdapter{Client: lndClient})
