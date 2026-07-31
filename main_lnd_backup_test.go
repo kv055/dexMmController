@@ -10,15 +10,10 @@ import (
 )
 
 func TestMergeLNDInitConfigPrefersDatabaseMnemonic(t *testing.T) {
-	fileCfg := lnd.InitConfig{
-		ExtendedMasterKey: "xprv-example",
-	}
+	fileCfg := lnd.InitConfig{}
 	merged := mergeLNDInitConfig(fileCfg, "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentyfour")
 	if len(merged.CipherSeedMnemonic) != 24 {
 		t.Fatalf("mnemonic words = %d, want 24", len(merged.CipherSeedMnemonic))
-	}
-	if merged.ExtendedMasterKey != "xprv-example" {
-		t.Fatalf("extended master key was not preserved")
 	}
 }
 

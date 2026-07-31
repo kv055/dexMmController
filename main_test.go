@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -25,7 +23,7 @@ func TestLoadLNDInitConfigFromMnemonicFiles(t *testing.T) {
 		t.Fatalf("write passphrase: %v", err)
 	}
 
-	cfg, err := loadLNDInitConfig(mnemonicPath, passphrasePath, "", "", "250", "")
+	cfg, err := loadLNDInitConfig(mnemonicPath, passphrasePath, "250")
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -44,53 +42,6 @@ func TestLoadLNDInitConfigFromMnemonicFiles(t *testing.T) {
 	}
 	if cfg.RecoveryWindow != 250 {
 		t.Fatalf("unexpected recovery window: %d", cfg.RecoveryWindow)
-	}
-}
-
-func TestLoadLNDInitConfigFromExtendedMasterKeyFile(t *testing.T) {
-	dir := t.TempDir()
-	keyPath := filepath.Join(dir, "xprv.txt")
-	birthdayPath := filepath.Join(dir, "birthday.txt")
-	if err := os.WriteFile(keyPath, []byte("xprv-example-key\n"), 0600); err != nil {
-		t.Fatalf("write xprv: %v", err)
-	}
-	if err := os.WriteFile(birthdayPath, []byte("1710000000\n"), 0600); err != nil {
-		t.Fatalf("write birthday timestamp: %v", err)
-	}
-
-	cfg, err := loadLNDInitConfig("", "", keyPath, birthdayPath, "", "")
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-
-	if cfg.ExtendedMasterKey != "xprv-example-key" {
-		t.Fatalf("unexpected extended master key: %q", cfg.ExtendedMasterKey)
-	}
-	if cfg.ExtendedMasterKeyBirthdayTimestamp != 1710000000 {
-		t.Fatalf("unexpected birthday timestamp: %d", cfg.ExtendedMasterKeyBirthdayTimestamp)
-	}
-}
-
-func TestHashFileSHA256UsesExactBytes(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "xprv.txt")
-	contents := []byte("xprv-example-key\n")
-	if err := os.WriteFile(path, contents, 0600); err != nil {
-		t.Fatalf("write xprv: %v", err)
-	}
-
-	gotHash, gotSize, err := hashFileSHA256(path)
-	if err != nil {
-		t.Fatalf("hash file: %v", err)
-	}
-	wantSum := sha256.Sum256(contents)
-	wantHash := hex.EncodeToString(wantSum[:])
-
-	if gotHash != wantHash {
-		t.Fatalf("unexpected hash: got %q want %q", gotHash, wantHash)
-	}
-	if gotSize != int64(len(contents)) {
-		t.Fatalf("unexpected file size: got %d want %d", gotSize, len(contents))
 	}
 }
 

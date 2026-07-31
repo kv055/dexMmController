@@ -157,12 +157,6 @@ GetPrimaryWalletAddress retrieves a primary wallet address.
 
 Signature: `func (r *TransactionRepository) GetPrimaryWalletAddress() (*WalletAddress, error)`
 
-### `(*TransactionRepository).RecordLNDMasterKeyHash`
-
-RecordLNDMasterKeyHash stores the hash of the configured LND master key.
-
-Signature: `func (r *TransactionRepository) RecordLNDMasterKeyHash(masterKeyHash, sourcePath string, fileSizeBytes int64) error`
-
 ### `(*TransactionRepository).UpdateAccountHealth`
 
 UpdateAccountHealth records the latest health state for a provider.
@@ -190,4 +184,3 @@ Signature: `func (r *TransactionRepository) assignPrimaryWalletAddress(tx *Trans
 - `time`
 - `gorm.io/gorm`
 - `gorm.io/gorm/clause`
-

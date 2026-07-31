@@ -21,10 +21,10 @@ import (
 
 // Client is the LND REST client.
 type Client struct {
-	host                  string
-	macaroon              string
-	httpClient            *http.Client
-	walletJustInitialized         bool
+	host                        string
+	macaroon                    string
+	httpClient                  *http.Client
+	walletJustInitialized       bool
 	generatedCipherSeedMnemonic []string
 	lastExportedChannelBackup   []byte
 	lastExportedChannelCount    int
@@ -39,13 +39,11 @@ type unlockRequest struct {
 }
 
 type initWalletRequest struct {
-	WalletPassword                     string   `json:"wallet_password"` // base64
-	StatelessInit                      bool     `json:"stateless_init"`
-	CipherSeedMnemonic                 []string `json:"cipher_seed_mnemonic,omitempty"`
-	AEZEEDPassphrase                   string   `json:"aezeed_passphrase,omitempty"` // base64
-	RecoveryWindow                     int32    `json:"recovery_window,omitempty"`
-	ExtendedMasterKey                  string   `json:"extended_master_key,omitempty"`
-	ExtendedMasterKeyBirthdayTimestamp uint64   `json:"extended_master_key_birthday_timestamp,omitempty"`
+	WalletPassword     string   `json:"wallet_password"` // base64
+	StatelessInit      bool     `json:"stateless_init"`
+	CipherSeedMnemonic []string `json:"cipher_seed_mnemonic,omitempty"`
+	AEZEEDPassphrase   string   `json:"aezeed_passphrase,omitempty"` // base64
+	RecoveryWindow     int32    `json:"recovery_window,omitempty"`
 }
 
 // InitConfig contains optional wallet initialization material for LND.
@@ -56,10 +54,6 @@ type InitConfig struct {
 	AEZEEDPassphrase string
 	// RecoveryWindow is the recovery window value for the init config.
 	RecoveryWindow int32
-	// ExtendedMasterKey is the extended master key value for the init config.
-	ExtendedMasterKey string
-	// ExtendedMasterKeyBirthdayTimestamp records the relevant time for the init config.
-	ExtendedMasterKeyBirthdayTimestamp uint64
 	// ChannelBackupRestore is an optional static channel backup blob from Postgres.
 	ChannelBackupRestore []byte
 }
@@ -174,7 +168,7 @@ type MultiChanBackup struct {
 
 // ChanBackupSnapshot is the export-all-channel-backups response.
 type ChanBackupSnapshot struct {
-	SingleChanBackups *ChannelBackups `json:"single_chan_backups"`
+	SingleChanBackups *ChannelBackups  `json:"single_chan_backups"`
 	MultiChanBackup   *MultiChanBackup `json:"multi_chan_backup"`
 }
 
@@ -322,17 +316,12 @@ func (c *Client) handleWalletState(
 
 // HasRestoreSecret reports whether init should recover an existing wallet root.
 func (cfg InitConfig) HasRestoreSecret() bool {
-	return len(cfg.CipherSeedMnemonic) > 0 || strings.TrimSpace(cfg.ExtendedMasterKey) != ""
+	return len(cfg.CipherSeedMnemonic) > 0
 }
 
 // Validate validates restore configuration when a wallet secret is supplied.
 func (cfg InitConfig) Validate() error {
-	hasMnemonic := len(cfg.CipherSeedMnemonic) > 0
-	hasMasterKey := strings.TrimSpace(cfg.ExtendedMasterKey) != ""
-	if hasMnemonic && hasMasterKey {
-		return errors.New("cipher seed mnemonic and extended master key cannot both be configured")
-	}
-	if hasMnemonic && len(cfg.CipherSeedMnemonic) != 24 {
+	if len(cfg.CipherSeedMnemonic) > 0 && len(cfg.CipherSeedMnemonic) != 24 {
 		return fmt.Errorf("cipher seed mnemonic must contain 24 words, got %d", len(cfg.CipherSeedMnemonic))
 	}
 	return nil
@@ -370,12 +359,6 @@ func (c *Client) initWallet(ctx context.Context, password string, cfg InitConfig
 		}
 		if cfg.RecoveryWindow > 0 {
 			req.RecoveryWindow = cfg.RecoveryWindow
-		}
-	}
-	if cfg.ExtendedMasterKey != "" {
-		req.ExtendedMasterKey = cfg.ExtendedMasterKey
-		if cfg.ExtendedMasterKeyBirthdayTimestamp > 0 {
-			req.ExtendedMasterKeyBirthdayTimestamp = cfg.ExtendedMasterKeyBirthdayTimestamp
 		}
 	}
 	return c.post(ctx, "/v1/initwallet", req, nil)

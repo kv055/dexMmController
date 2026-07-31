@@ -6,6 +6,7 @@ require (
 	commons v0.0.0
 	github.com/ProtonMail/go-crypto v1.4.1
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
+	github.com/jackc/pgx/v5 v5.5.5
 	github.com/prometheus/client_golang v1.20.5
 	golang.org/x/crypto v0.48.0
 	google.golang.org/grpc v1.79.1
@@ -27,7 +28,6 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20231201235250-de7065d80cb9 // indirect
-	github.com/jackc/pgx/v5 v5.5.5 // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect

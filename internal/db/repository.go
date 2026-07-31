@@ -543,57 +543,6 @@ func (r *TransactionRepository) ListWalletAddresses() ([]WalletAddress, error) {
 	return wallets, nil
 }
 
-// RecordLNDMasterKeyHash stores the hash of the configured LND master key.
-func (r *TransactionRepository) RecordLNDMasterKeyHash(masterKeyHash, sourcePath string, fileSizeBytes int64) error {
-	masterKeyHash = strings.TrimSpace(masterKeyHash)
-	if masterKeyHash == "" {
-		return errors.New("LND master key hash is required")
-	}
-
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		var accountID int64
-		if err := tx.Exec(`
-			INSERT INTO accounts (provider)
-			VALUES (?)
-			ON CONFLICT (provider) DO NOTHING
-		`, LNDAccountProvider).Error; err != nil {
-			return fmt.Errorf("ensure LND account row: %w", err)
-		}
-		if err := tx.Raw(`
-			SELECT id
-			FROM accounts
-			WHERE provider = ?
-		`, LNDAccountProvider).Scan(&accountID).Error; err != nil {
-			return fmt.Errorf("load LND account row: %w", err)
-		}
-		if accountID == 0 {
-			return fmt.Errorf("LND account row %q is missing", LNDAccountProvider)
-		}
-
-		if err := tx.Exec(`
-			INSERT INTO lnd_master_key_hashes (
-				account_id,
-				hash_algorithm,
-				master_key_hash,
-				source_path,
-				file_size_bytes
-			)
-			SELECT ?, 'sha256', ?, NULLIF(?, ''), ?
-			WHERE NOT EXISTS (
-				SELECT 1
-				FROM lnd_master_key_hashes
-				WHERE account_id = ?
-				  AND master_key_hash = ?
-				  AND file_size_bytes = ?
-			)
-		`, accountID, masterKeyHash, strings.TrimSpace(sourcePath), fileSizeBytes, accountID, masterKeyHash, fileSizeBytes).Error; err != nil {
-			return fmt.Errorf("insert LND master key hash: %w", err)
-		}
-
-		return nil
-	})
-}
-
 // UpdateAccountHealth records the latest health state for a provider.
 func (r *TransactionRepository) UpdateAccountHealth(ctx context.Context, provider string, healthy bool) error {
 	_, err := r.UpdateAccountHealthCheckedAt(ctx, provider, healthy)

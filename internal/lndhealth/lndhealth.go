@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -32,13 +31,7 @@ type Repository interface {
 	LNDWalletCredentials(ctx context.Context) (password string, mnemonic string, err error)
 	GetPrimaryWalletAddress() (*db.WalletAddress, error)
 	LatestLNDChannelBackup(ctx context.Context, accountID int64) (*db.LNDChannelBackup, error)
-	LatestLNDMasterKeyHash(ctx context.Context, accountID int64) (string, error)
 	UpdateAccountHealthCheckedAt(ctx context.Context, provider string, healthy bool) (time.Time, error)
-}
-
-// Config carries optional runtime configuration for LND health checks.
-type Config struct {
-	ExtendedMasterKeyFile string
 }
 
 // CheckResult reports the outcome of one health sub-check.
@@ -61,15 +54,14 @@ type Result struct {
 // Checker runs comprehensive health checks for the LND wallet account.
 type Checker struct {
 	repo Repository
-	cfg  Config
 
 	mu     sync.RWMutex
 	client Client
 }
 
 // NewChecker creates an LND wallet health checker.
-func NewChecker(repo Repository, client Client, cfg Config) *Checker {
-	return &Checker{repo: repo, client: client, cfg: cfg}
+func NewChecker(repo Repository, client Client) *Checker {
+	return &Checker{repo: repo, client: client}
 }
 
 // SetClient swaps the live LND client used by the checker. It is safe to call at
@@ -198,26 +190,6 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 		addRequired("primary address", true, wallet.Address)
 	}
 
-	masterKeyPath := strings.TrimSpace(c.cfg.ExtendedMasterKeyFile)
-	if masterKeyPath != "" {
-		fileHash, err := hashFileSHA256(masterKeyPath)
-		if err != nil {
-			addRequired("master key file", false, err.Error())
-		} else {
-			storedHash, err := c.repo.LatestLNDMasterKeyHash(ctx, int64(account.ID))
-			if err != nil {
-				return Result{}, err
-			}
-			if storedHash == "" {
-				addRequired("master key file", false, "no hash recorded in database")
-			} else if !strings.EqualFold(fileHash, storedHash) {
-				addRequired("master key file", false, "hash does not match latest database record")
-			} else {
-				addRequired("master key file", true, "matches database record")
-			}
-		}
-	}
-
 	if !clientConfigured(client) {
 		// Earlier checks already recorded why RPC is unavailable.
 	} else if !channelsListed {
@@ -344,13 +316,4 @@ func clientConfigured(client Client) bool {
 	}
 	value := reflect.ValueOf(client)
 	return value.Kind() != reflect.Pointer || !value.IsNil()
-}
-
-func hashFileSHA256(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read master key file: %w", err)
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
 }

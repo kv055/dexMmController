@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -104,10 +102,7 @@ func main() {
 	lndMacaroonPath := envOr("LND_MACAROON_PATH", "")
 	lndSeedMnemonicFile := envOr("LND_SEED_MNEMONIC_FILE", "")
 	lndAEZEEDPassphraseFile := envOr("LND_AEZEED_PASSPHRASE_FILE", "")
-	lndExtendedMasterKeyFile := envOr("LND_EXTENDED_MASTER_KEY_FILE", "")
-	lndExtendedMasterKeyBirthdayTimestampFile := envOr("LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP_FILE", "")
 	lndRecoveryWindow := envOr("LND_RECOVERY_WINDOW", "")
-	lndExtendedMasterKeyBirthdayTimestamp := envOr("LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP", "")
 	accountHealthInterval := parseAccountHealthInterval(envOr("ACCOUNT_HEALTH_INTERVAL", ""))
 	healthcheckInterval := parseAccountHealthInterval(envOr("HEALTHCHECK_INTERVAL", "30s"))
 	lndBackupInterval := parseLNDBackupInterval(envOr("LND_BACKUP_INTERVAL", ""), accountHealthInterval)
@@ -160,17 +155,10 @@ func main() {
 		log.Fatalf("failed to ensure LND account row: %v", err)
 	}
 
-	if err := recordLNDMasterKeyHash(repo, lndExtendedMasterKeyFile); err != nil {
-		log.Fatalf("failed to record LND master key hash: %v", err)
-	}
-
 	fileInitCfg, err := loadLNDInitConfig(
 		lndSeedMnemonicFile,
 		lndAEZEEDPassphraseFile,
-		lndExtendedMasterKeyFile,
-		lndExtendedMasterKeyBirthdayTimestampFile,
 		lndRecoveryWindow,
-		lndExtendedMasterKeyBirthdayTimestamp,
 	)
 	if err != nil {
 		log.Fatalf("invalid LND wallet secret configuration: %v", err)
@@ -397,9 +385,7 @@ func main() {
 	))
 	cexAccountService.WithBidChecker(bidChecker)
 	dexRelayWorker := dexrelay.NewWorker(repo, cexAccountService, btc, dexTaker, dexPaymentResolver)
-	lndHealthChecker := lndhealth.NewChecker(repo, nil, lndhealth.Config{
-		ExtendedMasterKeyFile: lndExtendedMasterKeyFile,
-	})
+	lndHealthChecker := lndhealth.NewChecker(repo, nil)
 	// hedgeStreamManager multiplexes each futures venue's live position feed to any
 	// number of WebSocket subscribers. Each lazy source resolves the active database
 	// credential when the first subscriber starts it.
@@ -871,7 +857,7 @@ func parseAccountHealthInterval(raw string) time.Duration {
 }
 
 func loadLNDInitConfig(
-	seedMnemonicFile, aezeedPassphraseFile, extendedMasterKeyFile, birthdayTimestampFile, recoveryWindowRaw, birthdayTimestampRaw string,
+	seedMnemonicFile, aezeedPassphraseFile, recoveryWindowRaw string,
 ) (lnd.InitConfig, error) {
 	cfg := lnd.InitConfig{}
 
@@ -889,20 +875,6 @@ func loadLNDInitConfig(
 		}
 		cfg.AEZEEDPassphrase = value
 	}
-	if path := strings.TrimSpace(extendedMasterKeyFile); path != "" {
-		value, err := readSecretFile(path)
-		if err != nil {
-			return cfg, fmt.Errorf("read LND_EXTENDED_MASTER_KEY_FILE: %w", err)
-		}
-		cfg.ExtendedMasterKey = value
-	}
-	if path := strings.TrimSpace(birthdayTimestampFile); path != "" {
-		value, err := readSecretFile(path)
-		if err != nil {
-			return cfg, fmt.Errorf("read LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP_FILE: %w", err)
-		}
-		birthdayTimestampRaw = value
-	}
 	if value := strings.TrimSpace(recoveryWindowRaw); value != "" {
 		parsed, err := strconv.ParseInt(value, 10, 32)
 		if err != nil {
@@ -910,14 +882,6 @@ func loadLNDInitConfig(
 		}
 		cfg.RecoveryWindow = int32(parsed)
 	}
-	if value := strings.TrimSpace(birthdayTimestampRaw); value != "" {
-		parsed, err := strconv.ParseUint(value, 10, 64)
-		if err != nil {
-			return cfg, fmt.Errorf("parse LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP: %w", err)
-		}
-		cfg.ExtendedMasterKeyBirthdayTimestamp = parsed
-	}
-
 	return cfg, nil
 }
 
@@ -927,32 +891,6 @@ func readSecretFile(path string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
-}
-
-func recordLNDMasterKeyHash(repo *db.TransactionRepository, path string) error {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return nil
-	}
-
-	hash, size, err := hashFileSHA256(path)
-	if err != nil {
-		return err
-	}
-	if err := repo.RecordLNDMasterKeyHash(hash, path, size); err != nil {
-		return err
-	}
-	log.Printf("recorded LND master key file hash for %s", path)
-	return nil
-}
-
-func hashFileSHA256(path string) (string, int64, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", 0, fmt.Errorf("read LND extended master key file: %w", err)
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), int64(len(data)), nil
 }
 
 // startTelegramSettingsPoller watches the shared telegram_settings row for

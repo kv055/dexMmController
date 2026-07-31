@@ -102,25 +102,13 @@ Signature: `func parseAccountHealthInterval(raw string) time.Duration`
 
 This function is part of the `main` package implementation.
 
-Signature: `func loadLNDInitConfig( seedMnemonicFile, aezeedPassphraseFile, extendedMasterKeyFile, birthdayTimestampFile, recoveryWindowRaw, birthdayTimestampRaw string, ) (lnd.InitConfig, error)`
+Signature: `func loadLNDInitConfig(seedMnemonicFile, aezeedPassphraseFile, recoveryWindowRaw string) (lnd.InitConfig, error)`
 
 ### `readSecretFile`
 
 This function is part of the `main` package implementation.
 
 Signature: `func readSecretFile(path string) (string, error)`
-
-### `recordLNDMasterKeyHash`
-
-This function is part of the `main` package implementation.
-
-Signature: `func recordLNDMasterKeyHash(repo *db.TransactionRepository, path string) error`
-
-### `hashFileSHA256`
-
-This function is part of the `main` package implementation.
-
-Signature: `func hashFileSHA256(path string) (string, int64, error)`
 
 ## Key Dependencies
 

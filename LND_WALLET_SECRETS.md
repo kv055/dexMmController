@@ -8,49 +8,18 @@ On first startup, when LND reports `NON_EXISTING`, mm-controller calls LND's `Ge
 
 ## Restore an existing wallet
 
-To recover an existing LND wallet, provide one supported wallet secret **before** first init:
+To recover an existing LND wallet, provide its 24-word aezeed **before** first
+init. This is the stack's supported wallet-root restore format.
 
-## Supported Formats
+## Restore Settings
 
-Configure exactly one of these:
+- `LND_SEED_MNEMONIC_FILE`: one-time import file containing the 24-word LND
+  aezeed mnemonic.
+- `LND_AEZEED_PASSPHRASE_FILE`: optional passphrase file when the aezeed was
+  created with one.
+- `LND_RECOVERY_WINDOW`: optional address lookahead for aezeed restoration.
 
-- `LND_SEED_MNEMONIC_FILE`
-  A file containing the 24-word LND aezeed mnemonic.
-- `LND_EXTENDED_MASTER_KEY_FILE`
-  A file containing an extended master private key such as `xprv` or `tprv`.
-
-Optional companion settings:
-
-- `LND_AEZEED_PASSPHRASE_FILE`
-  Optional aezeed passphrase file if your aezeed was created with one.
-- `LND_RECOVERY_WINDOW`
-  Optional address lookahead for aezeed restores.
-- `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP_FILE`
-  Preferred file-based birthday timestamp input for xprv/tprv restores.
-- `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP`
-  Optional plain env var fallback for xprv/tprv restores.
-
-## Which Format Should I Use?
-
-Use aezeed if you are restoring an existing LND wallet.
-
-Use an extended master key only if you already manage one intentionally and know its birthday. This is more portable across wallet ecosystems, but it is usually less convenient than aezeed for an existing LND node.
-
-A single raw private key is not enough to initialize LND's full wallet. LND expects a wallet root secret, not one standalone key.
-An extended master key is also not "the one private key used for every transaction". It is the wallet root from which LND derives many child keys and addresses.
-
-## Are These Standard?
-
-`aezeed` is LND-specific.
-It is Lightning Labs' seed format and includes metadata such as wallet versioning and birthday.
-
-`xprv`/`tprv` extended master keys are based on BIP32 and are broadly standard in the Bitcoin wallet ecosystem.
-
-The fact that LND accepts an extended master key during `InitWallet` is LND behavior, but the key format itself is not unique to LND.
-
-## How To Obtain The Files
-
-### Option 1: Existing LND Wallet
+## How To Import An Existing Aezeed
 
 If you already have an LND node, the cleanest option is to use its existing aezeed recovery phrase.
 
@@ -61,50 +30,6 @@ word1 word2 word3 ... word24
 ```
 
 If your aezeed also uses a passphrase, create `./secrets/lnd_aezeed_passphrase` containing only that passphrase.
-
-### Option 2: Existing Wallet That Can Export An Extended Master Key
-
-If you already control a wallet that can export the master private key, create a file such as `./secrets/lnd_extended_master_key`:
-
-```text
-xprv...
-```
-
-You should also provide the approximate unix timestamp when that wallet root key was created, ideally in `./secrets/lnd_extended_master_key_birthday_timestamp`.
-
-Important:
-
-- Many wallets do not expose the root `xprv` at all.
-- Exporting a master private key is highly sensitive.
-- If you use a non-LND xprv, LND will still use its own default derivation paths. Funds on unusual/custom derivation paths may not appear automatically.
-
-### Option 3: Generate A Fresh Extended Master Key Locally
-
-If you intentionally want a brand-new wallet root and do not need aezeed compatibility, this repo now includes a local generator script:
-
-```bash
-cd /home/kili/Dokumente/Demo_Projects/dexArbTrading/dexMmController
-python3 scripts/generate_lnd_extended_master_key.py
-```
-
-By default it writes:
-
-- `/home/kili/Dokumente/Demo_Projects/dexArbTrading/dexMmController/secrets/lnd_extended_master_key`
-- `/home/kili/Dokumente/Demo_Projects/dexArbTrading/dexMmController/secrets/lnd_extended_master_key_birthday_timestamp`
-
-Those defaults are intentionally aligned with the `mm-controller` bind mounts in the repo-root `docker-compose.yml`, so the files can be mounted immediately.
-
-Useful options:
-
-```bash
-python3 scripts/generate_lnd_extended_master_key.py --network mainnet
-python3 scripts/generate_lnd_extended_master_key.py --network testnet
-python3 scripts/generate_lnd_extended_master_key.py --output /secure/path/lnd_xprv --birthday-output /secure/path/lnd_xprv_birthday
-```
-
-The script does not print the key by default. Add `--show` only if you explicitly want it echoed to your terminal.
-
-When `LND_EXTENDED_MASTER_KEY_FILE` is configured, `dexMmController` records a SHA-256 hash of the exact mounted file bytes in the shared database on every startup. The raw key is never stored in the database.
 
 ## How To Mount The Files
 
@@ -126,23 +51,6 @@ Example bind mounts in `docker-compose.yml`:
 #     - ./dexMmController/secrets/lnd_aezeed_passphrase:/run/secrets/lnd_aezeed_passphrase:ro
 ```
 
-Alternative extended master key setup:
-
-```yaml
-# mm-controller:
-#   env_file:
-#     - ./dexMmController/.env
-#   environment:
-#     - LND_EXTENDED_MASTER_KEY_FILE=/run/secrets/lnd_extended_master_key
-#     - LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP_FILE=/run/secrets/lnd_extended_master_key_birthday_timestamp
-#   volumes:
-#     - lnd-data:/lnd:ro
-#     - ./dexMmController/secrets/lnd_extended_master_key:/run/secrets/lnd_extended_master_key:ro
-#     - ./dexMmController/secrets/lnd_extended_master_key_birthday_timestamp:/run/secrets/lnd_extended_master_key_birthday_timestamp:ro
-```
-
-If you really want to avoid the extra file, `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP` still works as a plain env var fallback.
-
 ## Wallet Password and Aezeed in Postgres
 
 The LND wallet password and aezeed are stored in Postgres and edited in the dexMonitor **Accounts** panel:
@@ -163,7 +71,7 @@ SCB is **not** a file on disk in this stack. LND returns an encrypted backup blo
 
 | Step | What happens |
 |------|----------------|
-| Schema | **unified-api** applies `dexUnifiedApi/db/schema/019_lnd_channel_backups.sql` on startup. If the table is missing in Postgres, rebuild and restart unified-api first. |
+| Schema | **unified-api** applies `dexUnifiedApi/db/schema/14_lnd_channel_backups.sql` on startup. If the table is missing in Postgres, rebuild and restart unified-api first. |
 | Export | After LND wallet is ready, mm-controller exports SCB and inserts into `lnd_channel_backups`. Runs again on a periodic interval. |
 | UI | dexMonitor Accounts panel → LND wallet → **Channel backups** (metadata only). |
 | Recovery | After wiping `lnd-data`, keep aezeed + wallet password + SCB row in the DB. mm-controller re-inits the wallet and restores the SCB on that same startup. |

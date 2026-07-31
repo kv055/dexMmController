@@ -51,8 +51,6 @@ Fields:
 - `CipherSeedMnemonic` `[]string`: Stores the cipher seed mnemonic value for the init wallet request.
 - `AEZEEDPassphrase` `string`: Stores the a e z e e d passphrase value for the init wallet request.
 - `RecoveryWindow` `int32`: Stores the recovery window value for the init wallet request.
-- `ExtendedMasterKey` `string`: Stores the extended master key value for the init wallet request.
-- `ExtendedMasterKeyBirthdayTimestamp` `uint64`: Stores timing information for the init wallet request.
 
 ### `InitConfig`
 
@@ -63,8 +61,6 @@ Fields:
 - `CipherSeedMnemonic` `[]string`: CipherSeedMnemonic is the cipher seed mnemonic value for the init config.
 - `AEZEEDPassphrase` `string`: AEZEEDPassphrase is the aezeedpassphrase value for the init config.
 - `RecoveryWindow` `int32`: RecoveryWindow is the recovery window value for the init config.
-- `ExtendedMasterKey` `string`: ExtendedMasterKey is the extended master key value for the init config.
-- `ExtendedMasterKeyBirthdayTimestamp` `uint64`: ExtendedMasterKeyBirthdayTimestamp records the relevant time for the init config.
 
 ### `NewAddressResponse`
 
@@ -314,4 +310,3 @@ Signature: `func buildHTTPClient(tlsCertPath string) (*http.Client, error)`
 - `os`
 - `strings`
 - `time`
-

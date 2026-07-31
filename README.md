@@ -74,13 +74,13 @@ The controller stores reusable wallet addresses in the `wallet_addresses` table.
 - LND wallet password and aezeed live in Postgres (`accounts.password`, `seeds.seed_phrase`) via the dexMonitor Accounts panel — not in `.env`.
 - On first startup with an empty `seeds` row, mm-controller asks LND to generate a new aezeed (`GenSeed` + `InitWallet`) and stores it in the database.
 - To restore an existing wallet, set the aezeed in Seeds (or mount `LND_SEED_MNEMONIC_FILE` once) before first init.
-- Supported restore inputs are a 24-word aezeed mnemonic or an extended master key (`xprv`/`tprv`).
+- The supported restore input is a 24-word aezeed mnemonic.
 - Once the wallet is available, a new address is generated and stored as `Primary` when missing.
 - On later startups, the stored `Primary` address is reused.
 
 ### Lightning channel backups (SCB)
 
-- Table `lnd_channel_backups` is created by **unified-api** migration `019_lnd_channel_backups.sql` on startup (`EnsureUnifiedSchema`). Rebuild/restart unified-api before mm-controller or dexMonitor use this table.
+- Table `lnd_channel_backups` is created by **unified-api** schema `14_lnd_channel_backups.sql` on startup (`EnsureUnifiedSchema`). Rebuild/restart unified-api before mm-controller or dexMonitor use this table.
 - mm-controller exports LND static channel backups to Postgres on startup and on `LND_BACKUP_INTERVAL` (defaults to account health interval).
 - After a disaster recovery wallet re-init, the latest backup is restored into LND automatically.
 - Open Lightning channels manually; until channels exist there is nothing meaningful to back up.
@@ -142,9 +142,6 @@ Important variables:
 - `LND_SEED_MNEMONIC_FILE`
 - `LND_AEZEED_PASSPHRASE_FILE`
 - `LND_RECOVERY_WINDOW`
-- `LND_EXTENDED_MASTER_KEY_FILE`
-- `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP_FILE`
-- `LND_EXTENDED_MASTER_KEY_BIRTHDAY_TIMESTAMP`
 
 The root Compose stack mounts LND data into the MM controller container and
 reaches the LND and dashboard services over the Compose bridge network.

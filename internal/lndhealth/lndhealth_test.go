@@ -2,11 +2,7 @@ package lndhealth
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -21,7 +17,6 @@ type fakeRepo struct {
 	wallet          *db.WalletAddress
 	walletErr       error
 	storedBackup    *db.LNDChannelBackup
-	masterKeyHash   string
 	updatedProvider string
 	updatedHealthy  bool
 	checkedAt       time.Time
@@ -46,10 +41,6 @@ func (f *fakeRepo) LatestLNDChannelBackup(context.Context, int64) (*db.LNDChanne
 	return f.storedBackup, nil
 }
 
-func (f *fakeRepo) LatestLNDMasterKeyHash(context.Context, int64) (string, error) {
-	return f.masterKeyHash, nil
-}
-
 func (f *fakeRepo) UpdateAccountHealthCheckedAt(_ context.Context, provider string, healthy bool) (time.Time, error) {
 	f.updatedProvider = provider
 	f.updatedHealthy = healthy
@@ -60,14 +51,14 @@ func (f *fakeRepo) UpdateAccountHealthCheckedAt(_ context.Context, provider stri
 }
 
 type fakeClient struct {
-	healthErr      error
-	nodeInfo       *lnd.NodeInfoResponse
-	nodeInfoErr    error
-	channels       []lnd.Channel
-	channelsErr    error
-	exportErr      error
-	exportRaw      []byte
-	exportCount    int
+	healthErr   error
+	nodeInfo    *lnd.NodeInfoResponse
+	nodeInfoErr error
+	channels    []lnd.Channel
+	channelsErr error
+	exportErr   error
+	exportRaw   []byte
+	exportCount int
 }
 
 func (f *fakeClient) HealthCheck(context.Context) error {
@@ -116,7 +107,7 @@ func TestCheckHealthyZeroChannels(t *testing.T) {
 		mnemonic: "word " + "word " + "word",
 		wallet:   &db.WalletAddress{Address: "bc1qexample"},
 	}
-	checker := NewChecker(repo, &fakeClient{}, Config{})
+	checker := NewChecker(repo, &fakeClient{})
 	result, err := checker.Check(context.Background())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
@@ -134,7 +125,7 @@ func TestCheckUnhealthyWithoutClient(t *testing.T) {
 		password: "secret",
 		wallet:   &db.WalletAddress{Address: "bc1qexample"},
 	}
-	result, err := NewChecker(repo, nil, Config{}).Check(context.Background())
+	result, err := NewChecker(repo, nil).Check(context.Background())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -152,7 +143,7 @@ func TestCheckUnhealthyWhenLNDDown(t *testing.T) {
 		wallet:   &db.WalletAddress{Address: "bc1qexample"},
 	}
 	client := &fakeClient{healthErr: errors.New("lnd down")}
-	result, err := NewChecker(repo, client, Config{}).Check(context.Background())
+	result, err := NewChecker(repo, client).Check(context.Background())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -178,7 +169,7 @@ func TestCheckUnhealthyBackupMismatch(t *testing.T) {
 		exportRaw:   liveRaw,
 		exportCount: 1,
 	}
-	result, err := NewChecker(repo, client, Config{}).Check(context.Background())
+	result, err := NewChecker(repo, client).Check(context.Background())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -207,51 +198,7 @@ func TestCheckHealthyMatchingBackup(t *testing.T) {
 		exportRaw:   liveRaw,
 		exportCount: 2,
 	}
-	result, err := NewChecker(repo, client, Config{}).Check(context.Background())
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if !result.Healthy {
-		t.Fatalf("healthy = false, want true; message=%s", result.Message)
-	}
-}
-
-func TestCheckMasterKeyHashMismatch(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "master.key")
-	if err := os.WriteFile(path, []byte("xprv-data"), 0o600); err != nil {
-		t.Fatalf("write master key file: %v", err)
-	}
-	sum := sha256.Sum256([]byte("xprv-data"))
-	repo := &fakeRepo{
-		password:      "secret",
-		wallet:        &db.WalletAddress{Address: "bc1qexample"},
-		masterKeyHash: "other-hash",
-	}
-	result, err := NewChecker(repo, &fakeClient{}, Config{ExtendedMasterKeyFile: path}).Check(context.Background())
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if result.Healthy {
-		t.Fatalf("healthy = true, want false; message=%s", result.Message)
-	}
-	_ = hex.EncodeToString(sum[:])
-}
-
-func TestCheckMasterKeyHashMatch(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "master.key")
-	content := []byte("xprv-data")
-	if err := os.WriteFile(path, content, 0o600); err != nil {
-		t.Fatalf("write master key file: %v", err)
-	}
-	sum := sha256.Sum256(content)
-	repo := &fakeRepo{
-		password:      "secret",
-		wallet:        &db.WalletAddress{Address: "bc1qexample"},
-		masterKeyHash: hex.EncodeToString(sum[:]),
-	}
-	result, err := NewChecker(repo, &fakeClient{}, Config{ExtendedMasterKeyFile: path}).Check(context.Background())
+	result, err := NewChecker(repo, client).Check(context.Background())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}

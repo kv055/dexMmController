@@ -146,21 +146,3 @@ func (r *TransactionRepository) LatestLNDChannelBackup(ctx context.Context, acco
 	}
 	return &item, nil
 }
-
-// LatestLNDMasterKeyHash returns the newest recorded master key hash for an account.
-func (r *TransactionRepository) LatestLNDMasterKeyHash(ctx context.Context, accountID int64) (string, error) {
-	if accountID <= 0 {
-		return "", errors.New("LND account id is required")
-	}
-	var hash string
-	if err := r.db.WithContext(ctx).Raw(`
-		SELECT master_key_hash
-		FROM lnd_master_key_hashes
-		WHERE account_id = ?
-		ORDER BY created_at DESC, id DESC
-		LIMIT 1
-	`, accountID).Scan(&hash).Error; err != nil {
-		return "", fmt.Errorf("load latest LND master key hash: %w", err)
-	}
-	return strings.TrimSpace(hash), nil
-}

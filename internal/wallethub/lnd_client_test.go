@@ -14,9 +14,9 @@ func TestInitConfigHasRestoreSecret(t *testing.T) {
 	if empty.HasRestoreSecret() {
 		t.Fatal("empty InitConfig should not have restore secret")
 	}
-	cfg := InitConfig{ExtendedMasterKey: "xprv-example"}
+	cfg := InitConfig{CipherSeedMnemonic: make([]string, 24)}
 	if !cfg.HasRestoreSecret() {
-		t.Fatal("extended master key should count as restore secret")
+		t.Fatal("cipher seed mnemonic should count as restore secret")
 	}
 }
 
@@ -49,30 +49,11 @@ func TestInitConfigValidate(t *testing.T) {
 			cfg:  InitConfig{},
 		},
 		{
-			name: "both secret types",
-			cfg: InitConfig{
-				CipherSeedMnemonic: []string{
-					"alpha", "beta", "gamma", "delta", "epsilon", "zeta",
-					"eta", "theta", "iota", "kappa", "lambda", "mu",
-					"nu", "xi", "omicron", "pi", "rho", "sigma",
-					"tau", "upsilon", "phi", "chi", "psi", "omega",
-				},
-				ExtendedMasterKey: "xprv-example",
-			},
-			wantErr: true,
-		},
-		{
 			name: "short mnemonic",
 			cfg: InitConfig{
 				CipherSeedMnemonic: []string{"alpha", "beta"},
 			},
 			wantErr: true,
-		},
-		{
-			name: "extended master key only",
-			cfg: InitConfig{
-				ExtendedMasterKey: "xprv-example",
-			},
 		},
 	}
 
