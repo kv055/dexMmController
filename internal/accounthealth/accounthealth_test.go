@@ -247,7 +247,8 @@ func TestCheckProviderBinanceCanonicalPermissions(t *testing.T) {
 		t.Fatalf("result = %+v, want unhealthy with one key", result)
 	}
 	perms := result.Keys[0].Permissions
-	if perms[cexaccount.PermSpotTrading] != cexaccount.PermGranted || perms[cexaccount.PermReadBalances] != cexaccount.PermGranted ||
+	if perms[cexaccount.PermFetchDepositAddress] != cexaccount.PermGranted ||
+		perms[cexaccount.PermSpotTrading] != cexaccount.PermGranted || perms[cexaccount.PermReadBalances] != cexaccount.PermGranted ||
 		perms[cexaccount.PermWithdraw] != cexaccount.PermDenied || perms[cexaccount.PermHedgePositions] != cexaccount.PermGranted {
 		t.Fatalf("permissions = %+v", perms)
 	}
@@ -259,12 +260,16 @@ func TestCheckProviderBinanceCanonicalPermissions(t *testing.T) {
 func TestCheckProviderKrakenProbesPermissions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/0/private/DepositMethods":
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": []map[string]any{{"method": "Bitcoin"}}})
 		case "/0/private/Balance":
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": map[string]string{"XXBT": "0.1"}})
 		case "/0/private/AddOrder":
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{"EGeneral:Permission denied"}, "result": map[string]any{}})
 		case "/0/private/WithdrawMethods":
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": []map[string]any{{"method": "Bitcoin"}}})
+		case "/api/auth/v1/api-keys/v3/check":
+			http.Error(w, `{"error":"authenticationError"}`, http.StatusUnauthorized)
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -275,7 +280,7 @@ func TestCheckProviderKrakenProbesPermissions(t *testing.T) {
 		accountProvider: "Kraken",
 		keys:            []db.APIKey{{ID: 5, APIKey: "k", APISecret: base64.StdEncoding.EncodeToString([]byte("secret")), IsActive: true}},
 	}
-	checker := accounthealth.NewChecker(repo, cexaccount.Config{KrakenBaseURL: srv.URL})
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{KrakenBaseURL: srv.URL, KrakenFuturesBaseURL: srv.URL})
 	result, err := checker.CheckProvider(context.Background(), "kraken")
 	if err != nil {
 		t.Fatalf("CheckProvider: %v", err)
@@ -284,18 +289,116 @@ func TestCheckProviderKrakenProbesPermissions(t *testing.T) {
 		t.Fatalf("result = %+v, want unhealthy with one key", result)
 	}
 	perms := result.Keys[0].Permissions
-	if perms[cexaccount.PermReadBalances] != cexaccount.PermGranted || perms[cexaccount.PermSpotTrading] != cexaccount.PermDenied ||
-		perms[cexaccount.PermWithdraw] != cexaccount.PermGranted || perms[cexaccount.PermHedgePositions] != cexaccount.PermUnsupported {
+	if perms[cexaccount.PermFetchDepositAddress] != cexaccount.PermGranted ||
+		perms[cexaccount.PermReadBalances] != cexaccount.PermGranted || perms[cexaccount.PermSpotTrading] != cexaccount.PermDenied ||
+		perms[cexaccount.PermWithdraw] != cexaccount.PermGranted || perms[cexaccount.PermHedgePositions] != cexaccount.PermDenied {
 		t.Fatalf("permissions = %+v", perms)
 	}
 }
 
-func TestCheckProviderCoinbaseHedgeUnsupported(t *testing.T) {
+func TestCheckProviderKrakenCombinesSpotAndFuturesKeys(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v3/brokerage/key_permissions" {
-			t.Fatalf("path = %s, want key_permissions", r.URL.Path)
+		apiKey := r.Header.Get("API-Key")
+		if apiKey == "" {
+			apiKey = r.Header.Get("APIKey")
 		}
-		_, _ = w.Write([]byte(`{"can_view":true,"can_trade":true,"can_transfer":false}`))
+		switch r.URL.Path {
+		case "/0/private/DepositMethods":
+			if apiKey != "spot-key" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{"EAPI:Invalid key"}, "result": map[string]any{}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": []map[string]any{{"method": "Bitcoin"}}})
+		case "/0/private/Balance":
+			if apiKey != "spot-key" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{"EAPI:Invalid key"}, "result": map[string]any{}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": map[string]string{"XXBT": "0.1"}})
+		case "/0/private/WithdrawMethods":
+			if apiKey != "spot-key" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{"EAPI:Invalid key"}, "result": map[string]any{}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": []map[string]any{{"method": "Bitcoin"}}})
+		case "/0/private/AddOrder":
+			if apiKey != "spot-key" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{"EAPI:Invalid key"}, "result": map[string]any{}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": []string{}, "result": map[string]any{"descr": map[string]string{"order": "ok"}}})
+		case "/api/auth/v1/api-keys/v3/check":
+			if apiKey != "futures-key" {
+				http.Error(w, `{"error":"authenticationError"}`, http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"apiKey":     "futures-key",
+				"accountUid": "uid",
+				"permissions": map[string]string{
+					"general":  "FULL_ACCESS",
+					"transfer": "NO_ACCESS",
+				},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	secret := base64.StdEncoding.EncodeToString([]byte("secret"))
+	repo := &fakeRepo{accountProvider: "Kraken", keys: []db.APIKey{
+		{ID: 1, Name: "spot", APIKey: "spot-key", APISecret: secret, IsActive: true},
+		{ID: 2, Name: "futures", APIKey: "futures-key", APISecret: secret, IsActive: true},
+	}}
+	result, err := accounthealth.NewChecker(repo, cexaccount.Config{
+		KrakenBaseURL:        srv.URL,
+		KrakenFuturesBaseURL: srv.URL,
+	}).CheckProvider(context.Background(), "kraken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Healthy || len(result.Keys) != 2 {
+		t.Fatalf("result = %+v, want healthy combined spot+futures", result)
+	}
+	spot := result.Keys[0].Permissions
+	if spot[cexaccount.PermFetchDepositAddress] != cexaccount.PermGranted ||
+		spot[cexaccount.PermSpotTrading] != cexaccount.PermGranted ||
+		spot[cexaccount.PermHedgePositions] != cexaccount.PermDenied {
+		t.Fatalf("spot key permissions = %+v", spot)
+	}
+	futures := result.Keys[1].Permissions
+	if futures[cexaccount.PermHedgePositions] != cexaccount.PermGranted ||
+		futures[cexaccount.PermSpotTrading] != cexaccount.PermDenied {
+		t.Fatalf("futures key permissions = %+v", futures)
+	}
+}
+
+func TestCheckProviderCoinbaseHedgeDeniedWithoutINTXKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/brokerage/key_permissions":
+			_, _ = w.Write([]byte(`{"can_view":true,"can_trade":true,"can_transfer":true}`))
+		case "/api/v3/brokerage/accounts":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"accounts": []map[string]any{{
+					"uuid":     "eur-account",
+					"currency": "EUR",
+					"active":   true,
+					"available_balance": map[string]string{
+						"value":    "0",
+						"currency": "EUR",
+					},
+				}},
+				"has_next": false,
+			})
+		case "/v2/accounts":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}, "pagination": map[string]any{}})
+		case "/v2/accounts/BTC":
+			http.NotFound(w, r)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
 	}))
 	t.Cleanup(srv.Close)
 
@@ -309,12 +412,78 @@ func TestCheckProviderCoinbaseHedgeUnsupported(t *testing.T) {
 		t.Fatalf("CheckProvider: %v", err)
 	}
 	if result.Healthy || len(result.Keys) != 1 {
-		t.Fatalf("result = %+v, want unhealthy with one key", result)
+		t.Fatalf("result = %+v, want unhealthy with one key (missing hedge)", result)
 	}
 	perms := result.Keys[0].Permissions
-	if perms[cexaccount.PermSpotTrading] != cexaccount.PermGranted || perms[cexaccount.PermReadBalances] != cexaccount.PermGranted ||
-		perms[cexaccount.PermWithdraw] != cexaccount.PermDenied || perms[cexaccount.PermHedgePositions] != cexaccount.PermUnsupported {
+	if perms[cexaccount.PermFetchDepositAddress] != cexaccount.PermGranted ||
+		perms[cexaccount.PermSpotTrading] != cexaccount.PermGranted || perms[cexaccount.PermReadBalances] != cexaccount.PermGranted ||
+		perms[cexaccount.PermWithdraw] != cexaccount.PermGranted || perms[cexaccount.PermHedgePositions] != cexaccount.PermDenied {
 		t.Fatalf("permissions = %+v", perms)
+	}
+	if !strings.Contains(result.Message, "International Exchange") {
+		t.Fatalf("message = %q, want INTX guidance", result.Message)
+	}
+}
+
+func TestCheckProviderCoinbaseCombinesSpotAndINTXKeys(t *testing.T) {
+	spotSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/brokerage/key_permissions":
+			_, _ = w.Write([]byte(`{"can_view":true,"can_trade":true,"can_transfer":true}`))
+		case "/api/v3/brokerage/accounts":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"accounts": []map[string]any{{
+					"uuid":     "eur-account",
+					"currency": "EUR",
+					"active":   true,
+					"available_balance": map[string]string{"value": "10", "currency": "EUR"},
+				}},
+				"has_next": false,
+			})
+		case "/v2/accounts":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}, "pagination": map[string]any{}})
+		case "/v2/accounts/BTC":
+			http.NotFound(w, r)
+		default:
+			// INTX passphrase keys hit the spot base URL for CDP probes and fail soft.
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		}
+	}))
+	t.Cleanup(spotSrv.Close)
+
+	intxSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/portfolios" {
+			t.Fatalf("intx path = %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"portfolio_uuid": "intx-portfolio"}})
+	}))
+	t.Cleanup(intxSrv.Close)
+
+	repo := &fakeRepo{
+		accountProvider: "Coinbase",
+		keys: []db.APIKey{
+			{ID: 1, Name: "spot", APIKey: "organizations/org/apiKeys/spot", APISecret: testECPrivateKeyPEM(t), IsActive: true}, // gitleaks:allow
+			{ID: 2, Name: "intx", APIKey: "intx-key", APISecret: base64.StdEncoding.EncodeToString([]byte("intx-secret")), Passphrase: "intx-pass", IsActive: true}, // gitleaks:allow
+		},
+	}
+	checker := accounthealth.NewChecker(repo, cexaccount.Config{
+		CoinbaseBaseURL:     spotSrv.URL,
+		CoinbaseINTXBaseURL: intxSrv.URL,
+	})
+	result, err := checker.CheckProvider(context.Background(), "coinbase")
+	if err != nil {
+		t.Fatalf("CheckProvider: %v", err)
+	}
+	if !result.Healthy || len(result.Keys) != 2 {
+		t.Fatalf("result = %+v, want healthy with spot+intx keys", result)
+	}
+	spot := result.Keys[0].Permissions
+	intx := result.Keys[1].Permissions
+	if spot[cexaccount.PermReadBalances] != cexaccount.PermGranted || spot[cexaccount.PermHedgePositions] != cexaccount.PermDenied {
+		t.Fatalf("spot permissions = %+v", spot)
+	}
+	if intx[cexaccount.PermHedgePositions] != cexaccount.PermGranted {
+		t.Fatalf("intx permissions = %+v", intx)
 	}
 }
 

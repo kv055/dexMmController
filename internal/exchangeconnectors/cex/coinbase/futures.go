@@ -30,13 +30,43 @@ type FuturesClient struct {
 
 // NewFuturesClient creates a FuturesClient from database-loaded credentials.
 func NewFuturesClient(apiKey, apiSecret, passphrase string) *FuturesClient {
+	return NewFuturesClientWithBaseURL(defaultINTXBaseURL, apiKey, apiSecret, passphrase)
+}
+
+// NewFuturesClientWithBaseURL creates a FuturesClient pointed at baseURL (tests / overrides).
+func NewFuturesClientWithBaseURL(baseURL, apiKey, apiSecret, passphrase string) *FuturesClient {
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = defaultINTXBaseURL
+	}
 	return &FuturesClient{
-		baseURL:    defaultINTXBaseURL,
+		baseURL:    strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		apiKey:     strings.TrimSpace(apiKey),
 		apiSecret:  strings.TrimSpace(apiSecret),
 		passphrase: strings.TrimSpace(passphrase),
 		http:       &http.Client{Timeout: 15 * time.Second},
 	}
+}
+
+// CheckAccess verifies the INTX API key can list portfolios (hedge permission probe).
+func (c *FuturesClient) CheckAccess(ctx context.Context) error {
+	_, err := c.ListPortfolios(ctx)
+	return err
+}
+
+// ListPortfolios returns INTX portfolio UUIDs for the authenticated key.
+func (c *FuturesClient) ListPortfolios(ctx context.Context) ([]string, error) {
+	raw, err := c.signedGet(ctx, "/api/v1/portfolios")
+	if err != nil {
+		return nil, err
+	}
+	ids, err := decodeCoinbasePortfolios(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("no portfolios found")
+	}
+	return ids, nil
 }
 
 // PlaceOrder places a market IOC order on Coinbase INTX for the given instrument.
@@ -97,26 +127,60 @@ func (c *FuturesClient) CurrentPosition(ctx context.Context) (cex.HedgePositionU
 	return c.fetchPosition(ctx)
 }
 
-type coinbaseINTXPortfoliosResponse struct {
-	Portfolios []struct {
-		PortfolioUUID string `json:"portfolio_uuid"`
-	} `json:"portfolios"`
+type coinbaseINTXPortfolio struct {
+	PortfolioUUID string `json:"portfolio_uuid"`
+	PortfolioID   string `json:"portfolio_id"`
+	ID            string `json:"id"`
+}
+
+func (p coinbaseINTXPortfolio) id() string {
+	for _, candidate := range []string{p.PortfolioUUID, p.PortfolioID, p.ID} {
+		if id := strings.TrimSpace(candidate); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func decodeCoinbasePortfolios(raw []byte) ([]string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("decode portfolios: empty response")
+	}
+
+	var rows []coinbaseINTXPortfolio
+	switch trimmed[0] {
+	case '[':
+		if err := json.Unmarshal(trimmed, &rows); err != nil {
+			return nil, fmt.Errorf("decode portfolios: %w", err)
+		}
+	case '{':
+		var wrapped struct {
+			Portfolios []coinbaseINTXPortfolio `json:"portfolios"`
+		}
+		if err := json.Unmarshal(trimmed, &wrapped); err != nil {
+			return nil, fmt.Errorf("decode portfolios: %w", err)
+		}
+		rows = wrapped.Portfolios
+	default:
+		return nil, fmt.Errorf("decode portfolios: unexpected JSON")
+	}
+
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if id := row.id(); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 func (c *FuturesClient) fetchPortfolioID(ctx context.Context) (string, error) {
-	path := "/api/v1/portfolios"
-	raw, err := c.signedGet(ctx, path)
+	ids, err := c.ListPortfolios(ctx)
 	if err != nil {
 		return "", err
 	}
-	var out coinbaseINTXPortfoliosResponse
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", fmt.Errorf("decode portfolios: %w", err)
-	}
-	if len(out.Portfolios) == 0 {
-		return "", fmt.Errorf("no portfolios found")
-	}
-	return out.Portfolios[0].PortfolioUUID, nil
+	return ids[0], nil
 }
 
 type coinbaseINTXOrderResponse struct {

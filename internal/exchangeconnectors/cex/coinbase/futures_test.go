@@ -18,6 +18,42 @@ func TestNewFuturesClientUsesSuppliedCredentials(t *testing.T) {
 	}
 }
 
+func TestDecodeCoinbasePortfoliosAcceptsBareArrayAndWrapped(t *testing.T) {
+	bare, err := decodeCoinbasePortfolios([]byte(`[{"portfolio_uuid":"uuid-1"},{"id":"uuid-2"}]`))
+	if err != nil {
+		t.Fatalf("bare array: %v", err)
+	}
+	if len(bare) != 2 || bare[0] != "uuid-1" || bare[1] != "uuid-2" {
+		t.Fatalf("bare = %#v", bare)
+	}
+
+	wrapped, err := decodeCoinbasePortfolios([]byte(`{"portfolios":[{"portfolio_uuid":"uuid-3"}]}`))
+	if err != nil {
+		t.Fatalf("wrapped: %v", err)
+	}
+	if len(wrapped) != 1 || wrapped[0] != "uuid-3" {
+		t.Fatalf("wrapped = %#v", wrapped)
+	}
+}
+
+func TestFuturesClientCheckAccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/portfolios" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if r.Header.Get("CB-ACCESS-KEY") == "" || r.Header.Get("CB-ACCESS-PASSPHRASE") == "" {
+			t.Fatalf("missing INTX auth headers")
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"portfolio_uuid": "uuid-ok"}})
+	}))
+	defer srv.Close()
+
+	client := NewFuturesClientWithBaseURL(srv.URL, "key", base64.StdEncoding.EncodeToString([]byte("secret")), "pass")
+	if err := client.CheckAccess(context.Background()); err != nil {
+		t.Fatalf("CheckAccess: %v", err)
+	}
+}
+
 func TestCoinbaseFuturesPlaceOrderShort(t *testing.T) {
 	var gotOrderBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -48,6 +48,64 @@ func TestFuturesKeyUsesActiveDatabaseCredentials(t *testing.T) {
 	}
 }
 
+func TestCoinbaseFuturesKeyPrefersHedgeGrantedPassphraseKey(t *testing.T) {
+	denied, _ := json.Marshal(map[string]string{PermHedgePositions: PermDenied})
+	granted, _ := json.Marshal(map[string]string{PermHedgePositions: PermGranted})
+	service := NewService(credentialRepo{keysByProvider: map[string][]db.APIKey{
+		"Coinbase": {
+			{APIKey: "spot-key", APISecret: "spot-secret"},
+			{APIKey: "exchange-key", APISecret: "exchange-secret", Passphrase: "ex-pass", Permissions: denied},
+			{APIKey: "intx-key", APISecret: "intx-secret", Passphrase: "intx-pass", Permissions: granted},
+		},
+	}}, Config{})
+
+	got, err := service.futuresKey(context.Background(), "coinbase_futures")
+	if err != nil {
+		t.Fatalf("futuresKey: %v", err)
+	}
+	if got.APIKey != "intx-key" {
+		t.Fatalf("futuresKey = %q, want intx-key", got.APIKey)
+	}
+}
+
+func TestKrakenSpotAndFuturesKeySelection(t *testing.T) {
+	spotPerms, _ := json.Marshal(map[string]string{
+		PermFetchDepositAddress: PermGranted,
+		PermSpotTrading:         PermGranted,
+		PermReadBalances:        PermGranted,
+		PermWithdraw:            PermGranted,
+		PermHedgePositions:      PermDenied,
+	})
+	futuresPerms, _ := json.Marshal(map[string]string{
+		PermFetchDepositAddress: PermDenied,
+		PermSpotTrading:         PermDenied,
+		PermReadBalances:        PermDenied,
+		PermWithdraw:            PermDenied,
+		PermHedgePositions:      PermGranted,
+	})
+	service := NewService(credentialRepo{keysByProvider: map[string][]db.APIKey{
+		"Kraken": {
+			{ID: 7, Name: "futures", APIKey: "futures-key", APISecret: "futures-secret", Permissions: futuresPerms},
+			{ID: 2, Name: "spot", APIKey: "spot-key", APISecret: "spot-secret", Permissions: spotPerms},
+		},
+	}}, Config{})
+
+	_, spot, err := service.spotAPIKey(context.Background(), "Kraken")
+	if err != nil {
+		t.Fatalf("spotAPIKey: %v", err)
+	}
+	if spot.APIKey != "spot-key" {
+		t.Fatalf("spotAPIKey = %q, want spot-key", spot.APIKey)
+	}
+	futures, err := service.futuresKey(context.Background(), "kraken_futures")
+	if err != nil {
+		t.Fatalf("futuresKey: %v", err)
+	}
+	if futures.APIKey != "futures-key" {
+		t.Fatalf("futuresKey = %q, want futures-key", futures.APIKey)
+	}
+}
+
 func TestCanonicalProvider(t *testing.T) {
 	tests := map[string]string{
 		"kraken":    "Kraken",
@@ -176,12 +234,17 @@ func TestBalancesFromCoinbase(t *testing.T) {
 			Active:           true,
 			AvailableBalance: coinbase.AccountAmount{Value: "42.10", Currency: "EUR"},
 		},
+		{
+			Currency:         "USD",
+			Active:           true,
+			AvailableBalance: coinbase.AccountAmount{Value: "0", Currency: "USD"},
+		},
 	})
 	if resp.Bitcoin == nil || resp.Bitcoin.Total != 0.25 {
 		t.Fatalf("bitcoin balance = %#v, want 0.25 BTC", resp.Bitcoin)
 	}
-	if len(resp.Fiat) != 1 || resp.Fiat[0].Asset != "EUR" {
-		t.Fatalf("fiat balances = %#v, want EUR only", resp.Fiat)
+	if len(resp.Fiat) != 2 {
+		t.Fatalf("fiat balances = %#v, want EUR and zero USD", resp.Fiat)
 	}
 }
 

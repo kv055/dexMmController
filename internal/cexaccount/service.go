@@ -181,7 +181,7 @@ type SpotTrade struct {
 
 // DepositAddresses returns BTC deposit addresses for the provider.
 func (s *Service) DepositAddresses(ctx context.Context, rawProvider string) ([]DepositAddress, error) {
-	provider, key, err := s.firstActiveKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKey(ctx, rawProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +262,7 @@ func (s *Service) DepositAddresses(ctx context.Context, rawProvider string) ([]D
 
 // WithdrawalAddresses returns whitelisted BTC withdrawal addresses for the provider.
 func (s *Service) WithdrawalAddresses(ctx context.Context, rawProvider string) ([]WithdrawalAddress, error) {
-	provider, key, err := s.firstActiveKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKey(ctx, rawProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +342,7 @@ func (s *Service) WithdrawalAddresses(ctx context.Context, rawProvider string) (
 
 // Balances returns BTC and fiat balances for the provider.
 func (s *Service) Balances(ctx context.Context, rawProvider string) (*BalancesResponse, error) {
-	provider, key, err := s.firstActiveKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKey(ctx, rawProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -485,7 +485,7 @@ func (s *Service) MarketBuyBTC(ctx context.Context, rawProvider string, btcAmoun
 		return nil, err
 	}
 
-	provider, key, err := s.firstActiveKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKey(ctx, rawProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -1017,20 +1017,61 @@ func (s *Service) StreamHedgePositions(ctx context.Context, venue string) (<-cha
 func (s *Service) futuresKey(ctx context.Context, venue string) (db.APIKey, error) {
 	switch venue {
 	case "kraken_futures":
-		_, key, err := s.firstActiveKey(ctx, "Kraken")
+		_, key, err := s.activeKeyPreferringPermissions(ctx, "Kraken", false, PermHedgePositions)
 		return key, err
 	case "binance_futures":
 		_, key, err := s.firstActiveKey(ctx, "Binance")
 		return key, err
 	case "coinbase_futures":
-		_, key, err := s.firstActiveKeyWithPassphrase(ctx, "Coinbase")
-		return key, err
+		return s.coinbaseFuturesKey(ctx)
 	default:
 		return db.APIKey{}, fmt.Errorf("unsupported hedge venue %q", venue)
 	}
 }
 
+// coinbaseFuturesKey prefers an INTX passphrase key that granted hedge_positions on
+// the last health check, then any passphrase key, matching Kraken's dual-key model.
+func (s *Service) coinbaseFuturesKey(ctx context.Context) (db.APIKey, error) {
+	keys, err := s.repo.GetActiveAPIKeysForProvider(ctx, "Coinbase")
+	if err != nil {
+		return db.APIKey{}, err
+	}
+	var fallback db.APIKey
+	foundFallback := false
+	for _, key := range keys {
+		if strings.TrimSpace(key.APIKey) == "" || strings.TrimSpace(key.APISecret) == "" {
+			continue
+		}
+		if strings.TrimSpace(key.Passphrase) == "" {
+			continue
+		}
+		if !foundFallback {
+			fallback = key
+			foundFallback = true
+		}
+		if keyGrantsPermission(key, PermHedgePositions) {
+			return key, nil
+		}
+	}
+	if foundFallback {
+		return fallback, nil
+	}
+	return db.APIKey{}, fmt.Errorf("no Coinbase International (INTX) API key (key+secret+passphrase) configured for Coinbase")
+}
+
 func (s *Service) firstActiveKey(ctx context.Context, rawProvider string) (string, db.APIKey, error) {
+	return s.activeKeyPreferringPermissions(ctx, rawProvider, false)
+}
+
+// spotAPIKey returns credentials suitable for Kraken/Binance/Coinbase spot endpoints.
+// For Kraken, prefers keys that granted a spot permission on the last health check and
+// skips futures-only keys so hedge credentials are not used for Balance/Withdraw.
+func (s *Service) spotAPIKey(ctx context.Context, rawProvider string) (string, db.APIKey, error) {
+	return s.activeKeyPreferringPermissions(ctx, rawProvider, true,
+		PermFetchDepositAddress, PermSpotTrading, PermReadBalances, PermWithdraw)
+}
+
+func (s *Service) activeKeyPreferringPermissions(ctx context.Context, rawProvider string, skipKrakenFuturesOnly bool, preferred ...string) (string, db.APIKey, error) {
 	provider, err := CanonicalProvider(rawProvider)
 	if err != nil {
 		return "", db.APIKey{}, err
@@ -1042,11 +1083,70 @@ func (s *Service) firstActiveKey(ctx context.Context, rawProvider string) (strin
 	if len(keys) == 0 {
 		return "", db.APIKey{}, fmt.Errorf("no active API keys configured for %s", provider)
 	}
-	key := keys[0]
-	if strings.TrimSpace(key.APIKey) == "" || strings.TrimSpace(key.APISecret) == "" {
-		return "", db.APIKey{}, fmt.Errorf("active %s API key is missing credentials", provider)
+
+	var fallback db.APIKey
+	foundFallback := false
+	for _, key := range keys {
+		if strings.TrimSpace(key.APIKey) == "" || strings.TrimSpace(key.APISecret) == "" {
+			continue
+		}
+		if skipKrakenFuturesOnly && provider == "Kraken" && isKrakenFuturesOnlyKey(key) {
+			continue
+		}
+		if !foundFallback {
+			fallback = key
+			foundFallback = true
+		}
+		if len(preferred) == 0 {
+			return provider, key, nil
+		}
+		for _, perm := range preferred {
+			if keyGrantsPermission(key, perm) {
+				return provider, key, nil
+			}
+		}
 	}
-	return provider, key, nil
+	if foundFallback {
+		return provider, fallback, nil
+	}
+	if skipKrakenFuturesOnly && provider == "Kraken" {
+		// Only futures-only keys remain; fall back so callers still get a clear API error.
+		for _, key := range keys {
+			if strings.TrimSpace(key.APIKey) != "" && strings.TrimSpace(key.APISecret) != "" {
+				return provider, key, nil
+			}
+		}
+	}
+	return "", db.APIKey{}, fmt.Errorf("active %s API key is missing credentials", provider)
+}
+
+func keyPermissionsMap(key db.APIKey) map[string]string {
+	raw := bytes.TrimSpace(key.Permissions)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var perms map[string]string
+	if err := json.Unmarshal(raw, &perms); err != nil {
+		return nil
+	}
+	return perms
+}
+
+func keyGrantsPermission(key db.APIKey, permission string) bool {
+	return keyPermissionsMap(key)[permission] == PermGranted
+}
+
+func isKrakenFuturesOnlyKey(key db.APIKey) bool {
+	perms := keyPermissionsMap(key)
+	if perms == nil || perms[PermHedgePositions] != PermGranted {
+		return false
+	}
+	for _, perm := range []string{PermFetchDepositAddress, PermSpotTrading, PermReadBalances, PermWithdraw} {
+		if perms[perm] == PermGranted {
+			return false
+		}
+	}
+	return true
 }
 
 // firstActiveKeyWithPassphrase returns the first active key that carries a passphrase.
@@ -1118,18 +1218,20 @@ func balancesFromCoinbase(accounts []coinbase.Account) *BalancesResponse {
 		if !account.Active {
 			continue
 		}
-		available, err := strconv.ParseFloat(strings.TrimSpace(account.AvailableBalance.Value), 64)
-		if err != nil {
-			continue
+		availableRaw := strings.TrimSpace(account.AvailableBalance.Value)
+		available := 0.0
+		if availableRaw != "" {
+			parsed, err := strconv.ParseFloat(availableRaw, 64)
+			if err != nil {
+				continue
+			}
+			available = parsed
 		}
 		held, err := strconv.ParseFloat(strings.TrimSpace(account.Hold.Value), 64)
 		if err != nil {
 			held = 0
 		}
 		total := available + held
-		if total <= 0 && available <= 0 {
-			continue
-		}
 		asset := strings.ToUpper(strings.TrimSpace(account.Currency))
 		entry := AssetBalance{
 			Asset:     asset,
@@ -1296,7 +1398,7 @@ func (s *Service) WithdrawSpotToLND(ctx context.Context, rawProvider string, amo
 		return nil, fmt.Errorf("LND wallet not available")
 	}
 
-	provider, key, err := s.firstActiveKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKey(ctx, rawProvider)
 	if err != nil {
 		return nil, err
 	}

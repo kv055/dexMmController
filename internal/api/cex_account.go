@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -167,31 +168,31 @@ func (s *Server) WithTradeFlow(runner TradeFlowRunner) *Server {
 }
 
 func (s *Server) handleCexDepositAddresses(w http.ResponseWriter, r *http.Request) {
-	s.handleCexProviderRequest(w, r, func(ctx context.Context, provider string) (any, error) {
+	s.handleCexProviderRequest(w, r, "deposit addresses", func(ctx context.Context, provider string) (any, error) {
 		return s.cexAccount.DepositAddresses(ctx, provider)
 	})
 }
 
 func (s *Server) handleCexWithdrawalAddresses(w http.ResponseWriter, r *http.Request) {
-	s.handleCexProviderRequest(w, r, func(ctx context.Context, provider string) (any, error) {
+	s.handleCexProviderRequest(w, r, "withdrawal addresses", func(ctx context.Context, provider string) (any, error) {
 		return s.cexAccount.WithdrawalAddresses(ctx, provider)
 	})
 }
 
 func (s *Server) handleCexBalances(w http.ResponseWriter, r *http.Request) {
-	s.handleCexProviderRequest(w, r, func(ctx context.Context, provider string) (any, error) {
+	s.handleCexProviderRequest(w, r, "balances", func(ctx context.Context, provider string) (any, error) {
 		return s.cexAccount.Balances(ctx, provider)
 	})
 }
 
 func (s *Server) handleCexHedgePositions(w http.ResponseWriter, r *http.Request) {
-	s.handleCexProviderRequest(w, r, func(ctx context.Context, provider string) (any, error) {
+	s.handleCexProviderRequest(w, r, "hedge positions", func(ctx context.Context, provider string) (any, error) {
 		return s.cexAccount.HedgePositions(ctx, provider)
 	})
 }
 
 func (s *Server) handleCexSpotTrades(w http.ResponseWriter, r *http.Request) {
-	s.handleCexProviderRequest(w, r, func(ctx context.Context, provider string) (any, error) {
+	s.handleCexProviderRequest(w, r, "spot trades", func(ctx context.Context, provider string) (any, error) {
 		return s.cexAccount.SpotTrades(ctx, provider, queryInt(r, "limit", 50))
 	})
 }
@@ -199,6 +200,7 @@ func (s *Server) handleCexSpotTrades(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCexProviderRequest(
 	w http.ResponseWriter,
 	r *http.Request,
+	operation string,
 	run func(context.Context, string) (any, error),
 ) {
 	if s.cexAccount == nil {
@@ -222,10 +224,25 @@ func (s *Server) handleCexProviderRequest(
 
 	payload, err := run(r.Context(), provider)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		writeCEXProviderFailure(w, canonical, operation, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+func writeCEXProviderFailure(w http.ResponseWriter, provider, operation string, cause error) {
+	accessErr := cexaccount.NewAccessError(provider, operation, cause)
+	log.Printf("CEX %s %s request failed: %v", provider, operation, cause)
+	writeCEXAccessError(w, http.StatusBadGateway, accessErr)
+}
+
+func writeCEXAccessError(w http.ResponseWriter, status int, err *cexaccount.AccessError) {
+	writeJSON(w, status, map[string]string{
+		"error":     err.Error(),
+		"code":      "cex_api_access_failed",
+		"provider":  err.Provider,
+		"operation": err.Operation,
+	})
 }
 
 // withdrawalTrackResponse merges CEX withdrawal status with optional mempool tx data.

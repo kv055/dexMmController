@@ -42,7 +42,7 @@ func (s *Service) GetWithdrawalStatus(ctx context.Context, rawProvider, withdraw
 		return nil, fmt.Errorf("withdrawal_id is required")
 	}
 
-	provider, key, err := s.firstActiveKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKey(ctx, rawProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func (s *Service) GetWithdrawalStatus(ctx context.Context, rawProvider, withdraw
 // within the given lookback window. Records in a cancelled/rejected/failed state do
 // not count as sent (the funds never left), so a retry is allowed.
 func (s *Service) WithdrawalAlreadySent(ctx context.Context, rawProvider, clientRequestID string, amountBTC float64, address string, within time.Duration) (*WithdrawalStatus, error) {
-	provider, key, err := s.firstActiveKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKey(ctx, rawProvider)
 	if err != nil {
 		return nil, err
 	}

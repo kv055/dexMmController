@@ -133,6 +133,53 @@ func TestBTCDepositAddressesUsesExistingAddress(t *testing.T) {
 	}
 }
 
+func TestBTCDepositAddressesUsesPrimaryCurrencyShortcut(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v3/brokerage/accounts":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"accounts": []map[string]any{{
+					"uuid":     "eur-account",
+					"currency": "EUR",
+					"active":   true,
+				}},
+				"has_next": false,
+			})
+		case r.URL.Path == "/v2/accounts" && r.URL.RawQuery == "limit=100":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}, "pagination": map[string]any{}})
+		case r.URL.Path == "/v2/accounts/BTC":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"id": "btc-primary",
+					"currency": map[string]string{
+						"code": "BTC",
+					},
+				},
+			})
+		case r.URL.Path == "/v2/accounts/btc-primary/addresses" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]string{{
+					"id":      "addr-1",
+					"address": "bc1qprimary",
+					"network": "bitcoin",
+				}},
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.RequestURI())
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "organizations/org/apiKeys/key", testECPrivateKeyPEM(t))
+	addresses, err := client.BTCDepositAddresses(context.Background())
+	if err != nil {
+		t.Fatalf("BTCDepositAddresses: %v", err)
+	}
+	if len(addresses) != 1 || addresses[0].Address != "bc1qprimary" {
+		t.Fatalf("addresses = %#v, want bc1qprimary", addresses)
+	}
+}
+
 func TestMarketBuyPostsOrder(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

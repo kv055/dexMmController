@@ -11,6 +11,35 @@ import (
 	"testing"
 )
 
+func TestKrakenFuturesCheckAPIKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/auth/v1/api-keys/v3/check" {
+			t.Fatalf("path = %s, want /api/auth/v1/api-keys/v3/check", r.URL.Path)
+		}
+		if r.Header.Get("APIKey") == "" || r.Header.Get("Authent") == "" {
+			t.Fatal("expected futures auth headers")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"apiKey":     "futures-key",
+			"accountUid": "uid-1",
+			"permissions": map[string]string{
+				"general":  "FULL_ACCESS",
+				"transfer": "READ_ONLY",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewFuturesClientWithBaseURL(srv.URL, "futures-key", base64.StdEncoding.EncodeToString([]byte("secret")))
+	info, err := client.CheckAPIKey(context.Background())
+	if err != nil {
+		t.Fatalf("CheckAPIKey: %v", err)
+	}
+	if info.Permissions.General != FuturesAccessFull || info.Permissions.Transfer != FuturesAccessReadOnly {
+		t.Fatalf("permissions = %+v", info.Permissions)
+	}
+}
+
 func TestNewFuturesClientUsesSuppliedCredentials(t *testing.T) {
 	client := NewFuturesClient(" db-key ", " db-secret ")
 	if client.apiKey != "db-key" || client.apiSecret != "db-secret" {

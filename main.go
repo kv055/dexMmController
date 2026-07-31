@@ -72,6 +72,7 @@ func main() {
 	dexReleaseToken := envOr("DEX_RELEASE_WEBHOOK_TOKEN", "")
 	binanceBaseURL := envOr("BINANCE_API_BASE_URL", "")
 	krakenBaseURL := envOr("KRAKEN_API_BASE_URL", "")
+	krakenFuturesBaseURL := envOr("KRAKEN_FUTURES_API_BASE_URL", "")
 	coinbaseBaseURL := envOr("COINBASE_API_BASE_URL", "")
 	coinbaseExchangeBaseURL := envOr("COINBASE_EXCHANGE_API_BASE_URL", "")
 	fiatControllerURL := envOr("FIAT_CONTROLLER_URL", "http://fiat-controller:8080")
@@ -260,18 +261,22 @@ func main() {
 	})
 	dexReleaseWorker := dexrelease.NewWorker(repo, dexReleaser)
 	exchangeAccountHealth := accounthealth.NewChecker(repo, cexaccount.Config{
-		HodlHodlBaseURL: hhBaseURL,
-		BinanceBaseURL:  binanceBaseURL,
-		KrakenBaseURL:   krakenBaseURL,
-		CoinbaseBaseURL: coinbaseBaseURL,
-		RobosatsBaseURL: robosatsURL,
-		TorProxyURL:     torProxyURL,
+		HodlHodlBaseURL:      hhBaseURL,
+		BinanceBaseURL:       binanceBaseURL,
+		KrakenBaseURL:        krakenBaseURL,
+		KrakenFuturesBaseURL: krakenFuturesBaseURL,
+		CoinbaseBaseURL:      coinbaseBaseURL,
+		CoinbaseINTXBaseURL:  envOr("COINBASE_INTX_API_BASE_URL", ""),
+		RobosatsBaseURL:      robosatsURL,
+		TorProxyURL:          torProxyURL,
 	})
 	cexAccountService := cexaccount.NewService(repo, cexaccount.Config{
 		HodlHodlBaseURL:         hhBaseURL,
 		BinanceBaseURL:          binanceBaseURL,
 		KrakenBaseURL:           krakenBaseURL,
+		KrakenFuturesBaseURL:    krakenFuturesBaseURL,
 		CoinbaseBaseURL:         coinbaseBaseURL,
+		CoinbaseINTXBaseURL:     envOr("COINBASE_INTX_API_BASE_URL", ""),
 		CoinbaseExchangeBaseURL: coinbaseExchangeBaseURL,
 		RobosatsBaseURL:         robosatsURL,
 		TorProxyURL:             torProxyURL,

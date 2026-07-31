@@ -117,22 +117,15 @@ func (c *Client) ListAccounts(ctx context.Context) ([]Account, error) {
 
 // BTCDepositAddresses returns on-chain BTC deposit addresses for the account.
 func (c *Client) BTCDepositAddresses(ctx context.Context) ([]DepositAddress, error) {
-	accounts, err := c.ListAccounts(ctx)
+	btcAccountID, err := c.resolveBTCAccountID(ctx)
 	if err != nil {
 		return nil, err
-	}
-	btcAccountID := findBTCAccountID(accounts)
-	if btcAccountID == "" {
-		btcAccountID, err = c.findV2BTCAccountID(ctx)
-		if err != nil {
-			return nil, err
-		}
 	}
 	if btcAccountID == "" {
 		return []DepositAddress{}, nil
 	}
 
-	path := "/v2/accounts/" + btcAccountID + "/addresses"
+	path := "/v2/accounts/" + url.PathEscape(btcAccountID) + "/addresses"
 	var listed struct {
 		Data []DepositAddress `json:"data"`
 	}
@@ -155,6 +148,24 @@ func (c *Client) BTCDepositAddresses(ctx context.Context) ([]DepositAddress, err
 	return []DepositAddress{created.Data}, nil
 }
 
+// resolveBTCAccountID finds a Coinbase BTC wallet id via Advanced Trade accounts,
+// the Coinbase App account list, or the primary-currency shortcut GET /v2/accounts/BTC.
+func (c *Client) resolveBTCAccountID(ctx context.Context) (string, error) {
+	accounts, err := c.ListAccounts(ctx)
+	if err != nil {
+		return "", err
+	}
+	if id := findBTCAccountID(accounts); id != "" {
+		return id, nil
+	}
+	if id, err := c.findV2BTCAccountID(ctx); err != nil {
+		return "", err
+	} else if id != "" {
+		return id, nil
+	}
+	return c.findV2PrimaryBTCAccountID(ctx)
+}
+
 func findBTCAccountID(accounts []Account) string {
 	for _, account := range accounts {
 		if !strings.EqualFold(strings.TrimSpace(account.Currency), "BTC") {
@@ -168,25 +179,76 @@ func findBTCAccountID(accounts []Account) string {
 }
 
 func (c *Client) findV2BTCAccountID(ctx context.Context) (string, error) {
-	var listed struct {
-		Data []struct {
+	path := "/v2/accounts?limit=100"
+	for {
+		var listed struct {
+			Data []struct {
+				ID       string `json:"id"`
+				Currency struct {
+					Code string `json:"code"`
+				} `json:"currency"`
+			} `json:"data"`
+			Pagination struct {
+				NextURI string `json:"next_uri"`
+			} `json:"pagination"`
+		}
+		if err := c.getJSON(ctx, http.MethodGet, path, nil, &listed); err != nil {
+			return "", err
+		}
+		for _, account := range listed.Data {
+			if strings.EqualFold(strings.TrimSpace(account.Currency.Code), "BTC") {
+				if id := strings.TrimSpace(account.ID); id != "" {
+					return id, nil
+				}
+			}
+		}
+		next := strings.TrimSpace(listed.Pagination.NextURI)
+		if next == "" {
+			return "", nil
+		}
+		if strings.HasPrefix(next, "http://") || strings.HasPrefix(next, "https://") {
+			u, err := url.Parse(next)
+			if err != nil {
+				return "", fmt.Errorf("coinbase: parse v2 accounts next_uri: %w", err)
+			}
+			path = u.RequestURI()
+		} else {
+			path = next
+		}
+	}
+}
+
+// findV2PrimaryBTCAccountID uses Coinbase App's currency-id shortcut
+// (GET /v2/accounts/BTC) which resolves the primary BTC wallet even when it is
+// missing from a truncated account list.
+func (c *Client) findV2PrimaryBTCAccountID(ctx context.Context) (string, error) {
+	var shown struct {
+		Data struct {
 			ID       string `json:"id"`
 			Currency struct {
 				Code string `json:"code"`
 			} `json:"currency"`
 		} `json:"data"`
 	}
-	if err := c.getJSON(ctx, http.MethodGet, "/v2/accounts", nil, &listed); err != nil {
+	if err := c.getJSON(ctx, http.MethodGet, "/v2/accounts/BTC", nil, &shown); err != nil {
+		// No BTC wallet yet (or App API unavailable for this key) — not a hard failure.
+		if isCoinbaseNotFound(err) {
+			return "", nil
+		}
 		return "", err
 	}
-	for _, account := range listed.Data {
-		if strings.EqualFold(strings.TrimSpace(account.Currency.Code), "BTC") {
-			if id := strings.TrimSpace(account.ID); id != "" {
-				return id, nil
-			}
-		}
+	if !strings.EqualFold(strings.TrimSpace(shown.Data.Currency.Code), "BTC") {
+		return "", nil
 	}
-	return "", nil
+	return strings.TrimSpace(shown.Data.ID), nil
+}
+
+func isCoinbaseNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "HTTP 404") || strings.Contains(msg, "HTTP 400")
 }
 
 func filterCoinbaseBTCAddresses(addresses []DepositAddress) []DepositAddress {

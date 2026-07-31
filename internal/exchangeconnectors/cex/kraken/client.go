@@ -463,6 +463,15 @@ func (c *Client) doPrivateRequest(ctx context.Context, path string, form url.Val
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("kraken: POST %s returned HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
+	// Kraken often returns result as {} or null alongside errors; check the error
+	// array before unmarshaling into a typed result so Invalid key / Permission denied
+	// are not lost as decode failures.
+	var probe struct {
+		Error []string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &probe); err == nil && len(probe.Error) > 0 {
+		return fmt.Errorf("kraken: %s: %s", path, strings.Join(probe.Error, ", "))
+	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("kraken: decode response: %w", err)
 	}

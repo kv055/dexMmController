@@ -1,6 +1,7 @@
 package kraken
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -22,6 +23,13 @@ import (
 
 const defaultFuturesBaseURL = "https://futures.kraken.com"
 
+// Futures API key access levels returned by /api-keys/v3/check.
+const (
+	FuturesAccessNone     = "NO_ACCESS"
+	FuturesAccessReadOnly = "READ_ONLY"
+	FuturesAccessFull     = "FULL_ACCESS"
+)
+
 // FuturesClient places orders on Kraken Futures (futures.kraken.com).
 type FuturesClient struct {
 	baseURL   string
@@ -30,19 +38,60 @@ type FuturesClient struct {
 	http      *http.Client
 }
 
+// FuturesAPIKeyInfo is the authenticated key descriptor from /api-keys/v3/check.
+type FuturesAPIKeyInfo struct {
+	APIKey      string                   `json:"apiKey"`
+	AccountUID  string                   `json:"accountUid"`
+	Permissions FuturesAPIKeyPermissions `json:"permissions"`
+}
+
+// FuturesAPIKeyPermissions holds futures key access tiers.
+type FuturesAPIKeyPermissions struct {
+	General  string `json:"general"`
+	Transfer string `json:"transfer"`
+}
+
 // NewFuturesClient creates a FuturesClient from database-loaded credentials.
 // KRAKEN_FUTURES_API_BASE_URL overrides the production endpoint (useful for testing).
 func NewFuturesClient(apiKey, apiSecret string) *FuturesClient {
-	baseURL := os.Getenv("KRAKEN_FUTURES_API_BASE_URL")
-	if baseURL == "" {
+	return NewFuturesClientWithBaseURL("", apiKey, apiSecret)
+}
+
+// NewFuturesClientWithBaseURL creates a FuturesClient with an explicit base URL.
+// Empty baseURL falls back to KRAKEN_FUTURES_API_BASE_URL, then production.
+func NewFuturesClientWithBaseURL(baseURL, apiKey, apiSecret string) *FuturesClient {
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = os.Getenv("KRAKEN_FUTURES_API_BASE_URL")
+	}
+	if strings.TrimSpace(baseURL) == "" {
 		baseURL = defaultFuturesBaseURL
 	}
 	return &FuturesClient{
-		baseURL:   baseURL,
+		baseURL:   strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		apiKey:    strings.TrimSpace(apiKey),
 		apiSecret: strings.TrimSpace(apiSecret),
 		http:      &http.Client{Timeout: 15 * time.Second},
 	}
+}
+
+// CheckAPIKey verifies futures credentials and returns the key's permission tiers.
+// Lives on the Futures auth service, not the derivatives trading API:
+// GET https://futures.kraken.com/api/auth/v1/api-keys/v3/check
+func (c *FuturesClient) CheckAPIKey(ctx context.Context) (*FuturesAPIKeyInfo, error) {
+	path := "/api/auth/v1/api-keys/v3/check"
+	nonce := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	raw, err := c.signedGet(ctx, path, nonce)
+	if err != nil {
+		return nil, fmt.Errorf("kraken futures check api key: %w", err)
+	}
+	var info FuturesAPIKeyInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return nil, fmt.Errorf("kraken futures check api key decode: %w", err)
+	}
+	if strings.TrimSpace(info.Permissions.General) == "" && strings.TrimSpace(info.Permissions.Transfer) == "" {
+		return nil, fmt.Errorf("kraken futures check api key: empty permissions in response")
+	}
+	return &info, nil
 }
 
 // PlaceOrder places a market order on Kraken Futures for the given symbol.
@@ -209,7 +258,16 @@ func (c *FuturesClient) signedGet(ctx context.Context, path, nonce string) ([]by
 	req.Header.Set("Nonce", nonce)
 	req.Header.Set("Authent", sig)
 
-	resp, err := c.http.Do(req)
+	client := c.http
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	// Do not follow redirects: auth failures on some paths 302 to HTML trade pages.
+	noRedirect := *client
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := noRedirect.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -220,6 +278,10 @@ func (c *FuturesClient) signedGet(ctx context.Context, path, nonce string) ([]by
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] == '<' {
+		return nil, fmt.Errorf("http %d: non-JSON response", resp.StatusCode)
 	}
 	return raw, nil
 }
