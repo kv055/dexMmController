@@ -20,12 +20,13 @@ const (
 
 // PreTradeParams carries every input for bid-side pre-trade checks.
 type PreTradeParams struct {
-	Provider           string
-	FiatCurrency       string
-	RequiredCapitalEUR float64
-	PaymentMethod      string
-	PaymentMethods     []string
-	Dex                string
+	Provider             string
+	FiatCurrency         string
+	// RequiredCapital is the fiat amount to check on the exchange, in FiatCurrency units.
+	RequiredCapital      float64
+	PaymentMethod        string
+	PaymentMethods       []string
+	Dex                  string
 	// TradeMode selects permission / capital semantics. Empty defaults to
 	// hedgefull_single_collateral.
 	TradeMode string
@@ -50,6 +51,7 @@ type BidChecker struct {
 	walletMu       sync.RWMutex
 	wallet         WalletSource
 	btcBalance     BTCBalanceSource
+	lndOnline      LNDOnlineSource
 }
 
 // NormalizeTradeMode returns a canonical trade mode, defaulting empty to hedgefull.
@@ -105,6 +107,14 @@ func (c *BidChecker) SetBTCBalance(src BTCBalanceSource) {
 	c.walletMu.Unlock()
 }
 
+// SetLNDOnline injects (or replaces) the LND reachability check used by the
+// pre-trade "LND wallet online" gate. Safe to call concurrently.
+func (c *BidChecker) SetLNDOnline(src LNDOnlineSource) {
+	c.walletMu.Lock()
+	c.lndOnline = src
+	c.walletMu.Unlock()
+}
+
 // SetCommunicationGateway injects the operator communication channel state.
 // Safe to call with hot-reloadable stores such as telegram.Store.
 func (c *BidChecker) SetCommunicationGateway(gateway CommunicationGateway) {
@@ -139,6 +149,13 @@ type Report struct {
 // Run executes every pre-trade check to completion — it never short-circuits on the
 // first failure — and returns a per-check Report.
 //
+// Checks are ordered by logical dependency groups so the UI can render them
+// coherently:
+//  1. Capital   — exchange fiat (+ BTC liquidity pool in hedgeless)
+//  2. Exchange  — API permissions, LND online, withdrawal whitelist
+//  3. Payment   — account setup, message template
+//  4. Ops       — communication gateway, Fiat Controller service + channels
+//
 // PaymentMethod names the single method to validate; when it is empty and
 // PaymentMethods (the offer's accepted list) is non-empty, the linked+active
 // catalog row with the highest priority is picked. Dex is the DEX venue slug
@@ -147,31 +164,13 @@ type Report struct {
 func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
 	provider := p.Provider
 	tradeMode := NormalizeTradeMode(p.TradeMode)
-	checks := []struct {
+	isHedgeless := tradeMode == TradeModeHedgelessDoubleCollateral
+
+	type namedCheck struct {
 		name, label string
 		run         func() error
-	}{
-		{"permissions", "API key permissions", func() error {
-			return c.checkPermissions(ctx, provider, tradeMode, p.HedgeVenue)
-		}},
-		{"capital", "Sufficient capital", func() error {
-			return c.checkCapital(ctx, provider, p.FiatCurrency, p.RequiredCapitalEUR, tradeMode)
-		}},
-		{"communication_gateway", "Communication gateway", func() error { return c.checkCommunicationGateway(ctx) }},
 	}
-	if tradeMode == TradeModeHedgelessDoubleCollateral {
-		checks = append(checks, struct {
-			name, label string
-			run         func() error
-		}{
-			"liquidity_pool", "BTC liquidity pool", func() error {
-				return c.checkLiquidityPool(ctx, p.RequiredBTCLiquidity)
-			},
-		})
-	}
-
-	report := Report{OK: true, Checks: make([]CheckResult, 0, len(checks)+5)}
-	for _, chk := range checks {
+	appendResult := func(report *Report, chk namedCheck) {
 		res := CheckResult{Name: chk.name, Label: chk.label, Passed: true}
 		if err := chk.run(); err != nil {
 			res.Passed = false
@@ -180,6 +179,30 @@ func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
 		}
 		report.Checks = append(report.Checks, res)
 	}
+
+	report := Report{OK: true, Checks: make([]CheckResult, 0, 10)}
+
+	// --- Capital ---
+	capitalLabel := "Exchange capital"
+	if isHedgeless {
+		capitalLabel = "Exchange fiat"
+	}
+	appendResult(&report, namedCheck{"capital", capitalLabel, func() error {
+		return c.checkCapital(ctx, provider, p.FiatCurrency, p.RequiredCapital, tradeMode)
+	}})
+	if isHedgeless {
+		appendResult(&report, namedCheck{"liquidity_pool", "BTC liquidity pool", func() error {
+			return c.checkLiquidityPool(ctx, p.RequiredBTCLiquidity)
+		}})
+	}
+
+	// --- Exchange ---
+	appendResult(&report, namedCheck{"permissions", "API key permissions", func() error {
+		return c.checkPermissions(ctx, provider, tradeMode, p.HedgeVenue)
+	}})
+	appendResult(&report, namedCheck{"lnd_wallet", "LND wallet online", func() error {
+		return c.checkLNDOnline(ctx)
+	}})
 
 	whitelistRes := CheckResult{Name: "whitelist", Label: "Withdrawal whitelist", Passed: true}
 	lndAddr, err := c.checkWhitelist(ctx, provider)
@@ -192,6 +215,7 @@ func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
 	}
 	report.Checks = append(report.Checks, whitelistRes)
 
+	// --- Payment ---
 	paymentRes := CheckResult{Name: "payment_setup", Label: "Payment account configured", Passed: true}
 	resolved, err := c.resolvePaymentMethod(ctx, p.PaymentMethod, p.PaymentMethods)
 	if err == nil {
@@ -204,6 +228,19 @@ func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
 		report.OK = false
 	}
 	report.Checks = append(report.Checks, paymentRes)
+
+	templateRes := CheckResult{Name: "message_template", Label: "Payment message template", Passed: true}
+	if err := c.checkMessageTemplate(ctx, p.Dex, resolved); err != nil {
+		templateRes.Passed = false
+		templateRes.Message = err.Error()
+		report.OK = false
+	}
+	report.Checks = append(report.Checks, templateRes)
+
+	// --- Ops ---
+	appendResult(&report, namedCheck{"communication_gateway", "Communication gateway", func() error {
+		return c.checkCommunicationGateway(ctx)
+	}})
 
 	serviceRes := CheckResult{Name: "fiat_controller_service", Label: "Fiat Controller service", Passed: true}
 	if err := c.checkFiatControllerService(ctx); err != nil {
@@ -220,14 +257,6 @@ func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
 		report.OK = false
 	}
 	report.Checks = append(report.Checks, notificationRes)
-
-	templateRes := CheckResult{Name: "message_template", Label: "Payment message template", Passed: true}
-	if err := c.checkMessageTemplate(ctx, p.Dex, resolved); err != nil {
-		templateRes.Passed = false
-		templateRes.Message = err.Error()
-		report.OK = false
-	}
-	report.Checks = append(report.Checks, templateRes)
 
 	return report
 }
@@ -317,7 +346,7 @@ func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string
 	if available < required {
 		requirement := "spot buy + hedge collateral + security deposit"
 		if tradeMode == TradeModeHedgelessDoubleCollateral {
-			requirement = "fiat position collateral (hedgeless double collateral)"
+			requirement = "exchange fiat collateral only (hedgeless; BTC pool checked separately)"
 		}
 		return fmt.Errorf(
 			"insufficient %s balance on %s: available %.2f, capital requirement %.2f (%s)",
@@ -348,6 +377,20 @@ func (c *BidChecker) checkLiquidityPool(ctx context.Context, requiredBTC float64
 			"insufficient LND on-chain BTC for liquidity pool: available %.8f, required %.8f (DEX position + security deposit)",
 			available, requiredBTC,
 		)
+	}
+	return nil
+}
+
+// checkLNDOnline verifies the LND wallet RPC is reachable and unlocked.
+func (c *BidChecker) checkLNDOnline(ctx context.Context) error {
+	c.walletMu.RLock()
+	src := c.lndOnline
+	c.walletMu.RUnlock()
+	if src == nil {
+		return fmt.Errorf("pre-trade check failed: LND wallet is not online; initialise the LND wallet before trading")
+	}
+	if err := src.CheckOnline(ctx); err != nil {
+		return fmt.Errorf("pre-trade check failed: LND wallet is not online: %w", err)
 	}
 	return nil
 }

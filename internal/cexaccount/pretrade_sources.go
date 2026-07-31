@@ -47,6 +47,19 @@ func (f BTCBalanceSourceFunc) ConfirmedOnChainBTC(ctx context.Context) (float64,
 	return f(ctx)
 }
 
+// LNDOnlineSource verifies the LND wallet RPC is reachable and the wallet is
+// unlocked — the minimum bar for CEX→LND withdrawals and hedgeless pool checks.
+type LNDOnlineSource interface {
+	CheckOnline(ctx context.Context) error
+}
+
+// LNDOnlineSourceFunc implements LNDOnlineSource as a plain function.
+type LNDOnlineSourceFunc func(ctx context.Context) error
+
+func (f LNDOnlineSourceFunc) CheckOnline(ctx context.Context) error {
+	return f(ctx)
+}
+
 // CommunicationGateway reports whether the operator can be reached before an
 // automated trade starts.
 type CommunicationGateway interface {

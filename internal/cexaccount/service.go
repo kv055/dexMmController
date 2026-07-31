@@ -453,8 +453,8 @@ func (s *Service) PreTradeCheck(ctx context.Context, p PreTradeParams) (*Report,
 	if s.bidChecker == nil {
 		return nil, fmt.Errorf("bid pre-trade checker not configured")
 	}
-	if p.RequiredCapitalEUR <= 0 {
-		return nil, fmt.Errorf("required_capital_eur must be greater than zero")
+	if p.RequiredCapital <= 0 {
+		return nil, fmt.Errorf("required_capital must be greater than zero")
 	}
 	report := s.bidChecker.Run(ctx, p)
 	return &report, nil
@@ -463,11 +463,10 @@ func (s *Service) PreTradeCheck(ctx context.Context, p PreTradeParams) (*Report,
 // MarketBuyBTC places a market buy order for btcAmount of BTC on the given CEX provider,
 // pairing BTC against fiatCurrency. It is the trade-tracing "Start trade" action.
 //
-// requiredCapitalEUR is the total capital the trade needs to complete BOTH legs (the
-// spot notional plus the recommended hedge collateral and security deposit, as computed
-// by dexUnifiedApi's CapitalRequirement for the offer). Before placing the order, the
-// account's available fiat balance is checked against this figure so a trade is never
-// started if it can't also fund the hedge that follows.
+// p.RequiredCapital is the fiat capital the trade needs (in FiatCurrency units),
+// as computed by dexUnifiedApi's CapitalRequirement. Before placing the order,
+// the account's available fiat balance is checked against this figure so a trade
+// is never started if it can't also fund the hedge that follows.
 func (s *Service) MarketBuyBTC(ctx context.Context, btcAmount float64, p PreTradeParams) (*SpotOrderResult, error) {
 	if btcAmount <= 0 {
 		return nil, fmt.Errorf("btc_amount must be greater than zero")
@@ -475,8 +474,8 @@ func (s *Service) MarketBuyBTC(ctx context.Context, btcAmount float64, p PreTrad
 	if cap := maxMarketBuyBTC(); btcAmount > cap {
 		return nil, fmt.Errorf("btc_amount %.8f exceeds the configured per-order cap of %.8f BTC", btcAmount, cap)
 	}
-	if p.RequiredCapitalEUR <= 0 {
-		return nil, fmt.Errorf("required_capital_eur must be greater than zero")
+	if p.RequiredCapital <= 0 {
+		return nil, fmt.Errorf("required_capital must be greater than zero")
 	}
 	if s.bidChecker == nil {
 		return nil, fmt.Errorf("bid pre-trade checker not configured")

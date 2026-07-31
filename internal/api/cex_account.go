@@ -24,7 +24,7 @@ type tradeflowRequest struct {
 	MarketSide         string          `json:"market_side"`
 	BTCAmount          float64         `json:"btc_amount"`
 	FiatCurrency       string          `json:"fiat_currency"`
-	RequiredCapitalEUR float64         `json:"required_capital_eur"`
+	RequiredCapital float64         `json:"required_capital"`
 	HedgeVenue         string          `json:"hedge_venue"`
 	HedgeSide          string          `json:"hedge_side"`
 	HedgeNotionalBTC   float64         `json:"hedge_notional_btc"`
@@ -64,8 +64,8 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("btc_amount must be greater than zero"))
 		return
 	}
-	if req.RequiredCapitalEUR <= 0 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital_eur must be greater than zero"))
+	if req.RequiredCapital <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital must be greater than zero"))
 		return
 	}
 	if strings.TrimSpace(req.HedgeVenue) == "" {
@@ -86,7 +86,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		MarketSide:         marketSide,
 		BTCAmount:          req.BTCAmount,
 		FiatCurrency:       req.FiatCurrency,
-		RequiredCapitalEUR: req.RequiredCapitalEUR,
+		RequiredCapital: req.RequiredCapital,
 		HedgeVenue:         req.HedgeVenue,
 		HedgeSide:          req.HedgeSide,
 		HedgeNotionalBTC:   req.HedgeNotionalBTC,
@@ -114,7 +114,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 type preTradeCheckRequest struct {
 	Provider           string   `json:"provider"`
 	FiatCurrency       string   `json:"fiat_currency"`
-	RequiredCapitalEUR float64  `json:"required_capital_eur"`
+	RequiredCapital float64  `json:"required_capital"`
 	PaymentMethod      string   `json:"payment_method"`
 	PaymentMethods     []string `json:"payment_methods"`
 	Dex                string   `json:"dex"`
@@ -147,15 +147,15 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
 		return
 	}
-	if req.RequiredCapitalEUR <= 0 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital_eur must be greater than zero"))
+	if req.RequiredCapital <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital must be greater than zero"))
 		return
 	}
 
 	report, err := s.cexAccount.PreTradeCheck(r.Context(), cexaccount.PreTradeParams{
 		Provider:             provider,
 		FiatCurrency:         req.FiatCurrency,
-		RequiredCapitalEUR:   req.RequiredCapitalEUR,
+		RequiredCapital:   req.RequiredCapital,
 		PaymentMethod:        strings.TrimSpace(req.PaymentMethod),
 		PaymentMethods:       req.PaymentMethods,
 		Dex:                  strings.TrimSpace(req.Dex),

@@ -553,6 +553,9 @@ func main() {
 			}
 			return float64(sats) / 1e8, nil
 		}))
+		bidChecker.SetLNDOnline(cexaccount.LNDOnlineSourceFunc(func(ctx context.Context) error {
+			return lndClient.HealthCheck(ctx)
+		}))
 		cexAccountService.WithLND(lndClient)
 		dexRelayWorker.SetLND(dexrelay.LNDAdapter{Client: lndClient})
 		// Periodic backup must outlive the request, so use the long-lived app context.

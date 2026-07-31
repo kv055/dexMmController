@@ -37,9 +37,10 @@ type Order struct {
 	BTCAmount float64
 	// FiatCurrency is the quote currency for the spot buy, e.g. "EUR".
 	FiatCurrency string
-	// RequiredCapitalEUR is the total capital needed: spot notional + hedge collateral
-	// + security deposit, as computed by dexUnifiedApi's CapitalRequirement.
-	RequiredCapitalEUR float64
+	// RequiredCapital is the fiat capital needed (units of FiatCurrency): for
+	// hedgefull, spot notional + hedge collateral + security deposit; for
+	// hedgeless exchange-fiat check, fiat collateral only.
+	RequiredCapital float64
 	// HedgeVenue is the futures venue, e.g. "binance_futures".
 	HedgeVenue string
 	// HedgeSide is "short" for a bid (we bought spot, now short the perp).
@@ -167,7 +168,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	preTrade := cexaccount.PreTradeParams{
 		Provider:           order.Provider,
 		FiatCurrency:       order.FiatCurrency,
-		RequiredCapitalEUR: order.RequiredCapitalEUR,
+		RequiredCapital: order.RequiredCapital,
 		PaymentMethod:      order.PaymentMethod,
 		PaymentMethods:     order.PaymentMethods,
 		Dex:                order.Dex,
@@ -441,8 +442,8 @@ func validate(o Order) error {
 	if o.BTCAmount <= 0 {
 		return fmt.Errorf("tradeflow: btc_amount must be greater than zero")
 	}
-	if o.RequiredCapitalEUR <= 0 {
-		return fmt.Errorf("tradeflow: required_capital_eur must be greater than zero")
+	if o.RequiredCapital <= 0 {
+		return fmt.Errorf("tradeflow: required_capital must be greater than zero")
 	}
 	if strings.TrimSpace(o.HedgeVenue) == "" {
 		return fmt.Errorf("tradeflow: hedge_venue is required")

@@ -144,7 +144,7 @@ func validOrder() Order {
 		MarketSide:         "bid",
 		BTCAmount:          0.01,
 		FiatCurrency:       "EUR",
-		RequiredCapitalEUR: 1000,
+		RequiredCapital: 1000,
 		HedgeVenue:         "binance_futures",
 		HedgeSide:          "short",
 		HedgeNotionalBTC:   0.01,

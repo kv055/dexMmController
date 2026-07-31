@@ -116,6 +116,7 @@ func newTestCheckerWithPerms(
 	c.SetFiatControllerChecker(fakeFiatControllerChecker{})
 	if walletAddrs != nil {
 		c.SetWallet(WalletSourceFunc(func(context.Context) ([]string, error) { return walletAddrs() }))
+		c.SetLNDOnline(LNDOnlineSourceFunc(func(context.Context) error { return nil }))
 	}
 	return c
 }
@@ -151,14 +152,14 @@ func TestRunAllChecksPass(t *testing.T) {
 		okPaymentSetup(),
 	)
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "",
 	})
 	if !report.OK {
 		t.Fatalf("expected OK, got %+v", report)
 	}
-	if len(report.Checks) != 8 {
-		t.Fatalf("expected 8 checks, got %d", len(report.Checks))
+	if len(report.Checks) != 9 {
+		t.Fatalf("expected 9 checks, got %d", len(report.Checks))
 	}
 	for _, chk := range report.Checks {
 		if !chk.Passed {
@@ -184,14 +185,14 @@ func TestRunRunsToCompletion(t *testing.T) {
 		okPaymentSetup(),
 	)
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "",
 	})
 	if report.OK {
 		t.Fatal("expected report.OK=false")
 	}
-	if len(report.Checks) != 8 {
-		t.Fatalf("expected all 8 checks reported, got %d", len(report.Checks))
+	if len(report.Checks) != 9 {
+		t.Fatalf("expected all 9 checks reported, got %d", len(report.Checks))
 	}
 	byName := map[string]CheckResult{}
 	for _, chk := range report.Checks {
@@ -226,7 +227,7 @@ func TestRunPartialFailureReportsBoth(t *testing.T) {
 		okPaymentSetup(),
 	)
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "",
 	})
 	if report.OK {
@@ -262,7 +263,7 @@ func TestRunMakesBinanceWhitelistCredentialErrorActionable(t *testing.T) {
 	)
 
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "binance", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "binance", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "",
 	})
 	chk := paymentCheckNamed(t, report, "whitelist")
@@ -296,7 +297,7 @@ func TestMessageTemplateNotApplicableForStructuredVenue(t *testing.T) {
 	)
 	// No chat template store configured — a structured venue (Bisq v1) must still pass.
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "bisq",
 	})
 	chk := paymentCheckNamed(t, report, "message_template")
@@ -315,7 +316,7 @@ func TestMessageTemplateMissingFailsForChatVenue(t *testing.T) {
 	)
 	c.chatTemplates = fakeChatTemplates{}
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "bisq2",
 	})
 	if report.OK {
@@ -337,7 +338,7 @@ func TestMessageTemplatePresentPassesForChatVenue(t *testing.T) {
 	)
 	c.chatTemplates = fakeChatTemplates{"RoboSats|Revolut": "custom template"}
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "robosats",
 	})
 	if !report.OK {
@@ -359,7 +360,7 @@ func TestCommunicationGatewayMissingFails(t *testing.T) {
 	)
 	c.SetCommunicationGateway(nil)
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "",
 	})
 	if report.OK {
@@ -386,7 +387,7 @@ func TestCommunicationGatewayDisabledFailsRunAll(t *testing.T) {
 	)
 	c.SetCommunicationGateway(fakeCommunicationGateway(false))
 	err := c.RunAll(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "",
 	})
 	if err == nil || !strings.Contains(err.Error(), "no active Telegram communication channel") {
@@ -403,7 +404,7 @@ func TestRunAllAggregatesAllFailures(t *testing.T) {
 		okPaymentSetup(),
 	)
 	err := c.RunAll(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "",
 	})
 	if err == nil {
@@ -423,7 +424,7 @@ func TestCheckEvaluationErrorReportedAsFailure(t *testing.T) {
 		okPaymentSetup(),
 	)
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "",
 	})
 	if report.OK {
@@ -449,7 +450,7 @@ func runPaymentCheck(t *testing.T, setup PaymentSetupFetcher, method string, met
 		setup,
 	)
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: method, PaymentMethods: methods, Dex: "",
 	})
 	return report, paymentCheck(t, report)
@@ -626,7 +627,7 @@ func TestPermissionsHedgelessAllowsMissingHedge(t *testing.T) {
 		okPaymentSetup(),
 	)
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", TradeMode: TradeModeHedgelessDoubleCollateral,
 	})
 	chk := paymentCheckNamed(t, report, "permissions")
@@ -646,7 +647,7 @@ func TestPermissionsHedgefullRequiresHedgeOnSpotProvider(t *testing.T) {
 		okPaymentSetup(),
 	)
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", TradeMode: TradeModeHedgefullSingleCollateral,
 		HedgeVenue: "kraken_futures",
 	})
@@ -675,7 +676,7 @@ func TestPermissionsDecoupledChecksHedgeVenueSeparately(t *testing.T) {
 		okPaymentSetup(),
 	)
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", TradeMode: TradeModeHedgefullSingleCollateral,
 		HedgeVenue: "coinbase_futures",
 	})
@@ -703,7 +704,7 @@ func TestPermissionsDecoupledFailsWhenHedgeVenueLacksPermission(t *testing.T) {
 		okPaymentSetup(),
 	)
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", HedgeVenue: "coinbase_futures",
 	})
 	chk := paymentCheckNamed(t, report, "permissions")
@@ -733,7 +734,7 @@ func TestLiquidityPoolCheckOnlyInHedgeless(t *testing.T) {
 	c.SetBTCBalance(BTCBalanceSourceFunc(func(context.Context) (float64, error) { return 0.05, nil }))
 
 	hedgefull := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", RequiredBTCLiquidity: 0.115,
 	})
 	for _, chk := range hedgefull.Checks {
@@ -743,7 +744,7 @@ func TestLiquidityPoolCheckOnlyInHedgeless(t *testing.T) {
 	}
 
 	hedgeless := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", TradeMode: TradeModeHedgelessDoubleCollateral,
 		RequiredBTCLiquidity: 0.115,
 	})
@@ -766,7 +767,7 @@ func TestLiquidityPoolCheckPassesWhenWalletSufficient(t *testing.T) {
 	c.SetBTCBalance(BTCBalanceSourceFunc(func(context.Context) (float64, error) { return 0.2, nil }))
 
 	report := c.Run(context.Background(), PreTradeParams{
-		Provider: "kraken", FiatCurrency: "EUR", RequiredCapitalEUR: 500,
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", TradeMode: TradeModeHedgelessDoubleCollateral,
 		RequiredBTCLiquidity: 0.115,
 	})
@@ -774,7 +775,38 @@ func TestLiquidityPoolCheckPassesWhenWalletSufficient(t *testing.T) {
 	if !chk.Passed {
 		t.Fatalf("liquidity_pool check = %+v", chk)
 	}
-	if len(report.Checks) != 9 {
-		t.Fatalf("expected 9 checks in hedgeless mode, got %d", len(report.Checks))
+	if len(report.Checks) != 10 {
+		t.Fatalf("expected 10 checks in hedgeless mode, got %d", len(report.Checks))
+	}
+	// Capital checks must sit first and adjacent: exchange fiat, then BTC pool.
+	if report.Checks[0].Name != "capital" || report.Checks[0].Label != "Exchange fiat" {
+		t.Fatalf("checks[0] = %+v, want capital / Exchange fiat", report.Checks[0])
+	}
+	if report.Checks[1].Name != "liquidity_pool" || report.Checks[1].Label != "BTC liquidity pool" {
+		t.Fatalf("checks[1] = %+v, want liquidity_pool / BTC liquidity pool", report.Checks[1])
+	}
+}
+
+func TestLNDWalletOnlineCheckFailsWhenOffline(t *testing.T) {
+	c := newTestChecker(
+		func() (float64, error) { return 1000, nil },
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPerms,
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPaymentSetup(),
+	)
+	c.SetLNDOnline(LNDOnlineSourceFunc(func(context.Context) error {
+		return fmt.Errorf("connection refused")
+	}))
+	report := c.Run(context.Background(), PreTradeParams{
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
+		PaymentMethod: "Revolut",
+	})
+	chk := paymentCheckNamed(t, report, "lnd_wallet")
+	if chk.Passed || !strings.Contains(chk.Message, "LND wallet is not online") {
+		t.Fatalf("lnd_wallet check = %+v", chk)
+	}
+	if report.OK {
+		t.Fatal("expected report.OK=false when LND is offline")
 	}
 }

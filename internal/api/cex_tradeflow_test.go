@@ -26,7 +26,7 @@ func (f *fakeTradeFlowRunner) Run(_ context.Context, order tradeflow.Order) (*tr
 func TestHandleCexTradeflowRequiresProvider(t *testing.T) {
 	runner := &fakeTradeFlowRunner{}
 	s := (&Server{}).WithTradeFlow(runner)
-	body := []byte(`{"btc_amount":0.01,"required_capital_eur":100,"hedge_venue":"binance_futures","hedge_notional_btc":0.01}`)
+	body := []byte(`{"btc_amount":0.01,"required_capital":100,"hedge_venue":"binance_futures","hedge_notional_btc":0.01}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/cex/tradeflow", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	s.handleCexTradeflow(rec, req)
@@ -61,7 +61,7 @@ func TestHandleCexTradeflowSuccess(t *testing.T) {
 		MarketSide:         "bid",
 		BTCAmount:          0.01,
 		FiatCurrency:       "EUR",
-		RequiredCapitalEUR: 1000,
+		RequiredCapital: 1000,
 		HedgeVenue:         "binance_futures",
 		HedgeSide:          "short",
 		HedgeNotionalBTC:   0.01,
