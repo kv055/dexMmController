@@ -163,6 +163,9 @@ func markHedgeFailed(store transactionStore, id uint, spot *cexaccount.SpotOrder
 // the row to StatusCexCryptoWithdrawalInitiated and writing offer linkage so the
 // downstream dexrelay worker can take over.
 func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexaccount.SpotOrderResult, hedge *cexaccount.HedgeOpenResult, result *Result, target string, method txroute.Method) error {
+	if result == nil || result.Withdrawal == nil {
+		return fmt.Errorf("withdrawal result is required")
+	}
 	offerID := strings.TrimSpace(order.OfferID)
 	dexSlug := strings.TrimSpace(order.Dex)
 
@@ -200,7 +203,7 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 	if err != nil {
 		return err
 	}
-	details, err := bundleCexDetails(spot, hedge, &result.Withdrawal)
+	details, err := bundleCexDetails(spot, hedge, result.Withdrawal)
 	if err != nil {
 		return err
 	}

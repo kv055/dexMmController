@@ -42,11 +42,3 @@ func (s *Service) RegisterTradeChat(ctx context.Context, exchange, orderID strin
 	s.relay.Register(exchange, orderID, chat)
 	return nil
 }
-
-// Relay exposes the underlying ChatRelay (for webhook handling).
-func (s *Service) Relay() *telegram.ChatRelay {
-	if s == nil {
-		return nil
-	}
-	return s.relay
-}

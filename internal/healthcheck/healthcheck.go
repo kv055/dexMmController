@@ -138,6 +138,8 @@ func (h *HealthChecker) verify(ctx context.Context, tx *db.Transaction) error {
 		return h.verifyHedgeFailedNeedsReview(ctx, tx)
 	case db.StatusCexTradeflowNeedsReview:
 		return nil // alert already fired when the row entered this state; park it.
+	case db.StatusHedgelessTradeStarted, db.StatusHedgelessFundingInitiated, db.StatusHedgelessFundingNeedsReview:
+		return nil // owned by tradeflow.RunRefillWorker; avoid competing money movement.
 	case db.StatusCexTradeSuccessful:
 		return h.verifyCexTradeSuccessful(ctx, tx)
 	case db.StatusCexCryptoWithdrawalInitiated:

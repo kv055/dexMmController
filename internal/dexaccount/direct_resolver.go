@@ -34,3 +34,25 @@ func (r *DirectResolver) DirectDestination(ctx context.Context, dexSlug string) 
 		return "", fmt.Errorf("no direct-route wallet resolver for dex %q", dexSlug)
 	}
 }
+
+// DirectBalanceBTC returns the confirmed balance held at a direct-route DEX
+// funding address. Hedgeless Bisq uses it to wait for the LND transfer before
+// asking the Bisq daemon to take the offer.
+func (r *DirectResolver) DirectBalanceBTC(ctx context.Context, dexSlug, address string) (float64, error) {
+	if strings.ToLower(strings.TrimSpace(dexSlug)) != "bisq" {
+		return 0, fmt.Errorf("no direct-route balance resolver for dex %q", dexSlug)
+	}
+	if r == nil || r.bisq == nil {
+		return 0, fmt.Errorf("bisq client not configured for direct routing")
+	}
+	rows, err := r.bisq.GetFundingAddresses(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, row := range rows {
+		if strings.EqualFold(strings.TrimSpace(row.Address), strings.TrimSpace(address)) {
+			return float64(row.BalanceSats) / 1e8, nil
+		}
+	}
+	return 0, nil
+}

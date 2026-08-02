@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"commons/mmcapabilities"
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/cexaccount"
+	"dexMmController/internal/db"
 	"dexMmController/internal/tradeflow"
 )
 
@@ -19,25 +21,31 @@ type TradeFlowRunner interface {
 	Run(ctx context.Context, order tradeflow.Order) (*tradeflow.Result, error)
 }
 
+type poolRefillReconciler interface {
+	ReconcilePoolRefill(ctx context.Context, transactionID uint) (*db.Transaction, error)
+}
+
 // tradeflowRequest is the JSON body for POST /api/cex/tradeflow.
 type tradeflowRequest struct {
-	Provider           string          `json:"provider"`
-	MarketSide         string          `json:"market_side"`
-	BTCAmount          float64         `json:"btc_amount"`
-	FiatCurrency       string          `json:"fiat_currency"`
-	RequiredCapital float64         `json:"required_capital"`
-	HedgeVenue         string          `json:"hedge_venue"`
-	HedgeSide          string          `json:"hedge_side"`
-	HedgeNotionalBTC   float64         `json:"hedge_notional_btc"`
-	Leverage           float64         `json:"leverage"`
-	OfferID            string          `json:"offer_id"`
-	Dex                string          `json:"dex"`
-	FiatAmount         float64         `json:"fiat_amount"`
-	TransactionID      uint            `json:"transaction_id,omitempty"`
-	SelectedOffer      json.RawMessage `json:"selected_offer,omitempty"`
-	PaymentMethod      string          `json:"payment_method"`
-	PaymentMethods     []string        `json:"payment_methods"`
-	TradeMode          string          `json:"trade_mode"`
+	Provider             string          `json:"provider"`
+	MarketSide           string          `json:"market_side"`
+	BTCAmount            float64         `json:"btc_amount"`
+	FiatCurrency         string          `json:"fiat_currency"`
+	RequiredCapital      float64         `json:"required_capital"`
+	RequiredBTCLiquidity float64         `json:"required_btc_liquidity"`
+	SecurityDepositBTC   float64         `json:"security_deposit_btc"`
+	HedgeVenue           string          `json:"hedge_venue"`
+	HedgeSide            string          `json:"hedge_side"`
+	HedgeNotionalBTC     float64         `json:"hedge_notional_btc"`
+	Leverage             float64         `json:"leverage"`
+	OfferID              string          `json:"offer_id"`
+	Dex                  string          `json:"dex"`
+	FiatAmount           float64         `json:"fiat_amount"`
+	TransactionID        uint            `json:"transaction_id,omitempty"`
+	SelectedOffer        json.RawMessage `json:"selected_offer,omitempty"`
+	PaymentMethod        string          `json:"payment_method"`
+	PaymentMethods       []string        `json:"payment_methods"`
+	TradeMode            string          `json:"trade_mode"`
 }
 
 func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
@@ -69,15 +77,43 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital must be greater than zero"))
 		return
 	}
-	if strings.TrimSpace(req.HedgeVenue) == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("hedge_venue is required"))
+	tradeMode, err := cexaccount.ParseTradeMode(req.TradeMode)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if req.HedgeNotionalBTC <= 0 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("hedge_notional_btc must be greater than zero"))
-		return
+	if tradeMode == cexaccount.TradeModeHedgelessDoubleCollateral {
+		// Keep this public boundary aligned with tradeflow.validate. The duplicate
+		// checks give clients a 400 before any execution object is invoked, while
+		// TradeFlow still protects non-HTTP callers.
+		if req.RequiredBTCLiquidity <= 0 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero in hedgeless mode"))
+			return
+		}
+		if !strings.EqualFold(strings.TrimSpace(req.MarketSide), "bid") && strings.TrimSpace(req.MarketSide) != "" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("hedgeless execution is supported only for bid-side offers"))
+			return
+		}
+		switch strings.ToLower(strings.TrimSpace(req.Dex)) {
+		case "bisq", "hodlhodl", "robosats":
+		default:
+			writeError(w, http.StatusBadRequest, fmt.Errorf("hedgeless execution is not supported for dex %q", req.Dex))
+			return
+		}
+		if canonical != "Binance" && canonical != "Kraken" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("hedgeless pool refill is not supported for provider %q", provider))
+			return
+		}
+	} else {
+		if strings.TrimSpace(req.HedgeVenue) == "" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("hedge_venue is required"))
+			return
+		}
+		if req.HedgeNotionalBTC <= 0 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("hedge_notional_btc must be greater than zero"))
+			return
+		}
 	}
-	tradeMode := cexaccount.NormalizeTradeMode(req.TradeMode)
 	if err := s.requireCEXCapabilities(r.Context(), canonical, tradeMode, req.HedgeVenue); err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
@@ -88,23 +124,25 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.tradeFlow.Run(r.Context(), tradeflow.Order{
-		Provider:           provider,
-		MarketSide:         marketSide,
-		BTCAmount:          req.BTCAmount,
-		FiatCurrency:       req.FiatCurrency,
-		RequiredCapital: req.RequiredCapital,
-		HedgeVenue:         req.HedgeVenue,
-		HedgeSide:          req.HedgeSide,
-		HedgeNotionalBTC:   req.HedgeNotionalBTC,
-		Leverage:           req.Leverage,
-		OfferID:            strings.TrimSpace(req.OfferID),
-		Dex:                strings.TrimSpace(req.Dex),
-		FiatAmount:         req.FiatAmount,
-		TransactionID:      req.TransactionID,
-		SelectedOffer:      req.SelectedOffer,
-		PaymentMethod:      strings.TrimSpace(req.PaymentMethod),
-		PaymentMethods:     req.PaymentMethods,
-		TradeMode:          strings.TrimSpace(req.TradeMode),
+		Provider:             provider,
+		MarketSide:           marketSide,
+		BTCAmount:            req.BTCAmount,
+		FiatCurrency:         req.FiatCurrency,
+		RequiredCapital:      req.RequiredCapital,
+		RequiredBTCLiquidity: req.RequiredBTCLiquidity,
+		SecurityDepositBTC:   req.SecurityDepositBTC,
+		HedgeVenue:           req.HedgeVenue,
+		HedgeSide:            req.HedgeSide,
+		HedgeNotionalBTC:     req.HedgeNotionalBTC,
+		Leverage:             req.Leverage,
+		OfferID:              strings.TrimSpace(req.OfferID),
+		Dex:                  strings.TrimSpace(req.Dex),
+		FiatAmount:           req.FiatAmount,
+		TransactionID:        req.TransactionID,
+		SelectedOffer:        req.SelectedOffer,
+		PaymentMethod:        strings.TrimSpace(req.PaymentMethod),
+		PaymentMethods:       req.PaymentMethods,
+		TradeMode:            tradeMode,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -143,17 +181,39 @@ func (s *Server) requireCEXCapabilities(ctx context.Context, provider, tradeMode
 	return mmcapabilities.RequireHedge(hedge)
 }
 
+func (s *Server) handlePoolRefillReconcile(w http.ResponseWriter, r *http.Request) {
+	// This endpoint does not force a state transition. The reconciler first reads
+	// LND and releases the singleton pool reservation only when the saved target
+	// balance has actually been restored.
+	reconciler, ok := s.tradeFlow.(poolRefillReconciler)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("pool refill reconciliation is not configured"))
+		return
+	}
+	id, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
+	if err != nil || id == 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid transaction id"))
+		return
+	}
+	tx, err := reconciler.ReconcilePoolRefill(r.Context(), uint(id))
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tx)
+}
+
 // preTradeCheckRequest is the JSON body for POST /api/cex/pre-trade-check.
 type preTradeCheckRequest struct {
-	Provider           string   `json:"provider"`
-	FiatCurrency       string   `json:"fiat_currency"`
-	RequiredCapital float64  `json:"required_capital"`
-	PaymentMethod      string   `json:"payment_method"`
-	PaymentMethods     []string `json:"payment_methods"`
-	Dex                string   `json:"dex"`
-	TradeMode            string  `json:"trade_mode"`
-	HedgeVenue           string  `json:"hedge_venue"`
-	RequiredBTCLiquidity float64 `json:"required_btc_liquidity"`
+	Provider             string   `json:"provider"`
+	FiatCurrency         string   `json:"fiat_currency"`
+	RequiredCapital      float64  `json:"required_capital"`
+	PaymentMethod        string   `json:"payment_method"`
+	PaymentMethods       []string `json:"payment_methods"`
+	Dex                  string   `json:"dex"`
+	TradeMode            string   `json:"trade_mode"`
+	HedgeVenue           string   `json:"hedge_venue"`
+	RequiredBTCLiquidity float64  `json:"required_btc_liquidity"`
 }
 
 // handleCexPreTradeCheck runs all bid-side pre-trade checks (read-only) and reports
@@ -184,7 +244,11 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital must be greater than zero"))
 		return
 	}
-	tradeMode := cexaccount.NormalizeTradeMode(req.TradeMode)
+	tradeMode, err := cexaccount.ParseTradeMode(req.TradeMode)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	if err := s.requireCEXCapabilities(r.Context(), canonical, tradeMode, req.HedgeVenue); err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
@@ -193,11 +257,11 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 	report, err := s.cexAccount.PreTradeCheck(r.Context(), cexaccount.PreTradeParams{
 		Provider:             provider,
 		FiatCurrency:         req.FiatCurrency,
-		RequiredCapital:   req.RequiredCapital,
+		RequiredCapital:      req.RequiredCapital,
 		PaymentMethod:        strings.TrimSpace(req.PaymentMethod),
 		PaymentMethods:       req.PaymentMethods,
 		Dex:                  strings.TrimSpace(req.Dex),
-		TradeMode:            strings.TrimSpace(req.TradeMode),
+		TradeMode:            tradeMode,
 		HedgeVenue:           strings.TrimSpace(req.HedgeVenue),
 		RequiredBTCLiquidity: req.RequiredBTCLiquidity,
 	})

@@ -157,6 +157,15 @@ const (
 	// re-buy (MarketBuyBTC has no idempotency key), so a human must reconcile.
 	// Terminal until a human intervenes; happy-path workers must skip it.
 	StatusCexTradeflowNeedsReview TransactionStatus = "CexTradeflowNeedsReview"
+	// StatusHedgelessTradeStarted marks a hedgeless bid that has reserved the
+	// singleton liquidity pool but has not yet moved BTC to the DEX.
+	StatusHedgelessTradeStarted TransactionStatus = "HedgelessTradeStarted"
+	// StatusHedgelessFundingInitiated marks a hedgeless bid whose LND funding
+	// action has been submitted but whose DEX position is not yet open.
+	StatusHedgelessFundingInitiated TransactionStatus = "HedgelessFundingInitiated"
+	// StatusHedgelessFundingNeedsReview parks an ambiguous DEX/LND funding
+	// outcome while continuing to hold the singleton pool reservation.
+	StatusHedgelessFundingNeedsReview TransactionStatus = "HedgelessFundingNeedsReview"
 	// StatusCexTradeSuccessful is the status cex trade successful value.
 	StatusCexTradeSuccessful TransactionStatus = "CexTradeSucessfull"
 	// StatusCexCryptoWithdrawalInitiated is the status cex crypto withdrawal initiated value.
@@ -196,6 +205,17 @@ type Transaction struct {
 	Dex DexPlatform `gorm:"index" json:"dex"`
 	// Status is the current status of the transaction.
 	Status TransactionStatus `gorm:"index" json:"status"`
+	// TradeMode selects the execution lifecycle. Empty legacy rows are hedgefull.
+	TradeMode string `gorm:"column:trade_mode;index" json:"trade_mode,omitempty"`
+	// BTCPoolTargetBTC is the confirmed LND balance captured before hedgeless funding.
+	BTCPoolTargetBTC float64 `gorm:"column:btc_pool_target_btc" json:"btc_pool_target_btc,omitempty"`
+	// BTCRequiredLiquidity is the position plus seller security deposit reserved
+	// and moved from the LND pool.
+	BTCRequiredLiquidity float64 `gorm:"column:btc_required_liquidity" json:"btc_required_liquidity,omitempty"`
+	// BTCPoolRefillStatus progresses independently from the DEX settlement lifecycle.
+	BTCPoolRefillStatus string `gorm:"column:btc_pool_refill_status;index" json:"btc_pool_refill_status,omitempty"`
+	// BTCPoolRefillDetails stores spot and withdrawal receipts for refill attempts.
+	BTCPoolRefillDetails json.RawMessage `gorm:"column:btc_pool_refill_details;type:jsonb" json:"btc_pool_refill_details,omitempty"`
 
 	// CexTransactionDetails is the cex transaction details value for the transaction.
 	CexTransactionDetails json.RawMessage `json:"cex_transaction_details" gorm:"type:jsonb"`

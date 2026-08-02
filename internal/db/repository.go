@@ -371,6 +371,20 @@ func (r *TransactionRepository) GetTransactionsByStatuses(statuses []Transaction
 	return transactions, nil
 }
 
+// GetActiveHedgelessRefills returns hedgeless cycles whose LND pool has not yet
+// been restored. The database's partial unique index limits this to one row, but
+// a slice keeps the method tolerant while a migration is being rolled out.
+func (r *TransactionRepository) GetActiveHedgelessRefills() ([]Transaction, error) {
+	var transactions []Transaction
+	if err := r.db.
+		Where("trade_mode = ? AND btc_pool_refill_status IS DISTINCT FROM ?", "hedgeless_double_collateral", "restored").
+		Order("created_at ASC").
+		Find(&transactions).Error; err != nil {
+		return nil, fmt.Errorf("failed to get active hedgeless refills: %w", err)
+	}
+	return transactions, nil
+}
+
 // GetTransactionsByDirection retrieves transactions filtered by direction (BUY/SELL)
 func (r *TransactionRepository) GetTransactionsByDirection(direction string) ([]Transaction, error) {
 	var transactions []Transaction

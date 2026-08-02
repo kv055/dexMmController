@@ -98,6 +98,15 @@ func TestVerify_NeedsReviewIsNoOp(t *testing.T) {
 	}
 }
 
+func TestVerify_HedgelessFundingStatesAreOwnedByRefillWorker(t *testing.T) {
+	h := newChecker(&fakeRecoverer{})
+	for _, status := range []db.TransactionStatus{db.StatusHedgelessTradeStarted, db.StatusHedgelessFundingInitiated, db.StatusHedgelessFundingNeedsReview} {
+		if err := h.verify(context.Background(), staleRow(status)); err != nil {
+			t.Fatalf("status %s should be a no-op: %v", status, err)
+		}
+	}
+}
+
 func TestVerify_HedgeReviewIgnoresGracePeriod(t *testing.T) {
 	rec := &fakeRecoverer{}
 	h := newChecker(rec)

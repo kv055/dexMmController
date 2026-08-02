@@ -106,6 +106,7 @@ func main() {
 	lndRecoveryWindow := envOr("LND_RECOVERY_WINDOW", "")
 	accountHealthInterval := parseAccountHealthInterval(envOr("ACCOUNT_HEALTH_INTERVAL", ""))
 	healthcheckInterval := parseAccountHealthInterval(envOr("HEALTHCHECK_INTERVAL", "30s"))
+	automatedTradeflowWorkers := strings.EqualFold(strings.TrimSpace(envOr("ENABLE_AUTOMATED_TRADEFLOW_WORKERS", "false")), "true")
 	lndBackupInterval := parseLNDBackupInterval(envOr("LND_BACKUP_INTERVAL", ""), accountHealthInterval)
 
 	// Graceful shutdown context for long-running stream.
@@ -409,6 +410,7 @@ func main() {
 	})
 	tradeFlow := tradeflow.New(cexAccountService, repo).
 		WithDirectDestinationResolver(dexaccount.NewDirectResolver(bq)).
+		WithChainConfirmationSource(btc).
 		WithCapabilities(capabilityStore)
 	hc := healthcheck.NewHealthChecker(repo, claw, btc, hh, tradeFlow).
 		WithRecoveryGracePeriod(parseAccountHealthInterval(envOr("TRADEFLOW_RECOVERY_GRACE", "3m"))).
@@ -548,11 +550,28 @@ func main() {
 			}
 			return float64(sats) / 1e8, nil
 		}))
+		bidChecker.SetLightningBalance(cexaccount.LightningBalanceSourceFunc(func(ctx context.Context) (float64, error) {
+			bal, err := lndClient.ChannelBalance(ctx)
+			if err != nil {
+				return 0, err
+			}
+			if bal == nil || strings.TrimSpace(bal.LocalBalance.Sat) == "" {
+				return 0, nil
+			}
+			sats, err := strconv.ParseInt(strings.TrimSpace(bal.LocalBalance.Sat), 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("parse LND local channel balance: %w", err)
+			}
+			return float64(sats) / 1e8, nil
+		}))
 		bidChecker.SetLNDOnline(cexaccount.LNDOnlineSourceFunc(func(ctx context.Context) error {
 			return lndClient.HealthCheck(ctx)
 		}))
 		cexAccountService.WithLND(lndClient)
 		dexRelayWorker.SetLND(dexrelay.LNDAdapter{Client: lndClient})
+		if automatedTradeflowWorkers {
+			tradeFlow.WithHedgelessExecution(dexTaker, dexrelay.LNDAdapter{Client: lndClient})
+		}
 		// Periodic backup must outlive the request, so use the long-lived app context.
 		lndBackupOnce.Do(func() {
 			go runPeriodicLNDChannelBackup(ctx, lndBackupInterval, repo, lndClient, int64(lndAccount.ID))
@@ -588,15 +607,16 @@ func main() {
 	}
 
 	// ── Periodic healthcheck + dexrelay ─────────────────────────────────────────
-	// TEMPORARILY DISABLED: the background workers (transaction recovery + CEX→DEX
-	// relay) take automatic, money-moving corrective actions. They are wired up but
-	// not started while we validate the tradeflow/recovery logic. Re-enable by
-	// uncommenting the two goroutines below.
-	// go hc.RunPeriodic(ctx, healthcheckInterval)
-	// go dexRelayWorker.RunPeriodic(ctx, healthcheckInterval)
-	_ = hc
-	_ = dexRelayWorker
-	_ = healthcheckInterval
+	// Money-moving recovery remains an explicit deployment opt-in. Hedgeless
+	// execution is rejected until the LND wallet is wired, and its refill worker
+	// shares this gate with the existing hedgefull recovery/relay workers.
+	if automatedTradeflowWorkers {
+		go hc.RunPeriodic(ctx, healthcheckInterval)
+		go dexRelayWorker.RunPeriodic(ctx, healthcheckInterval)
+		go tradeFlow.RunRefillWorker(ctx, healthcheckInterval)
+	} else {
+		log.Println("automated tradeflow workers disabled; set ENABLE_AUTOMATED_TRADEFLOW_WORKERS=true after staging validation")
+	}
 
 	go exchangeAccountHealth.RunPeriodic(ctx, accountHealthInterval)
 	// The Stage-6 release worker only acts on webhook-delivered jobs (no autonomous

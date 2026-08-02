@@ -151,13 +151,6 @@ func TestCaptureFromChatInboundOnly(t *testing.T) {
 	}
 }
 
-// fakeChatTemplateStore is an in-memory ChatTemplateStore for testing.
-type fakeChatTemplateStore map[string]string
-
-func (f fakeChatTemplateStore) GetChatTemplate(_ context.Context, exchange, paymentMethod string) (string, error) {
-	return f[exchange+"|"+paymentMethod], nil
-}
-
 func TestCaptureFromChatUsesCustomTemplate(t *testing.T) {
 	ctx := context.Background()
 	req := ChatRequest{

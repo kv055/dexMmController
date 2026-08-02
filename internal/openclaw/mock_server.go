@@ -63,14 +63,6 @@ func (m *MockServer) Start() error {
 	return nil
 }
 
-// WSURL returns the websocket URL for the mock server.
-func (m *MockServer) WSURL() string {
-	if m.ln == nil {
-		return ""
-	}
-	return "ws://" + m.ln.Addr().String() + "/ws"
-}
-
 // Close releases the underlying network resources.
 func (m *MockServer) Close(ctx context.Context) error {
 	if m.srv == nil {

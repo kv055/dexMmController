@@ -468,6 +468,17 @@ func (s *Service) PreTradeCheck(ctx context.Context, p PreTradeParams) (*Report,
 // the account's available fiat balance is checked against this figure so a trade
 // is never started if it can't also fund the hedge that follows.
 func (s *Service) MarketBuyBTC(ctx context.Context, btcAmount float64, p PreTradeParams) (*SpotOrderResult, error) {
+	return s.marketBuyBTC(ctx, btcAmount, p, true)
+}
+
+// MarketBuyBTCForRefill buys replacement BTC after the hedgeless LND spend.
+// The complete pre-trade gate was run immediately before that irreversible DEX
+// action; rerunning it here would fail its liquidity-pool check by design.
+func (s *Service) MarketBuyBTCForRefill(ctx context.Context, btcAmount float64, p PreTradeParams) (*SpotOrderResult, error) {
+	return s.marketBuyBTC(ctx, btcAmount, p, false)
+}
+
+func (s *Service) marketBuyBTC(ctx context.Context, btcAmount float64, p PreTradeParams, runPreTrade bool) (*SpotOrderResult, error) {
 	if btcAmount <= 0 {
 		return nil, fmt.Errorf("btc_amount must be greater than zero")
 	}
@@ -477,11 +488,13 @@ func (s *Service) MarketBuyBTC(ctx context.Context, btcAmount float64, p PreTrad
 	if p.RequiredCapital <= 0 {
 		return nil, fmt.Errorf("required_capital must be greater than zero")
 	}
-	if s.bidChecker == nil {
+	if runPreTrade && s.bidChecker == nil {
 		return nil, fmt.Errorf("bid pre-trade checker not configured")
 	}
-	if err := s.bidChecker.RunAll(ctx, p); err != nil {
-		return nil, err
+	if runPreTrade {
+		if err := s.bidChecker.RunAll(ctx, p); err != nil {
+			return nil, err
+		}
 	}
 
 	provider, key, err := s.spotAPIKey(ctx, p.Provider)
@@ -547,6 +560,48 @@ func (s *Service) MarketBuyBTC(ctx context.Context, btcAmount float64, p PreTrad
 	}
 
 	return result, nil
+}
+
+// ConfirmedLNDOnChainBTC returns the confirmed balance used as the durable
+// hedgeless pool target.
+func (s *Service) ConfirmedLNDOnChainBTC(ctx context.Context) (float64, error) {
+	if s.lnd == nil {
+		return 0, fmt.Errorf("LND wallet not available")
+	}
+	bal, err := s.lnd.OnChainBalance(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if bal == nil || strings.TrimSpace(bal.ConfirmedBalance) == "" {
+		return 0, nil
+	}
+	sats, err := strconv.ParseInt(strings.TrimSpace(bal.ConfirmedBalance), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse LND confirmed balance: %w", err)
+	}
+	return float64(sats) / 1e8, nil
+}
+
+// LNDPoolBalanceBTC returns the balance whose pre-spend target must be restored.
+// On-chain DEXes use confirmed wallet UTXOs. RoboSats consumes local channel
+// balance, so its pool target is total spendable LND BTC across both forms.
+func (s *Service) LNDPoolBalanceBTC(ctx context.Context, dex string) (float64, error) {
+	onChain, err := s.ConfirmedLNDOnChainBTC(ctx)
+	if err != nil || !strings.EqualFold(strings.TrimSpace(dex), "robosats") {
+		return onChain, err
+	}
+	bal, err := s.lnd.ChannelBalance(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if bal == nil || strings.TrimSpace(bal.LocalBalance.Sat) == "" {
+		return onChain, nil
+	}
+	sats, err := strconv.ParseInt(strings.TrimSpace(bal.LocalBalance.Sat), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse LND local channel balance: %w", err)
+	}
+	return onChain + float64(sats)/1e8, nil
 }
 
 // marketBuyPollMaxAttempts and marketBuyPollDelay bound how long MarketBuyBTC waits

@@ -128,6 +128,8 @@ Important variables:
 - `API_ADDR`
 - `OFFER_PREMIUM_WSS_URL`
 - `HEALTHCHECK_INTERVAL`
+- `ENABLE_AUTOMATED_TRADEFLOW_WORKERS` (must be `true` for DEX relay,
+  recovery, and hedgeless execution/refill; leave disabled until staging validation)
 - `ACCOUNT_HEALTH_INTERVAL`
 - `OPENCLAW_URL`
 - `HODLHODL_URL`

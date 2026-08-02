@@ -723,6 +723,15 @@ func TestProviderForHedgeVenue(t *testing.T) {
 	}
 }
 
+func TestParseTradeModeRejectsUnknown(t *testing.T) {
+	if _, err := ParseTradeMode("future_mode"); err == nil {
+		t.Fatal("expected unsupported trade mode error")
+	}
+	if got, err := ParseTradeMode(""); err != nil || got != TradeModeHedgefullSingleCollateral {
+		t.Fatalf("empty mode = %q, %v", got, err)
+	}
+}
+
 func TestLiquidityPoolCheckOnlyInHedgeless(t *testing.T) {
 	c := newTestChecker(
 		func() (float64, error) { return 1000, nil },
@@ -784,6 +793,26 @@ func TestLiquidityPoolCheckPassesWhenWalletSufficient(t *testing.T) {
 	}
 	if report.Checks[1].Name != "liquidity_pool" || report.Checks[1].Label != "BTC liquidity pool" {
 		t.Fatalf("checks[1] = %+v, want liquidity_pool / BTC liquidity pool", report.Checks[1])
+	}
+}
+
+func TestRoboSatsLiquidityPoolRequiresOutboundLightning(t *testing.T) {
+	c := newTestChecker(
+		func() (float64, error) { return 1000, nil },
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPerms,
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPaymentSetup(),
+	)
+	c.SetBTCBalance(BTCBalanceSourceFunc(func(context.Context) (float64, error) { return 1, nil }))
+	c.SetLightningBalance(LightningBalanceSourceFunc(func(context.Context) (float64, error) { return 0.01, nil }))
+	report := c.Run(context.Background(), PreTradeParams{
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
+		TradeMode: TradeModeHedgelessDoubleCollateral, Dex: "robosats", RequiredBTCLiquidity: 0.02,
+	})
+	chk := paymentCheckNamed(t, report, "liquidity_pool")
+	if chk.Passed || !strings.Contains(chk.Message, "outbound Lightning") {
+		t.Fatalf("liquidity_pool check = %+v", chk)
 	}
 }
 

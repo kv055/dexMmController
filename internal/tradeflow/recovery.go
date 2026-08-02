@@ -200,7 +200,7 @@ func (tf *TradeFlow) ResumeWithdrawal(ctx context.Context, tx *db.Transaction) (
 	result := &Result{
 		SpotBuy: rc.bundle.Spot,
 		Hedge:   rc.bundle.Hedge,
-		Withdrawal: WithdrawalResult{
+		Withdrawal: &WithdrawalResult{
 			Provider:        rc.order.Provider,
 			WithdrawalID:    wd.WithdrawalID,
 			ClientRequestID: wd.ClientRequestID,
@@ -221,7 +221,7 @@ func withdrawalResultFrom(provider string, status *cexaccount.WithdrawalStatus, 
 		addr = lndAddr
 	}
 	return &Result{
-		Withdrawal: WithdrawalResult{
+		Withdrawal: &WithdrawalResult{
 			Provider:        provider,
 			WithdrawalID:    status.WithdrawalID,
 			ClientRequestID: clientReqID,

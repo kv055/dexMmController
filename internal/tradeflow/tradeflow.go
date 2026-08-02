@@ -9,6 +9,7 @@ import (
 
 	"commons/mmcapabilities"
 	"dexMmController/internal/cexaccount"
+	"dexMmController/internal/dexaccount"
 	"dexMmController/internal/obs"
 	"dexMmController/internal/txroute"
 	lnd "dexMmController/internal/wallethub"
@@ -42,6 +43,11 @@ type Order struct {
 	// hedgefull, spot notional + hedge collateral + security deposit; for
 	// hedgeless exchange-fiat check, fiat collateral only.
 	RequiredCapital float64
+	// RequiredBTCLiquidity is the hedgeless LND reservation: DEX position plus
+	// seller security deposit. It is ignored in hedgefull mode.
+	RequiredBTCLiquidity float64
+	// SecurityDepositBTC is carried separately for audit/UI detail.
+	SecurityDepositBTC float64
 	// HedgeVenue is the futures venue, e.g. "binance_futures".
 	HedgeVenue string
 	// HedgeSide is "short" for a bid (we bought spot, now short the perp).
@@ -51,7 +57,8 @@ type Order struct {
 	// Leverage is the leverage to use on the hedge (Binance only; ignored by others).
 	Leverage float64
 
-	// OfferID is the DEX-native offer id to fund after CEX→LND withdrawal confirms.
+	// OfferID is the DEX-native offer to execute. Hedgefull reaches it after the
+	// CEX-funded wallet leg; hedgeless spends the pre-funded LND pool first.
 	OfferID string
 	// Dex is the DEX venue slug, e.g. "hodlhodl".
 	Dex string
@@ -73,10 +80,33 @@ type Order struct {
 
 // Result bundles the outcomes of all steps in the CEX→wallet trade cycle.
 type Result struct {
-	SpotBuy       *cexaccount.SpotOrderResult `json:"spot_buy"`
-	Hedge         *cexaccount.HedgeOpenResult `json:"hedge"`
-	Withdrawal    WithdrawalResult            `json:"withdrawal"`
+	TradeMode     string                      `json:"trade_mode"`
+	SpotBuy       *cexaccount.SpotOrderResult `json:"spot_buy,omitempty"`
+	Hedge         *cexaccount.HedgeOpenResult `json:"hedge,omitempty"`
+	Withdrawal    *WithdrawalResult           `json:"withdrawal,omitempty"`
+	DEXFunding    *DEXFundingResult           `json:"dex_funding,omitempty"`
+	PoolRefill    *PoolRefillResult           `json:"pool_refill,omitempty"`
 	TransactionID uint                        `json:"transaction_id,omitempty"`
+}
+
+// DEXFundingResult describes the BTC commitment made from the LND pool.
+type DEXFundingResult struct {
+	Exchange    string  `json:"exchange"`
+	Method      string  `json:"method"`
+	AmountBTC   float64 `json:"amount_btc"`
+	TxID        string  `json:"txid,omitempty"`
+	PaymentHash string  `json:"payment_hash,omitempty"`
+	Destination string  `json:"destination,omitempty"`
+	Status      string  `json:"status"`
+}
+
+// PoolRefillResult reports the replacement spot/withdrawal state. Restoration
+// is confirmed asynchronously from the LND wallet balance.
+type PoolRefillResult struct {
+	TargetBTC  float64 `json:"target_btc"`
+	Status     string  `json:"status"`
+	Attempt    int     `json:"attempt"`
+	CurrentBTC float64 `json:"current_btc,omitempty"`
 }
 
 // WithdrawalResult is the trade-relevant subset of the withdrawal response.
@@ -107,21 +137,63 @@ type DirectDestinationResolver interface {
 	DirectDestination(ctx context.Context, dexSlug string) (string, error)
 }
 
+type directBalanceResolver interface {
+	DirectDestinationResolver
+	// DirectBalanceBTC lets the Bisq path prove that this trade's wallet funding
+	// arrived before it asks Bisq to take the offer.
+	DirectBalanceBTC(ctx context.Context, dexSlug, address string) (float64, error)
+}
+
+// hedgelessDEX is the venue operation subset used by the LND-funded path.
+type hedgelessDEX interface {
+	Take(ctx context.Context, in dexaccount.OfferInput) (*dexaccount.TakeResult, error)
+	ResolveDeposit(ctx context.Context, exchange string, execution map[string]any) (string, string, error)
+}
+
+// hedgelessWallet is deliberately separate from dexaccount.LNDRelay so the
+// existing hedgefull relay remains independently testable.
+type hedgelessWallet interface {
+	SendOnChain(ctx context.Context, toAddress string, amountSat, satPerVbyte int64) (string, error)
+	PayInvoice(ctx context.Context, paymentRequest string, feeLimitSat int64) (string, error)
+}
+
+type chainConfirmationSource interface {
+	TransactionConfirmations(ctx context.Context, txid string) (int, error)
+}
+
 type capabilityStore interface {
 	State(context.Context, string) (mmcapabilities.ProviderState, error)
 }
 
 // TradeFlow orchestrates the CEX trade leg of a DEX arbitrage cycle.
 type TradeFlow struct {
-	svc            Service
-	store          transactionStore
-	directResolver DirectDestinationResolver
-	capabilities   capabilityStore
+	svc             Service
+	store           transactionStore
+	directResolver  DirectDestinationResolver
+	hedgelessDEX    hedgelessDEX
+	hedgelessWallet hedgelessWallet
+	chainSource     chainConfirmationSource
+	capabilities    capabilityStore
 }
 
 // WithCapabilities installs the central fail-closed provider policy gate.
 func (tf *TradeFlow) WithCapabilities(store capabilityStore) *TradeFlow {
 	tf.capabilities = store
+	return tf
+}
+
+// WithHedgelessExecution wires the DEX taker and LND wallet used by the
+// double-collateral path.
+func (tf *TradeFlow) WithHedgelessExecution(dex hedgelessDEX, wallet hedgelessWallet) *TradeFlow {
+	tf.hedgelessDEX = dex
+	tf.hedgelessWallet = wallet
+	return tf
+}
+
+// WithChainConfirmationSource wires confirmation lookup for replacement
+// withdrawals before a corrective refill is considered.
+func (tf *TradeFlow) WithChainConfirmationSource(source chainConfirmationSource) *TradeFlow {
+	tf.chainSource = source
 	return tf
 }
 
@@ -139,8 +211,9 @@ func (tf *TradeFlow) WithDirectDestinationResolver(r DirectDestinationResolver) 
 	return tf
 }
 
-// Run executes the trade cycle for the given order. It stops at the first failure
-// and returns a descriptive error. On success it returns the bundled results.
+// Run validates and dispatches a trade. Bid mode selects one of two independent
+// money flows: hedgefull buys/hedges on the CEX before funding the DEX, while
+// hedgeless funds from existing LND collateral and replenishes it afterward.
 func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 	if err := validate(order); err != nil {
 		return nil, err
@@ -156,7 +229,11 @@ func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 		var res *Result
 		var err error
 		if side == "bid" {
-			res, err = tf.runBid(ctx, order)
+			if mode == cexaccount.TradeModeHedgelessDoubleCollateral {
+				res, err = tf.runHedgelessBid(ctx, order)
+			} else {
+				res, err = tf.runBid(ctx, order)
+			}
 		} else {
 			res, err = tf.runAsk(ctx, order)
 		}
@@ -210,14 +287,14 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	method := txroute.BidMethod(order.Dex)
 
 	preTrade := cexaccount.PreTradeParams{
-		Provider:           order.Provider,
-		FiatCurrency:       order.FiatCurrency,
+		Provider:        order.Provider,
+		FiatCurrency:    order.FiatCurrency,
 		RequiredCapital: order.RequiredCapital,
-		PaymentMethod:      order.PaymentMethod,
-		PaymentMethods:     order.PaymentMethods,
-		Dex:                order.Dex,
-		TradeMode:          order.TradeMode,
-		HedgeVenue:         order.HedgeVenue,
+		PaymentMethod:   order.PaymentMethod,
+		PaymentMethods:  order.PaymentMethods,
+		Dex:             order.Dex,
+		TradeMode:       order.TradeMode,
+		HedgeVenue:      order.HedgeVenue,
 	}
 
 	// Step 1: pre-trade checks (read-only; result logged for observability).
@@ -334,9 +411,10 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	)
 
 	result := &Result{
-		SpotBuy: spot,
-		Hedge:   hedge,
-		Withdrawal: WithdrawalResult{
+		SpotBuy:   spot,
+		Hedge:     hedge,
+		TradeMode: cexaccount.TradeModeHedgefullSingleCollateral,
+		Withdrawal: &WithdrawalResult{
 			Provider:        order.Provider,
 			WithdrawalID:    wd.WithdrawalID,
 			ClientRequestID: wd.ClientRequestID,
@@ -489,14 +567,46 @@ func validate(o Order) error {
 	if o.RequiredCapital <= 0 {
 		return fmt.Errorf("tradeflow: required_capital must be greater than zero")
 	}
-	if strings.TrimSpace(o.HedgeVenue) == "" {
-		return fmt.Errorf("tradeflow: hedge_venue is required")
-	}
-	if strings.TrimSpace(o.HedgeSide) == "" {
-		return fmt.Errorf("tradeflow: hedge_side is required")
-	}
-	if o.HedgeNotionalBTC <= 0 {
-		return fmt.Errorf("tradeflow: hedge_notional_btc must be greater than zero")
+	mode := cexaccount.NormalizeTradeMode(o.TradeMode)
+	if mode == cexaccount.TradeModeHedgelessDoubleCollateral {
+		// Hedgeless execution intentionally has a narrow support matrix. Rejecting
+		// unsupported sides/venues/providers here prevents a partially completed
+		// money flow from discovering the limitation after BTC has moved.
+		if side != "bid" {
+			return fmt.Errorf("tradeflow: hedgeless execution is supported only for bid-side offers")
+		}
+		if o.RequiredBTCLiquidity <= 0 {
+			return fmt.Errorf("tradeflow: required_btc_liquidity must be greater than zero in hedgeless mode")
+		}
+		if o.SecurityDepositBTC < 0 || o.RequiredBTCLiquidity+1e-12 < o.BTCAmount+o.SecurityDepositBTC {
+			return fmt.Errorf("tradeflow: required_btc_liquidity must cover btc_amount plus security_deposit_btc")
+		}
+		if strings.TrimSpace(o.OfferID) == "" || strings.TrimSpace(o.Dex) == "" {
+			return fmt.Errorf("tradeflow: offer_id and dex are required in hedgeless mode")
+		}
+		if o.FiatAmount <= 0 {
+			return fmt.Errorf("tradeflow: fiat_amount must be greater than zero in hedgeless mode")
+		}
+		switch strings.ToLower(strings.TrimSpace(o.Dex)) {
+		case "bisq", "hodlhodl", "robosats":
+		default:
+			return fmt.Errorf("tradeflow: hedgeless execution is not supported for dex %q", o.Dex)
+		}
+		switch strings.ToLower(strings.TrimSpace(o.Provider)) {
+		case "binance", "kraken":
+		default:
+			return fmt.Errorf("tradeflow: hedgeless pool refill is not supported for CEX provider %q", o.Provider)
+		}
+	} else {
+		if strings.TrimSpace(o.HedgeVenue) == "" {
+			return fmt.Errorf("tradeflow: hedge_venue is required")
+		}
+		if strings.TrimSpace(o.HedgeSide) == "" {
+			return fmt.Errorf("tradeflow: hedge_side is required")
+		}
+		if o.HedgeNotionalBTC <= 0 {
+			return fmt.Errorf("tradeflow: hedge_notional_btc must be greater than zero")
+		}
 	}
 	return nil
 }

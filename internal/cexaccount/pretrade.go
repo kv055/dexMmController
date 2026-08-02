@@ -20,13 +20,13 @@ const (
 
 // PreTradeParams carries every input for bid-side pre-trade checks.
 type PreTradeParams struct {
-	Provider             string
-	FiatCurrency         string
+	Provider     string
+	FiatCurrency string
 	// RequiredCapital is the fiat amount to check on the exchange, in FiatCurrency units.
-	RequiredCapital      float64
-	PaymentMethod        string
-	PaymentMethods       []string
-	Dex                  string
+	RequiredCapital float64
+	PaymentMethod   string
+	PaymentMethods  []string
+	Dex             string
 	// TradeMode selects permission / capital semantics. Empty defaults to
 	// hedgefull_single_collateral.
 	TradeMode string
@@ -41,17 +41,18 @@ type PreTradeParams struct {
 
 // BidChecker runs all pre-trade checks for the bid side (buying BTC on a CEX).
 type BidChecker struct {
-	balance        BalanceFetcher
-	whitelist      WhitelistFetcher
-	permissions    PermissionChecker
-	paymentSetup   PaymentSetupFetcher
-	chatTemplates  ChatTemplateFetcher
-	communication  CommunicationGateway
-	fiatController FiatControllerChecker
-	walletMu       sync.RWMutex
-	wallet         WalletSource
-	btcBalance     BTCBalanceSource
-	lndOnline      LNDOnlineSource
+	balance          BalanceFetcher
+	whitelist        WhitelistFetcher
+	permissions      PermissionChecker
+	paymentSetup     PaymentSetupFetcher
+	chatTemplates    ChatTemplateFetcher
+	communication    CommunicationGateway
+	fiatController   FiatControllerChecker
+	walletMu         sync.RWMutex
+	wallet           WalletSource
+	btcBalance       BTCBalanceSource
+	lightningBalance LightningBalanceSource
+	lndOnline        LNDOnlineSource
 }
 
 // NormalizeTradeMode returns a canonical trade mode, defaulting empty to hedgefull.
@@ -61,6 +62,19 @@ func NormalizeTradeMode(raw string) string {
 		return TradeModeHedgelessDoubleCollateral
 	default:
 		return TradeModeHedgefullSingleCollateral
+	}
+}
+
+// ParseTradeMode validates an API-supplied mode while retaining the legacy
+// empty-default behavior.
+func ParseTradeMode(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", TradeModeHedgefullSingleCollateral, "hedgefull":
+		return TradeModeHedgefullSingleCollateral, nil
+	case TradeModeHedgelessDoubleCollateral, "hedgeless":
+		return TradeModeHedgelessDoubleCollateral, nil
+	default:
+		return "", fmt.Errorf("unsupported trade_mode %q", raw)
 	}
 }
 
@@ -104,6 +118,13 @@ func (c *BidChecker) SetWallet(ws WalletSource) {
 func (c *BidChecker) SetBTCBalance(src BTCBalanceSource) {
 	c.walletMu.Lock()
 	c.btcBalance = src
+	c.walletMu.Unlock()
+}
+
+// SetLightningBalance injects spendable local channel liquidity for RoboSats.
+func (c *BidChecker) SetLightningBalance(src LightningBalanceSource) {
+	c.walletMu.Lock()
+	c.lightningBalance = src
 	c.walletMu.Unlock()
 }
 
@@ -192,7 +213,7 @@ func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
 	}})
 	if isHedgeless {
 		appendResult(&report, namedCheck{"liquidity_pool", "BTC liquidity pool", func() error {
-			return c.checkLiquidityPool(ctx, p.RequiredBTCLiquidity)
+			return c.checkLiquidityPool(ctx, p.Dex, p.RequiredBTCLiquidity)
 		}})
 	}
 
@@ -356,15 +377,32 @@ func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string
 	return nil
 }
 
-// checkLiquidityPool verifies the LND on-chain wallet holds at least
-// requiredBTC (DEX position + security deposit). Hedgeless-only.
-func (c *BidChecker) checkLiquidityPool(ctx context.Context, requiredBTC float64) error {
+// checkLiquidityPool verifies that the form of BTC the DEX can spend immediately
+// covers position plus security deposit. Bisq/HodlHodl require confirmed
+// on-chain BTC; RoboSats requires outbound Lightning channel liquidity.
+func (c *BidChecker) checkLiquidityPool(ctx context.Context, dex string, requiredBTC float64) error {
 	if requiredBTC <= 0 {
 		return fmt.Errorf("pre-trade check failed: required BTC liquidity pool size is missing or zero")
 	}
 	c.walletMu.RLock()
 	src := c.btcBalance
+	lightning := c.lightningBalance
 	c.walletMu.RUnlock()
+	if strings.EqualFold(strings.TrimSpace(dex), "robosats") {
+		// Total wallet BTC is not enough for an immediate Lightning payment: only
+		// our local side of open channels is spendable without another rebalance.
+		if lightning == nil {
+			return fmt.Errorf("pre-trade check failed: LND outbound Lightning balance is not available")
+		}
+		available, err := lightning.OutboundLightningBTC(ctx)
+		if err != nil {
+			return fmt.Errorf("reading LND outbound Lightning balance: %w", err)
+		}
+		if available+1e-12 < requiredBTC {
+			return fmt.Errorf("insufficient LND outbound Lightning liquidity: available %.8f, required %.8f", available, requiredBTC)
+		}
+		return nil
+	}
 	if src == nil {
 		return fmt.Errorf("pre-trade check failed: LND wallet balance is not available; initialise the LND wallet before running hedgeless trades")
 	}

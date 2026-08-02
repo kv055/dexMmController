@@ -39,11 +39,6 @@ func NewClient(baseURL, apiKey, apiSecret, passphrase string) *Client {
 	}
 }
 
-// Name returns the exchange or bridge name.
-func (c *Client) Name() string {
-	return "coinbase-exchange"
-}
-
 // AddressBookEntry is a saved (whitelisted) withdrawal address.
 type AddressBookEntry struct {
 	// ID identifies the address book entry.

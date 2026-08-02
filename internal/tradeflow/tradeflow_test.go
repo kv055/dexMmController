@@ -126,6 +126,16 @@ func (s *fakeStore) UpdateTransaction(tx *db.Transaction) error {
 	return nil
 }
 
+func (s *fakeStore) GetActiveHedgelessRefills() ([]db.Transaction, error) {
+	var out []db.Transaction
+	for _, row := range s.rows {
+		if row.TradeMode == cexaccount.TradeModeHedgelessDoubleCollateral && row.BTCPoolRefillStatus != refillRestored {
+			out = append(out, *row)
+		}
+	}
+	return out, nil
+}
+
 // only returns the single stored row (most persistence tests create exactly one).
 func (s *fakeStore) only(t *testing.T) *db.Transaction {
 	t.Helper()
@@ -140,16 +150,16 @@ func (s *fakeStore) only(t *testing.T) *db.Transaction {
 
 func validOrder() Order {
 	return Order{
-		Provider:           "binance",
-		MarketSide:         "bid",
-		BTCAmount:          0.01,
-		FiatCurrency:       "EUR",
-		RequiredCapital: 1000,
-		HedgeVenue:         "binance_futures",
-		HedgeSide:          "short",
-		HedgeNotionalBTC:   0.01,
-		Leverage:           10,
-		PaymentMethod:      "Revolut",
+		Provider:         "binance",
+		MarketSide:       "bid",
+		BTCAmount:        0.01,
+		FiatCurrency:     "EUR",
+		RequiredCapital:  1000,
+		HedgeVenue:       "binance_futures",
+		HedgeSide:        "short",
+		HedgeNotionalBTC: 0.01,
+		Leverage:         10,
+		PaymentMethod:    "Revolut",
 	}
 }
 

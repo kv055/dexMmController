@@ -69,11 +69,11 @@ func (ndf *NetworkDataFetcher) FetchAddressBalance(ctx context.Context, address 
 
 // TxStatus is a normalized on-chain transaction status from mempool.space.
 type TxStatus struct {
-	TxID           string `json:"txid"`
-	Confirmed      bool   `json:"confirmed"`
-	Confirmations  int    `json:"confirmations"`
-	BlockHeight    int64  `json:"block_height,omitempty"`
-	StatusLabel    string `json:"status_label"`
+	TxID          string `json:"txid"`
+	Confirmed     bool   `json:"confirmed"`
+	Confirmations int    `json:"confirmations"`
+	BlockHeight   int64  `json:"block_height,omitempty"`
+	StatusLabel   string `json:"status_label"`
 }
 
 // FetchTransaction returns mempool/confirmation status for a Bitcoin txid.
@@ -146,6 +146,16 @@ func (ndf *NetworkDataFetcher) FetchTransaction(ctx context.Context, txid string
 	}
 	status.StatusLabel = "confirmed"
 	return status, nil
+}
+
+// TransactionConfirmations adapts FetchTransaction to tradeflow's narrow
+// confirmation source interface.
+func (ndf *NetworkDataFetcher) TransactionConfirmations(ctx context.Context, txid string) (int, error) {
+	status, err := ndf.FetchTransaction(ctx, txid)
+	if err != nil || status == nil {
+		return 0, err
+	}
+	return status.Confirmations, nil
 }
 
 func (ndf *NetworkDataFetcher) fetchTipHeight(ctx context.Context) (int64, error) {

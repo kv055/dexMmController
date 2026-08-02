@@ -47,6 +47,18 @@ func (f BTCBalanceSourceFunc) ConfirmedOnChainBTC(ctx context.Context) (float64,
 	return f(ctx)
 }
 
+// LightningBalanceSource returns spendable local channel balance. RoboSats
+// requires this rather than merely owning confirmed on-chain UTXOs.
+type LightningBalanceSource interface {
+	OutboundLightningBTC(ctx context.Context) (float64, error)
+}
+
+type LightningBalanceSourceFunc func(ctx context.Context) (float64, error)
+
+func (f LightningBalanceSourceFunc) OutboundLightningBTC(ctx context.Context) (float64, error) {
+	return f(ctx)
+}
+
 // LNDOnlineSource verifies the LND wallet RPC is reachable and the wallet is
 // unlocked — the minimum bar for CEX→LND withdrawals and hedgeless pool checks.
 type LNDOnlineSource interface {

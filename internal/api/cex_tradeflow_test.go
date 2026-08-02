@@ -9,13 +9,20 @@ import (
 	"testing"
 
 	"dexMmController/internal/cexaccount"
+	"dexMmController/internal/db"
 	"dexMmController/internal/tradeflow"
 )
 
 type fakeTradeFlowRunner struct {
-	gotOrder tradeflow.Order
-	result   *tradeflow.Result
-	err      error
+	gotOrder        tradeflow.Order
+	result          *tradeflow.Result
+	err             error
+	reconcileResult *db.Transaction
+	reconcileErr    error
+}
+
+func (f *fakeTradeFlowRunner) ReconcilePoolRefill(_ context.Context, _ uint) (*db.Transaction, error) {
+	return f.reconcileResult, f.reconcileErr
 }
 
 func (f *fakeTradeFlowRunner) Run(_ context.Context, order tradeflow.Order) (*tradeflow.Result, error) {
@@ -48,7 +55,7 @@ func TestHandleCexTradeflowSuccess(t *testing.T) {
 				OrderID: "hedge-1",
 				Status:  "filled",
 			},
-			Withdrawal: tradeflow.WithdrawalResult{
+			Withdrawal: &tradeflow.WithdrawalResult{
 				WithdrawalID:  "wd-1",
 				WalletAddress: "bc1qtest",
 				AmountBTC:     0.01,
@@ -57,15 +64,15 @@ func TestHandleCexTradeflowSuccess(t *testing.T) {
 	}
 	s := (&Server{}).WithTradeFlow(runner)
 	payload, _ := json.Marshal(tradeflowRequest{
-		Provider:           "binance",
-		MarketSide:         "bid",
-		BTCAmount:          0.01,
-		FiatCurrency:       "EUR",
-		RequiredCapital: 1000,
-		HedgeVenue:         "binance_futures",
-		HedgeSide:          "short",
-		HedgeNotionalBTC:   0.01,
-		Leverage:           10,
+		Provider:         "binance",
+		MarketSide:       "bid",
+		BTCAmount:        0.01,
+		FiatCurrency:     "EUR",
+		RequiredCapital:  1000,
+		HedgeVenue:       "binance_futures",
+		HedgeSide:        "short",
+		HedgeNotionalBTC: 0.01,
+		Leverage:         10,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/cex/tradeflow", bytes.NewReader(payload))
 	rec := httptest.NewRecorder()
@@ -99,5 +106,47 @@ func TestHandleCexTradeflowNotConfigured(t *testing.T) {
 	s.handleCexTradeflow(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestHandleCexTradeflowAcceptsHedgelessWithoutHedgeFields(t *testing.T) {
+	runner := &fakeTradeFlowRunner{result: &tradeflow.Result{TradeMode: cexaccount.TradeModeHedgelessDoubleCollateral}}
+	s := (&Server{}).WithTradeFlow(runner)
+	payload, _ := json.Marshal(tradeflowRequest{
+		Provider: "binance", MarketSide: "bid", BTCAmount: 0.01, FiatCurrency: "EUR",
+		RequiredCapital: 500, RequiredBTCLiquidity: 0.0115, SecurityDepositBTC: 0.0015,
+		OfferID: "offer-1", Dex: "hodlhodl", TradeMode: cexaccount.TradeModeHedgelessDoubleCollateral,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/cex/tradeflow", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	s.handleCexTradeflow(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if runner.gotOrder.RequiredBTCLiquidity != 0.0115 || runner.gotOrder.HedgeVenue != "" {
+		t.Fatalf("order = %+v", runner.gotOrder)
+	}
+}
+
+func TestHandleCexTradeflowRejectsHedgelessWithoutLiquidity(t *testing.T) {
+	s := (&Server{}).WithTradeFlow(&fakeTradeFlowRunner{})
+	body := []byte(`{"provider":"binance","market_side":"bid","btc_amount":0.01,"required_capital":500,"trade_mode":"hedgeless_double_collateral"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/cex/tradeflow", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleCexTradeflow(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandlePoolRefillReconcile(t *testing.T) {
+	runner := &fakeTradeFlowRunner{reconcileResult: &db.Transaction{ID: 42, BTCPoolRefillStatus: "restored"}}
+	s := (&Server{}).WithTradeFlow(runner)
+	req := httptest.NewRequest(http.MethodPost, "/api/transactions/42/pool-refill/reconcile", nil)
+	req.SetPathValue("id", "42")
+	rec := httptest.NewRecorder()
+	s.handlePoolRefillReconcile(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
