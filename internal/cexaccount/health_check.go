@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
+	"commons/mmcapabilities"
 	"dexMmController/internal/db"
 	"dexMmController/internal/exchangeconnectors/cex/binance"
 	"dexMmController/internal/exchangeconnectors/cex/coinbase"
@@ -17,17 +17,17 @@ import (
 var ErrUnsupportedProvider = errors.New("unsupported account health provider")
 
 const (
-	PermFetchDepositAddress = "fetch_deposit_address"
-	PermSpotTrading         = "spot_trading"
-	PermReadBalances        = "read_balances"
-	PermWithdraw            = "withdraw"
-	PermHedgePositions      = "hedge_positions"
+	PermFetchDepositAddress = mmcapabilities.PermFetchDepositAddress
+	PermSpotTrading         = mmcapabilities.PermSpotTrading
+	PermReadBalances        = mmcapabilities.PermReadBalances
+	PermWithdraw            = mmcapabilities.PermWithdraw
+	PermHedgePositions      = mmcapabilities.PermHedgePositions
 )
 
 const (
-	PermGranted     = "granted"
-	PermDenied      = "denied"
-	PermUnsupported = "unsupported"
+	PermGranted     = mmcapabilities.StatusGranted
+	PermDenied      = mmcapabilities.StatusDenied
+	PermUnsupported = mmcapabilities.StatusUnsupported
 )
 
 // Config holds base URLs for all exchange connectors.
@@ -45,17 +45,14 @@ type Config struct {
 
 // CanonicalProvider maps provider aliases to their canonical names.
 func CanonicalProvider(raw string) (string, error) {
+	if provider, ok := mmcapabilities.ProviderByID(raw); ok && provider.ExecutionSupported {
+		return provider.Name, nil
+	}
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "hodlhodl", "hodl hodl":
 		return "HodlHodl", nil
 	case "robosats", "robo sats":
 		return "Robosats", nil
-	case "binance":
-		return "Binance", nil
-	case "kraken":
-		return "Kraken", nil
-	case "coinbase":
-		return "Coinbase", nil
 	default:
 		return "", ErrUnsupportedProvider
 	}
@@ -68,22 +65,18 @@ func SupportedProviders() []string {
 
 // SupportedCEXProviders returns the centralized exchange providers.
 func SupportedCEXProviders() []string {
-	return []string{"Binance", "Kraken", "Coinbase"}
+	return mmcapabilities.ExecutionProviders()
 }
 
 // IsCEXProvider reports whether the canonical provider is a supported CEX.
 func IsCEXProvider(provider string) bool {
-	switch provider {
-	case "Binance", "Kraken", "Coinbase":
-		return true
-	default:
-		return false
-	}
+	definition, ok := mmcapabilities.ProviderByID(provider)
+	return ok && definition.ExecutionSupported
 }
 
 // CanonicalCEXPermissions lists the canonical permission keys in display order.
 func CanonicalCEXPermissions() []string {
-	return []string{PermFetchDepositAddress, PermSpotTrading, PermReadBalances, PermWithdraw, PermHedgePositions}
+	return mmcapabilities.CanonicalPermissions()
 }
 
 // KeyPermissionResult reports normalized permissions for one API key.
@@ -140,11 +133,6 @@ func AssessCEXPermissions(provider string, keys []KeyPermissionResult) (map[stri
 			}
 		}
 		combined[permission] = status
-		// Unsupported means the venue does not offer this capability (e.g. Coinbase
-		// hedge). That is not a missing permission and must not fail health.
-		if status == PermUnsupported {
-			continue
-		}
 		missing = append(missing, fmt.Sprintf("%s (%s)", permission, status))
 	}
 	if len(missing) == 0 {
@@ -182,45 +170,6 @@ func grantedIf(ok bool) string {
 		return PermGranted
 	}
 	return PermDenied
-}
-
-func keyDisplayName(key db.APIKey) string {
-	name := strings.TrimSpace(key.Name)
-	if name == "" {
-		return fmt.Sprintf("key %d", key.ID)
-	}
-	return name
-}
-
-func formatKeyPermissionsMessage(keys []KeyPermissionResult) string {
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		parts = append(parts, fmt.Sprintf(`key %q: %s`, key.Name, formatPermissions(key.Permissions)))
-	}
-	return strings.Join(parts, "; ")
-}
-
-func formatPermissions(permissions map[string]string) string {
-	names := make([]string, 0, len(permissions))
-	for name := range permissions {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		var mark string
-		switch permissions[name] {
-		case PermGranted:
-			mark = "✓"
-		case PermUnsupported:
-			mark = "—"
-		default:
-			mark = "✗"
-		}
-		parts = append(parts, fmt.Sprintf("%s %s", name, mark))
-	}
-	return strings.Join(parts, " ")
 }
 
 // CheckCEXKey validates a single CEX API key and returns its permissions.

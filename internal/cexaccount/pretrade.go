@@ -325,7 +325,7 @@ func (c *BidChecker) checkPermissions(ctx context.Context, provider, tradeMode, 
 		}
 	}
 
-	if hedgeStatus := hedgePerms[PermHedgePositions]; hedgeStatus != PermGranted && hedgeStatus != PermUnsupported {
+	if hedgeStatus := hedgePerms[PermHedgePositions]; hedgeStatus != PermGranted {
 		return fmt.Errorf(
 			"pre-trade check failed: %s API key does not have hedge position permission (status: %q); check account health",
 			hedgeProvider, hedgeStatus,

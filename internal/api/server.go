@@ -19,6 +19,7 @@ import (
 	"dexMmController/internal/lndhealth"
 
 	"commons/metrics"
+	"commons/mmcapabilities"
 	"commons/telegram"
 )
 
@@ -31,8 +32,11 @@ type Server struct {
 	accountHealth accountHealthChecker
 	cexAccount    *cexaccount.Service
 	tradeFlow     TradeFlowRunner
-	hedgeStream   *hedgestream.Manager
-	lndHealth     lndWalletHealthChecker
+	capabilities  interface {
+		State(context.Context, string) (mmcapabilities.ProviderState, error)
+	}
+	hedgeStream *hedgestream.Manager
+	lndHealth   lndWalletHealthChecker
 
 	// lndWallet is the live LND client. It can be wired at startup or swapped in at
 	// runtime once the wallet is created via the init endpoint, so it is guarded.
@@ -168,6 +172,14 @@ func (s *Server) WithStartupState(state *StartupState) *Server {
 // WithAccountHealth attaches the account health service to the API server.
 func (s *Server) WithAccountHealth(checker accountHealthChecker) *Server {
 	s.accountHealth = checker
+	return s
+}
+
+// WithCapabilities installs the deployment-wide CEX routing/execution policy.
+func (s *Server) WithCapabilities(store interface {
+	State(context.Context, string) (mmcapabilities.ProviderState, error)
+}) *Server {
+	s.capabilities = store
 	return s
 }
 

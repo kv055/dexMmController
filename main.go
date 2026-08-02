@@ -39,6 +39,7 @@ import (
 
 	"commons/logging"
 	"commons/metrics"
+	"commons/mmcapabilities"
 	"commons/telegram"
 	"commons/tracing"
 
@@ -146,6 +147,12 @@ func main() {
 		return
 	}
 	defer db.Close(database)
+	rawDatabase, err := database.DB()
+	if err != nil {
+		log.Printf("MM capability database handle: %v", err)
+		return
+	}
+	capabilityStore := mmcapabilities.NewStore(rawDatabase, mmcapabilities.ParseMaxAge(os.Getenv("MM_CEX_CAPABILITY_MAX_AGE")))
 
 	repo := db.NewTransactionRepository(database)
 	obs.RegisterTradeStats(metricsReg.Registry, repo)
@@ -401,7 +408,8 @@ func main() {
 		},
 	})
 	tradeFlow := tradeflow.New(cexAccountService, repo).
-		WithDirectDestinationResolver(dexaccount.NewDirectResolver(bq))
+		WithDirectDestinationResolver(dexaccount.NewDirectResolver(bq)).
+		WithCapabilities(capabilityStore)
 	hc := healthcheck.NewHealthChecker(repo, claw, btc, hh, tradeFlow).
 		WithRecoveryGracePeriod(parseAccountHealthInterval(envOr("TRADEFLOW_RECOVERY_GRACE", "3m"))).
 		WithPaymentResolver(dexPaymentResolver).
@@ -409,6 +417,7 @@ func main() {
 		WithBisq(bq)
 	apiServer = apiServer.WithRepository(repo).
 		WithAccountHealth(exchangeAccountHealth).
+		WithCapabilities(capabilityStore).
 		WithCexAccount(cexAccountService).
 		WithTradeFlow(tradeFlow).
 		WithHedgeStream(hedgeStreamManager).

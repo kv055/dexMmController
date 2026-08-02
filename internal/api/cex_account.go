@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"commons/mmcapabilities"
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/tradeflow"
@@ -76,6 +77,11 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("hedge_notional_btc must be greater than zero"))
 		return
 	}
+	tradeMode := cexaccount.NormalizeTradeMode(req.TradeMode)
+	if err := s.requireCEXCapabilities(r.Context(), canonical, tradeMode, req.HedgeVenue); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
 	marketSide := strings.TrimSpace(req.MarketSide)
 	if marketSide == "" {
 		marketSide = "bid"
@@ -108,6 +114,33 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 	// TradeFlow persists each step itself (including the transaction id on result);
 	// the handler no longer writes the row after the fact.
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) requireCEXCapabilities(ctx context.Context, provider, tradeMode, hedgeVenue string) error {
+	if s.capabilities == nil {
+		// Production wiring always installs the store. Keeping it optional makes
+		// isolated handler tests and recovery-only tools independent of Postgres.
+		return nil
+	}
+	spot, err := s.capabilities.State(ctx, provider)
+	if err != nil {
+		return fmt.Errorf("load spot capability policy: %w", err)
+	}
+	if err := mmcapabilities.RequireSpot(spot); err != nil {
+		return err
+	}
+	if tradeMode == cexaccount.TradeModeHedgelessDoubleCollateral {
+		return nil
+	}
+	definition, ok := mmcapabilities.ProviderForHedgeVenue(hedgeVenue)
+	if !ok {
+		return fmt.Errorf("unknown hedge venue %q", hedgeVenue)
+	}
+	hedge, err := s.capabilities.State(ctx, definition.ID)
+	if err != nil {
+		return fmt.Errorf("load hedge capability policy: %w", err)
+	}
+	return mmcapabilities.RequireHedge(hedge)
 }
 
 // preTradeCheckRequest is the JSON body for POST /api/cex/pre-trade-check.
@@ -149,6 +182,11 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.RequiredCapital <= 0 {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital must be greater than zero"))
+		return
+	}
+	tradeMode := cexaccount.NormalizeTradeMode(req.TradeMode)
+	if err := s.requireCEXCapabilities(r.Context(), canonical, tradeMode, req.HedgeVenue); err != nil {
+		writeError(w, http.StatusConflict, err)
 		return
 	}
 

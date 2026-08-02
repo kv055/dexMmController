@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"commons/mmcapabilities"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/obs"
 	"dexMmController/internal/txroute"
@@ -106,11 +107,22 @@ type DirectDestinationResolver interface {
 	DirectDestination(ctx context.Context, dexSlug string) (string, error)
 }
 
+type capabilityStore interface {
+	State(context.Context, string) (mmcapabilities.ProviderState, error)
+}
+
 // TradeFlow orchestrates the CEX trade leg of a DEX arbitrage cycle.
 type TradeFlow struct {
 	svc            Service
 	store          transactionStore
 	directResolver DirectDestinationResolver
+	capabilities   capabilityStore
+}
+
+// WithCapabilities installs the central fail-closed provider policy gate.
+func (tf *TradeFlow) WithCapabilities(store capabilityStore) *TradeFlow {
+	tf.capabilities = store
+	return tf
 }
 
 // New creates a TradeFlow backed by the given CEX service and transaction store.
@@ -134,6 +146,11 @@ func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 		return nil, err
 	}
 
+	mode := cexaccount.NormalizeTradeMode(order.TradeMode)
+	order.TradeMode = mode
+	if err := tf.requireCapabilities(ctx, order); err != nil {
+		return nil, fmt.Errorf("tradeflow: %w", err)
+	}
 	switch side := strings.ToLower(strings.TrimSpace(order.MarketSide)); side {
 	case "bid", "ask":
 		var res *Result
@@ -148,6 +165,33 @@ func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 	default:
 		return nil, fmt.Errorf("tradeflow: unsupported market side %q", order.MarketSide)
 	}
+}
+
+func (tf *TradeFlow) requireCapabilities(ctx context.Context, order Order) error {
+	if tf.capabilities == nil {
+		// Capability enforcement is an injected boundary so isolated unit tests and
+		// recovery-only tools do not need a database. Production wiring always sets it.
+		return nil
+	}
+	spot, err := tf.capabilities.State(ctx, order.Provider)
+	if err != nil {
+		return fmt.Errorf("load spot capability policy: %w", err)
+	}
+	if err := mmcapabilities.RequireSpot(spot); err != nil {
+		return err
+	}
+	if cexaccount.NormalizeTradeMode(order.TradeMode) == cexaccount.TradeModeHedgelessDoubleCollateral {
+		return nil
+	}
+	provider, ok := mmcapabilities.ProviderForHedgeVenue(order.HedgeVenue)
+	if !ok {
+		return fmt.Errorf("unknown hedge venue %q", order.HedgeVenue)
+	}
+	hedge, err := tf.capabilities.State(ctx, provider.ID)
+	if err != nil {
+		return fmt.Errorf("load hedge capability policy: %w", err)
+	}
+	return mmcapabilities.RequireHedge(hedge)
 }
 
 // runBid executes the bid-side cycle: pre-trade checks → spot buy → hedge → withdraw.
