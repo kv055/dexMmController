@@ -1,0 +1,501 @@
+openapi: 3.1.0
+info:
+  title: dexMmController execution API
+  version: 1.0.0
+  description: |
+    Contract for the execution endpoints consumed by dexMonitor. The controller
+    exposes the paths below directly; dexMonitor publishes the same operations
+    below `/api/mm-controller` after removing the controller's leading `/api`.
+servers:
+  - url: http://localhost:5001
+    description: Local MM controller
+security:
+  - internalSecret: []
+paths:
+  /api/cex/pre-trade-check:
+    post:
+      operationId: runCexPreTradeCheck
+      summary: Run the read-only checks required before executing a trade
+      tags: [Execution]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CexPreTradeCheckRequest'
+      responses:
+        '200':
+          description: Every check ran, regardless of whether individual checks passed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreTradeCheckReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/cex/tradeflow:
+    post:
+      operationId: startCexTradeflow
+      summary: Start one CEX-to-DEX execution flow
+      tags: [Execution]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CexTradeflowRequest'
+      responses:
+        '200':
+          description: Execution result at request completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CexTradeflowResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/transactions/{id}:
+    get:
+      operationId: getTransaction
+      summary: Read the durable state of one MM transaction
+      tags: [Transactions]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Transaction state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MMTransactionStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/cex/withdrawal-track:
+    get:
+      operationId: trackCexWithdrawal
+      summary: Combine a CEX withdrawal status with optional mempool data
+      tags: [Execution]
+      parameters:
+        - name: provider
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: withdrawal_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: client_request_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current withdrawal status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WithdrawalTrackResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+components:
+  securitySchemes:
+    internalSecret:
+      type: apiKey
+      in: header
+      name: X-Internal-Secret
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    Conflict:
+      description: Request conflicts with the current provider or execution state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    BadGateway:
+      description: Upstream exchange or wallet request failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    Unavailable:
+      description: Required controller dependency is not ready
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+  schemas:
+    APIError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        provider:
+          type: string
+        operation:
+          type: string
+    TradeMode:
+      type: string
+      enum:
+        - hedgefull_single_collateral
+        - hedgeless_double_collateral
+    CexPreTradeCheckRequest:
+      type: object
+      additionalProperties: false
+      required: [provider, fiat_currency, required_capital]
+      properties:
+        provider:
+          type: string
+        fiat_currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        required_capital:
+          type: number
+          exclusiveMinimum: 0
+        payment_method:
+          type: string
+        payment_methods:
+          type: array
+          items:
+            type: string
+        dex:
+          type: string
+        trade_mode:
+          $ref: '#/components/schemas/TradeMode'
+        hedge_venue:
+          type: string
+        required_btc_liquidity:
+          type: number
+          minimum: 0
+    PreTradeCheckResult:
+      type: object
+      additionalProperties: false
+      required: [name, label, passed]
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        passed:
+          type: boolean
+        message:
+          type: string
+    PreTradeCheckReport:
+      type: object
+      additionalProperties: false
+      required: [ok, checks]
+      properties:
+        ok:
+          type: boolean
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreTradeCheckResult'
+        lnd_withdraw_address:
+          type: string
+        resolved_payment_method:
+          type: string
+    CexTradeflowRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - provider
+        - market_side
+        - btc_amount
+        - fiat_currency
+        - required_capital
+      properties:
+        provider:
+          type: string
+        market_side:
+          type: string
+          enum: [bid, ask]
+        btc_amount:
+          type: number
+          exclusiveMinimum: 0
+        fiat_currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        required_capital:
+          type: number
+          exclusiveMinimum: 0
+        required_btc_liquidity:
+          type: number
+          minimum: 0
+        security_deposit_btc:
+          type: number
+          minimum: 0
+        hedge_venue:
+          type: string
+        hedge_side:
+          type: string
+          enum: [short, long]
+        hedge_notional_btc:
+          type: number
+          minimum: 0
+        leverage:
+          type: number
+          minimum: 0
+        offer_id:
+          type: string
+        dex:
+          type: string
+        fiat_amount:
+          type: number
+          minimum: 0
+        transaction_id:
+          type: integer
+          minimum: 1
+        selected_offer:
+          type: object
+          additionalProperties: true
+        payment_method:
+          type: string
+        payment_methods:
+          type: array
+          items:
+            type: string
+        trade_mode:
+          $ref: '#/components/schemas/TradeMode'
+    CexTradeflowResult:
+      type: object
+      additionalProperties: false
+      required: [trade_mode]
+      properties:
+        trade_mode:
+          $ref: '#/components/schemas/TradeMode'
+        spot_buy:
+          $ref: '#/components/schemas/CexSpotBuyResult'
+        hedge:
+          $ref: '#/components/schemas/CexHedgeOpenResult'
+        withdrawal:
+          $ref: '#/components/schemas/WithdrawalResult'
+        dex_funding:
+          $ref: '#/components/schemas/DEXFundingResult'
+        pool_refill:
+          $ref: '#/components/schemas/PoolRefillResult'
+        transaction_id:
+          type: integer
+          minimum: 1
+    FeeLine:
+      type: object
+      additionalProperties: false
+      required: [asset, amount]
+      properties:
+        asset:
+          type: string
+        amount:
+          type: number
+    ExecutionDetail:
+      type: object
+      additionalProperties: false
+      required: [filled_btc, average_rate, filled_fiat, order_status]
+      properties:
+        filled_btc:
+          type: number
+        average_rate:
+          type: number
+        filled_fiat:
+          type: number
+        fees:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeeLine'
+        order_status:
+          type: string
+        poll_incomplete:
+          type: boolean
+    CexSpotBuyResult:
+      type: object
+      additionalProperties: false
+      required: [provider, pair, side, requested_btc, order_id, status, submitted_at]
+      properties:
+        provider:
+          type: string
+        pair:
+          type: string
+        side:
+          type: string
+        requested_btc:
+          type: number
+        order_id:
+          type: string
+        status:
+          type: string
+        submitted_at:
+          type: string
+          format: date-time
+        execution:
+          $ref: '#/components/schemas/ExecutionDetail'
+        raw: {}
+    CexHedgeOpenResult:
+      type: object
+      additionalProperties: false
+      required: [venue, instrument, side, btc_notional, order_id, status, submitted_at]
+      properties:
+        venue:
+          type: string
+        instrument:
+          type: string
+        side:
+          type: string
+        btc_notional:
+          type: number
+        order_id:
+          type: string
+        status:
+          type: string
+        submitted_at:
+          type: string
+          format: date-time
+        raw: {}
+    WithdrawalResult:
+      type: object
+      additionalProperties: false
+      required: [provider, withdrawal_id, wallet_address, amount_btc]
+      properties:
+        provider:
+          type: string
+        withdrawal_id:
+          type: string
+        client_request_id:
+          type: string
+        wallet_address:
+          type: string
+        amount_btc:
+          type: number
+        cex_status:
+          type: string
+    DEXFundingResult:
+      type: object
+      additionalProperties: false
+      required: [exchange, method, amount_btc, status]
+      properties:
+        exchange:
+          type: string
+        method:
+          type: string
+        amount_btc:
+          type: number
+        txid:
+          type: string
+        payment_hash:
+          type: string
+        destination:
+          type: string
+        status:
+          type: string
+    PoolRefillResult:
+      type: object
+      additionalProperties: false
+      required: [target_btc, status, attempt]
+      properties:
+        target_btc:
+          type: number
+        current_btc:
+          type: number
+        status:
+          type: string
+        attempt:
+          type: integer
+          minimum: 0
+    MMTransactionStatus:
+      type: object
+      additionalProperties: true
+      required: [id, status]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+        trade_mode:
+          $ref: '#/components/schemas/TradeMode'
+        btc_pool_target_btc:
+          type: number
+        btc_required_liquidity:
+          type: number
+        btc_pool_refill_status:
+          type: string
+    WithdrawalTrackResult:
+      type: object
+      additionalProperties: false
+      required: [provider, withdrawal_id, cex_status, cex_status_code, updated_at]
+      properties:
+        provider:
+          type: string
+        withdrawal_id:
+          type: string
+        cex_status:
+          type: string
+        cex_status_code:
+          type: integer
+        tx_hash:
+          type: string
+        address:
+          type: string
+        amount_btc:
+          type: string
+        fee_btc:
+          type: number
+        updated_at:
+          type: string
+          format: date-time
+        mempool:
+          $ref: '#/components/schemas/MempoolTxStatus'
+    MempoolTxStatus:
+      type: object
+      additionalProperties: false
+      required: [txid, confirmed, confirmations, status_label]
+      properties:
+        txid:
+          type: string
+        confirmed:
+          type: boolean
+        confirmations:
+          type: integer
+        block_height:
+          type: integer
+        status_label:
+          type: string
