@@ -607,14 +607,15 @@ func (c *BidChecker) checkFiatTransmitterSetup(ctx context.Context, method strin
 	}
 
 	fieldValues := map[string]string{
-		"email": strings.TrimSpace(account.Email),
-		"phone": strings.TrimSpace(account.Phone),
+		"email":       strings.TrimSpace(account.Email),
+		"phone":       strings.TrimSpace(account.Phone),
+		"payment_tag": strings.TrimSpace(account.PaymentTag),
 	}
 	for _, field := range paymentmethods.RequiredAccountFields[account.Provider] {
 		if fieldValues[field] == "" {
 			label := field
-			if account.Provider == "Revolut" && field == "phone" {
-				label = "Revolut tag (phone field)"
+			if field == "payment_tag" {
+				label = "payment tag"
 			}
 			return fmt.Errorf(
 				"pre-trade check failed: %s account is missing %s",

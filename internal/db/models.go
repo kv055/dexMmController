@@ -19,6 +19,8 @@ type Account struct {
 	Password string `json:"password"`
 	// Phone is the phone value for the account.
 	Phone string `json:"phone"`
+	// PaymentTag is the payment identifier shown to counterparties (e.g. Revolut revtag).
+	PaymentTag string `json:"payment_tag"`
 	// Category is the account category (Fiat Transmitter, DEX, CEX, Bank).
 	Category string `json:"category"`
 	// LastHealthCheck is the last health check value for the account.

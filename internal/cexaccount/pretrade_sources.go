@@ -127,9 +127,10 @@ type PaymentMethodSnapshot struct {
 
 // FiatAccountSnapshot is the subset of a fiat transmitter account used by pre-trade checks.
 type FiatAccountSnapshot struct {
-	Provider string
-	Email    string
-	Phone    string
+	Provider   string
+	Email      string
+	Phone      string
+	PaymentTag string
 }
 
 // BankAccountSnapshot is the subset of a bank account used by pre-trade checks.

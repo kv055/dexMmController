@@ -71,7 +71,7 @@ func okPaymentSetup() *fakePaymentSetup {
 			"SEPA":    {Name: "SEPA", Category: "Bank", BankAccountID: ptr(1), IsActive: true, IsLinked: true, Priority: 1},
 		},
 		accounts: map[int64]*FiatAccountSnapshot{
-			1: {Provider: "Revolut", Email: "user@example.com", Phone: "@revtag"},
+			1: {Provider: "Revolut", Email: "user@example.com", PaymentTag: "@revtag"},
 		},
 		banks: map[int64]*BankAccountSnapshot{
 			1: {Scheme: "iban_bic", Details: map[string]string{"iban": "DE89370400440532013000"}, IsActive: true},
@@ -493,9 +493,9 @@ func TestPaymentSetupLinkedAccountGone(t *testing.T) {
 
 func TestPaymentSetupMissingRevolutTag(t *testing.T) {
 	setup := okPaymentSetup()
-	setup.accounts[1].Phone = ""
+	setup.accounts[1].PaymentTag = ""
 	_, chk := runPaymentCheck(t, setup, "Revolut", nil)
-	if chk.Passed || !strings.Contains(chk.Message, "Revolut tag") {
+	if chk.Passed || !strings.Contains(chk.Message, "missing payment tag") {
 		t.Fatalf("payment_setup check = %+v", chk)
 	}
 }

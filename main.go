@@ -356,9 +356,10 @@ func main() {
 					return nil, err
 				}
 				return &cexaccount.FiatAccountSnapshot{
-					Provider: acct.Provider,
-					Email:    acct.Email,
-					Phone:    acct.Phone,
+					Provider:   acct.Provider,
+					Email:      acct.Email,
+					Phone:      acct.Phone,
+					PaymentTag: acct.PaymentTag,
 				}, nil
 			},
 			BankFn: func(ctx context.Context, id int64) (*cexaccount.BankAccountSnapshot, error) {
