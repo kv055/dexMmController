@@ -540,7 +540,7 @@ func (c *BidChecker) resolvePaymentMethod(ctx context.Context, paymentMethod str
 
 // checkPaymentSetup validates one catalog method against the payment solution
 // its payment_methods row links to: Fiat Transmitter → accounts row with the
-// provider's required fields, Bank Transfer → the linked bank_accounts row
+// provider's required fields, Bank → the linked bank_accounts row
 // (active, iban_bic, IBAN present), Crypto → the linked wallet_addresses row.
 // Cash, Gift Cards and Others are never supported for automated trading.
 func (c *BidChecker) checkPaymentSetup(ctx context.Context, paymentMethod string) error {

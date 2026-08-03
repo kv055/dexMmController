@@ -68,7 +68,7 @@ func okPaymentSetup() *fakePaymentSetup {
 	return &fakePaymentSetup{
 		methods: map[string]*PaymentMethodSnapshot{
 			"Revolut": {Name: "Revolut", Category: "Fiat Transmitter", AccountID: ptr(1), IsActive: true, IsLinked: true, Priority: 5},
-			"SEPA":    {Name: "SEPA", Category: "Bank Transfer", BankAccountID: ptr(1), IsActive: true, IsLinked: true, Priority: 1},
+			"SEPA":    {Name: "SEPA", Category: "Bank", BankAccountID: ptr(1), IsActive: true, IsLinked: true, Priority: 1},
 		},
 		accounts: map[int64]*FiatAccountSnapshot{
 			1: {Provider: "Revolut", Email: "user@example.com", Phone: "@revtag"},
