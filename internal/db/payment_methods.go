@@ -19,6 +19,10 @@ type PaymentMethod struct {
 	MergeRegex *string `json:"merge_regex"`
 	// AliasList holds operator-managed exact text aliases for canonicalization.
 	AliasList paymentmethods.TextArray `gorm:"type:text[]" json:"alias_list"`
+	// Sources lists the DEX offer slugs this method is associated with.
+	Sources paymentmethods.TextArray `gorm:"type:text[]" json:"sources"`
+	// Currencies lists the ISO fiat codes this method supports.
+	Currencies paymentmethods.TextArray `gorm:"type:text[]" json:"currencies"`
 	// Category is the display category (Cash, Bank, Fiat Transmitter, Gift Cards, Crypto, Others).
 	Category string `json:"category"`
 	// BankAccountID links a Bank method to bank_accounts(id).
