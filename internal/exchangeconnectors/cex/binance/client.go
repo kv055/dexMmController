@@ -2,34 +2,24 @@ package binance
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	sharedbinance "commons/cexclient/binance"
+	spot "github.com/binance/binance-connector-go/clients/spot"
+	spotmodels "github.com/binance/binance-connector-go/clients/spot/src/restapi/models"
+	wallet "github.com/binance/binance-connector-go/clients/wallet"
+	walletmodels "github.com/binance/binance-connector-go/clients/wallet/src/restapi/models"
 )
 
-const (
-	defaultBaseURL      = "https://api.binance.com"
-	defaultRecvWindowMS = int64(10000)
-)
+const defaultBaseURL = "https://api.binance.com"
 
 // Client represents a client.
 type Client struct {
-	baseURL      string
-	apiKey       string
-	secretKey    string
-	httpClient   *http.Client
-	timeMu       sync.Mutex
-	timeOffsetMS int64
-	timeSynced   bool
+	spot   *spot.BinanceSpotClient
+	wallet *wallet.BinanceWalletClient
 }
 
 // DepositAddressResponse represents a deposit address response.
@@ -175,11 +165,6 @@ type SpotBalance struct {
 	Locked string `json:"locked"`
 }
 
-// spotAccountResponse is the balance payload from GET /api/v3/account.
-type spotAccountResponse struct {
-	Balances []SpotBalance `json:"balances"`
-}
-
 // AccountInfo reports Binance account permissions and balances.
 type AccountInfo struct {
 	// CanTrade is the can trade value for the account info.
@@ -204,51 +189,6 @@ type KeyRestrictions struct {
 	EnableFutures bool `json:"enableFutures"`
 }
 
-// NewClient creates a client.
-func NewClient(baseURL, apiKey, secretKey string) *Client {
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		apiKey:     apiKey,
-		secretKey:  secretKey,
-		httpClient: &http.Client{Timeout: 20 * time.Second},
-	}
-}
-
-// Name returns the exchange or bridge name.
-func (c *Client) Name() string {
-	return "binance"
-}
-
-// AccountInfo retrieves account capability and permission details.
-func (c *Client) AccountInfo(ctx context.Context) (*AccountInfo, error) {
-	var resp AccountInfo
-	if err := c.signedRequest(ctx, http.MethodGet, "/api/v3/account", nil, nil, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
-// SpotBalances retrieves non-zero spot wallet balances.
-func (c *Client) SpotBalances(ctx context.Context) ([]SpotBalance, error) {
-	var resp spotAccountResponse
-	if err := c.signedRequest(ctx, http.MethodGet, "/api/v3/account", nil, nil, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Balances, nil
-}
-
-// KeyRestrictions retrieves API-key permission flags for the configured credentials.
-func (c *Client) KeyRestrictions(ctx context.Context) (*KeyRestrictions, error) {
-	var resp KeyRestrictions
-	if err := c.signedRequest(ctx, http.MethodGet, "/sapi/v1/account/apiRestrictions", nil, nil, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
 // WithdrawAddressEntry is a saved withdrawal address from the account address book.
 type WithdrawAddressEntry struct {
 	// Address is the wallet or peer address used by the withdraw address entry.
@@ -263,65 +203,6 @@ type WithdrawAddressEntry struct {
 	Name string `json:"name"`
 	// WhiteStatus reports whether the address is whitelisted.
 	WhiteStatus bool `json:"whiteStatus"`
-}
-
-// WithdrawAddressList retrieves the saved (address book) withdrawal addresses.
-func (c *Client) WithdrawAddressList(ctx context.Context) ([]WithdrawAddressEntry, error) {
-	var resp []WithdrawAddressEntry
-	if err := c.signedRequest(ctx, http.MethodGet, "/sapi/v1/capital/withdraw/address/list", nil, nil, &resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
-}
-
-// GetDepositAddress retrieves a deposit address.
-func (c *Client) GetDepositAddress(ctx context.Context, coin, network string) (*DepositAddressResponse, error) {
-	query := url.Values{}
-	query.Set("coin", coin)
-	if network != "" {
-		query.Set("network", network)
-	}
-
-	var resp DepositAddressResponse
-	if err := c.signedRequest(ctx, http.MethodGet, "/sapi/v1/capital/deposit/address", query, nil, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
-// ApplyWithdraw submits a withdrawal request to Binance.
-func (c *Client) ApplyWithdraw(ctx context.Context, req WithdrawRequest) (*WithdrawResponse, error) {
-	body := url.Values{}
-	body.Set("coin", req.Coin)
-	body.Set("address", req.Address)
-	body.Set("amount", req.Amount)
-	if req.Network != "" {
-		body.Set("network", req.Network)
-	}
-	if req.AddressTag != "" {
-		body.Set("addressTag", req.AddressTag)
-	}
-	if req.WithdrawOrderID != "" {
-		body.Set("withdrawOrderId", req.WithdrawOrderID)
-	}
-	if req.TransactionFeeFlag != nil {
-		body.Set("transactionFeeFlag", strconv.FormatBool(*req.TransactionFeeFlag))
-	}
-	if req.Name != "" {
-		body.Set("name", req.Name)
-	}
-	if req.WalletType != nil {
-		body.Set("walletType", strconv.Itoa(*req.WalletType))
-	}
-	if req.RecvWindow > 0 {
-		body.Set("recvWindow", strconv.FormatInt(req.RecvWindow, 10))
-	}
-
-	var resp WithdrawResponse
-	if err := c.signedRequest(ctx, http.MethodPost, "/sapi/v1/capital/withdraw/apply", body, nil, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
 }
 
 // OrderFill is a single fill (partial execution) within a Binance order response.
@@ -356,217 +237,280 @@ type OrderResponse struct {
 	Fills []OrderFill `json:"fills"`
 }
 
+// NewClient creates a client.
+func NewClient(baseURL, apiKey, secretKey string) *Client {
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+	opts := sharedbinance.Options{BaseURL: strings.TrimRight(baseURL, "/")}
+	return &Client{
+		spot:   sharedbinance.NewSpot(apiKey, secretKey, opts),
+		wallet: sharedbinance.NewWallet(apiKey, secretKey, opts),
+	}
+}
+
+// Name returns the exchange or bridge name.
+func (c *Client) Name() string {
+	return "binance"
+}
+
+// AccountInfo retrieves account capability and permission details.
+func (c *Client) AccountInfo(ctx context.Context) (*AccountInfo, error) {
+	resp, err := c.spot.RestApi.AccountAPI.GetAccount(ctx).Execute()
+	if err != nil {
+		return nil, sharedbinance.WrapError("account info", false, err)
+	}
+	data := resp.Data
+	return &AccountInfo{
+		CanTrade:    data.GetCanTrade(),
+		CanWithdraw: data.GetCanWithdraw(),
+		CanDeposit:  data.GetCanDeposit(),
+	}, nil
+}
+
+// SpotBalances retrieves non-zero spot wallet balances.
+func (c *Client) SpotBalances(ctx context.Context) ([]SpotBalance, error) {
+	resp, err := c.spot.RestApi.AccountAPI.GetAccount(ctx).Execute()
+	if err != nil {
+		return nil, sharedbinance.WrapError("spot balances", false, err)
+	}
+	balances := make([]SpotBalance, 0, len(resp.Data.Balances))
+	for _, row := range resp.Data.Balances {
+		balances = append(balances, SpotBalance{
+			Asset:  row.GetAsset(),
+			Free:   row.GetFree(),
+			Locked: row.GetLocked(),
+		})
+	}
+	return balances, nil
+}
+
+// KeyRestrictions retrieves API-key permission flags for the configured credentials.
+func (c *Client) KeyRestrictions(ctx context.Context) (*KeyRestrictions, error) {
+	resp, err := c.wallet.RestApi.AccountAPI.GetApiKeyPermission(ctx).Execute()
+	if err != nil {
+		return nil, sharedbinance.WrapError("key restrictions", false, err)
+	}
+	data := resp.Data
+	return &KeyRestrictions{
+		IPRestrict:                 data.GetIpRestrict(),
+		EnableReading:              data.GetEnableReading(),
+		EnableSpotAndMarginTrading: data.GetEnableSpotAndMarginTrading(),
+		EnableWithdrawals:          data.GetEnableWithdrawals(),
+		EnableFutures:              data.GetEnableFutures(),
+	}, nil
+}
+
+// WithdrawAddressList retrieves the saved (address book) withdrawal addresses.
+func (c *Client) WithdrawAddressList(ctx context.Context) ([]WithdrawAddressEntry, error) {
+	resp, err := c.wallet.RestApi.CapitalAPI.FetchWithdrawAddressList(ctx).Execute()
+	if err != nil {
+		return nil, sharedbinance.WrapError("withdraw address list", false, err)
+	}
+	out := make([]WithdrawAddressEntry, 0, len(resp.Data.Items))
+	for _, row := range resp.Data.Items {
+		out = append(out, WithdrawAddressEntry{
+			Address:     row.GetAddress(),
+			AddressTag:  row.GetAddressTag(),
+			Coin:        row.GetCoin(),
+			Network:     row.GetNetwork(),
+			Name:        row.GetName(),
+			WhiteStatus: row.GetWhiteStatus(),
+		})
+	}
+	return out, nil
+}
+
+// GetDepositAddress retrieves a deposit address.
+func (c *Client) GetDepositAddress(ctx context.Context, coin, network string) (*DepositAddressResponse, error) {
+	req := c.wallet.RestApi.CapitalAPI.DepositAddress(ctx).Coin(coin)
+	if network != "" {
+		req = req.Network(network)
+	}
+	resp, err := req.Execute()
+	if err != nil {
+		return nil, sharedbinance.WrapError("deposit address", false, err)
+	}
+	return &DepositAddressResponse{
+		Address: resp.Data.GetAddress(),
+		Coin:    resp.Data.GetCoin(),
+		Tag:     resp.Data.GetTag(),
+		URL:     resp.Data.GetUrl(),
+	}, nil
+}
+
+// ApplyWithdraw submits a withdrawal request to Binance.
+func (c *Client) ApplyWithdraw(ctx context.Context, req WithdrawRequest) (*WithdrawResponse, error) {
+	amount, err := strconv.ParseFloat(strings.TrimSpace(req.Amount), 32)
+	if err != nil {
+		return nil, fmt.Errorf("binance: withdraw amount: %w", err)
+	}
+	call := c.wallet.RestApi.CapitalAPI.Withdraw(ctx).
+		Coin(req.Coin).
+		Address(req.Address).
+		Amount(float32(amount))
+	if req.Network != "" {
+		call = call.Network(req.Network)
+	}
+	if req.AddressTag != "" {
+		call = call.AddressTag(req.AddressTag)
+	}
+	if req.WithdrawOrderID != "" {
+		call = call.WithdrawOrderId(req.WithdrawOrderID)
+	}
+	if req.TransactionFeeFlag != nil {
+		call = call.TransactionFeeFlag(*req.TransactionFeeFlag)
+	}
+	if req.Name != "" {
+		call = call.Name(req.Name)
+	}
+	if req.WalletType != nil {
+		call = call.WalletType(int64(*req.WalletType))
+	}
+	if req.RecvWindow > 0 {
+		call = call.RecvWindow(req.RecvWindow)
+	}
+	resp, err := call.Execute()
+	if err != nil {
+		return nil, sharedbinance.WrapError("withdraw", true, err)
+	}
+	return &WithdrawResponse{ID: resp.Data.GetId()}, nil
+}
+
 // MarketBuy places a market buy order for quantityBTC of the base asset on symbol (e.g. "BTCEUR").
 func (c *Client) MarketBuy(ctx context.Context, symbol string, quantityBTC float64) (*OrderResponse, error) {
-	params := url.Values{}
-	params.Set("symbol", symbol)
-	params.Set("side", "BUY")
-	params.Set("type", "MARKET")
-	params.Set("quantity", strconv.FormatFloat(quantityBTC, 'f', -1, 64))
-
-	var resp OrderResponse
-	if err := c.signedRequest(ctx, http.MethodPost, "/api/v3/order", params, nil, &resp); err != nil {
-		return nil, err
+	resp, err := c.spot.RestApi.TradeAPI.NewOrder(ctx).
+		Symbol(symbol).
+		Side(spotmodels.NewOrderSideParameterBuy).
+		Type(spotmodels.NewOrderTypeParameterMarket).
+		Quantity(float32(quantityBTC)).
+		NewOrderRespType(spotmodels.NewOrderNewOrderRespTypeParameterFull).
+		Execute()
+	if err != nil {
+		return nil, sharedbinance.WrapError("market buy", true, err)
 	}
-	return &resp, nil
+	return mapOrderResponse(resp.Data), nil
 }
 
 // GetDepositHistory retrieves a deposit history.
 func (c *Client) GetDepositHistory(ctx context.Context, params DepositHistoryParams) ([]DepositRecord, error) {
-	query := url.Values{}
+	call := c.wallet.RestApi.CapitalAPI.DepositHistory(ctx)
 	if params.Coin != "" {
-		query.Set("coin", params.Coin)
+		call = call.Coin(params.Coin)
 	}
 	if params.Status != nil {
-		query.Set("status", strconv.Itoa(*params.Status))
+		call = call.Status(walletmodels.DepositHistoryStatusParameter(*params.Status))
 	}
 	if params.StartTime != nil {
-		query.Set("startTime", strconv.FormatInt(params.StartTime.UnixMilli(), 10))
+		call = call.StartTime(params.StartTime.UnixMilli())
 	}
 	if params.EndTime != nil {
-		query.Set("endTime", strconv.FormatInt(params.EndTime.UnixMilli(), 10))
+		call = call.EndTime(params.EndTime.UnixMilli())
 	}
 	if params.Offset != nil {
-		query.Set("offset", strconv.Itoa(*params.Offset))
+		call = call.Offset(int64(*params.Offset))
 	}
 	if params.Limit != nil {
-		query.Set("limit", strconv.Itoa(*params.Limit))
+		call = call.Limit(int64(*params.Limit))
 	}
 	if params.RecvWindow > 0 {
-		query.Set("recvWindow", strconv.FormatInt(params.RecvWindow, 10))
+		call = call.RecvWindow(params.RecvWindow)
 	}
-
-	var resp []DepositRecord
-	if err := c.signedRequest(ctx, http.MethodGet, "/sapi/v1/capital/deposit/hisrec", query, nil, &resp); err != nil {
-		return nil, err
+	resp, err := call.Execute()
+	if err != nil {
+		return nil, sharedbinance.WrapError("deposit history", false, err)
 	}
-	return resp, nil
+	out := make([]DepositRecord, 0, len(resp.Data.Items))
+	for _, row := range resp.Data.Items {
+		unlock := ""
+		if row.UnlockConfirm != nil {
+			unlock = strconv.FormatInt(*row.UnlockConfirm, 10)
+		}
+		out = append(out, DepositRecord{
+			ID:            row.GetId(),
+			Amount:        row.GetAmount(),
+			Coin:          row.GetCoin(),
+			Network:       row.GetNetwork(),
+			Status:        int(row.GetStatus()),
+			Address:       row.GetAddress(),
+			AddressTag:    row.GetAddressTag(),
+			TxID:          row.GetTxId(),
+			InsertTime:    row.GetInsertTime(),
+			TransferType:  int(row.GetTransferType()),
+			ConfirmTimes:  row.GetConfirmTimes(),
+			UnlockConfirm: unlock,
+		})
+	}
+	return out, nil
 }
 
 // GetWithdrawHistory retrieves a withdraw history.
 func (c *Client) GetWithdrawHistory(ctx context.Context, params WithdrawHistoryParams) ([]WithdrawRecord, error) {
-	query := url.Values{}
+	call := c.wallet.RestApi.CapitalAPI.WithdrawHistory(ctx)
 	if params.Coin != "" {
-		query.Set("coin", params.Coin)
+		call = call.Coin(params.Coin)
 	}
 	if params.WithdrawOrderID != "" {
-		query.Set("withdrawOrderId", params.WithdrawOrderID)
+		call = call.WithdrawOrderId(params.WithdrawOrderID)
 	}
 	if params.Status != nil {
-		query.Set("status", strconv.Itoa(*params.Status))
+		call = call.Status(int64(*params.Status))
 	}
 	if params.StartTime != nil {
-		query.Set("startTime", strconv.FormatInt(params.StartTime.UnixMilli(), 10))
+		call = call.StartTime(params.StartTime.UnixMilli())
 	}
 	if params.EndTime != nil {
-		query.Set("endTime", strconv.FormatInt(params.EndTime.UnixMilli(), 10))
+		call = call.EndTime(params.EndTime.UnixMilli())
 	}
 	if params.Offset != nil {
-		query.Set("offset", strconv.Itoa(*params.Offset))
+		call = call.Offset(int64(*params.Offset))
 	}
 	if params.Limit != nil {
-		query.Set("limit", strconv.Itoa(*params.Limit))
+		call = call.Limit(int64(*params.Limit))
 	}
 	if params.RecvWindow > 0 {
-		query.Set("recvWindow", strconv.FormatInt(params.RecvWindow, 10))
+		call = call.RecvWindow(params.RecvWindow)
 	}
-
-	var resp []WithdrawRecord
-	if err := c.signedRequest(ctx, http.MethodGet, "/sapi/v1/capital/withdraw/history", query, nil, &resp); err != nil {
-		return nil, err
+	resp, err := call.Execute()
+	if err != nil {
+		return nil, sharedbinance.WrapError("withdraw history", false, err)
 	}
-	return resp, nil
+	out := make([]WithdrawRecord, 0, len(resp.Data.Items))
+	for _, row := range resp.Data.Items {
+		out = append(out, WithdrawRecord{
+			ID:              row.GetId(),
+			Amount:          row.GetAmount(),
+			TransactionFee:  row.GetTransactionFee(),
+			Coin:            row.GetCoin(),
+			Status:          int(row.GetStatus()),
+			Address:         row.GetAddress(),
+			ApplyTime:       row.GetApplyTime(),
+			Network:         row.GetNetwork(),
+			TransferType:    int(row.GetTransferType()),
+			WithdrawOrderID: row.GetWithdrawOrderId(),
+			TxID:            row.GetTxId(),
+		})
+	}
+	return out, nil
 }
 
-func (c *Client) signedRequest(ctx context.Context, method, path string, params url.Values, headers http.Header, out any) error {
-	err := c.doSignedRequest(ctx, method, path, params, headers, out)
-	if err == nil || !isBinanceTimestampError(err) {
-		return err
+func mapOrderResponse(data spotmodels.NewOrderResponse) *OrderResponse {
+	fills := make([]OrderFill, 0, len(data.Fills))
+	for _, fill := range data.Fills {
+		fills = append(fills, OrderFill{
+			Price:           fill.GetPrice(),
+			Qty:             fill.GetQty(),
+			Commission:      fill.GetCommission(),
+			CommissionAsset: fill.GetCommissionAsset(),
+			TradeID:         fill.GetTradeId(),
+		})
 	}
-	c.invalidateServerTime()
-	return c.doSignedRequest(ctx, method, path, params, headers, out)
-}
-
-func (c *Client) doSignedRequest(ctx context.Context, method, path string, params url.Values, headers http.Header, out any) error {
-	if params == nil {
-		params = url.Values{}
+	return &OrderResponse{
+		Symbol:              data.GetSymbol(),
+		OrderID:             data.GetOrderId(),
+		Status:              data.GetStatus(),
+		ExecutedQty:         data.GetExecutedQty(),
+		CummulativeQuoteQty: data.GetCummulativeQuoteQty(),
+		Fills:               fills,
 	}
-	timestamp, err := c.serverTimestamp(ctx)
-	if err != nil {
-		return err
-	}
-	if params.Get("recvWindow") == "" {
-		params.Set("recvWindow", strconv.FormatInt(defaultRecvWindowMS, 10))
-	}
-	params.Set("timestamp", strconv.FormatInt(timestamp, 10))
-	queryString := params.Encode()
-	signature := sign(queryString, c.secretKey)
-	params.Set("signature", signature)
-
-	var body io.Reader
-	fullURL := c.baseURL + path
-	switch method {
-	case http.MethodGet:
-		fullURL += "?" + params.Encode()
-	case http.MethodPost:
-		body = strings.NewReader(params.Encode())
-	default:
-		return fmt.Errorf("binance: unsupported method %s", method)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, fullURL, body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("X-MBX-APIKEY", c.apiKey)
-	if method == http.MethodPost {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	}
-	for k, values := range headers {
-		for _, v := range values {
-			req.Header.Add(k, v)
-		}
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("binance: %s %s failed: %w", method, path, err)
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("binance: reading response body: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("binance: %s %s returned HTTP %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	if out == nil {
-		return nil
-	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("binance: decode response: %w", err)
-	}
-	return nil
-}
-
-func (c *Client) serverTimestamp(ctx context.Context) (int64, error) {
-	c.timeMu.Lock()
-	defer c.timeMu.Unlock()
-	if !c.timeSynced {
-		if err := c.syncServerTimeLocked(ctx); err != nil {
-			return 0, err
-		}
-	}
-	return time.Now().UnixMilli() + c.timeOffsetMS, nil
-}
-
-func (c *Client) syncServerTimeLocked(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v3/time", nil)
-	if err != nil {
-		return err
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("binance: GET /api/v3/time failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("binance: reading server time: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("binance: GET /api/v3/time returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	var payload struct {
-		ServerTime int64 `json:"serverTime"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return fmt.Errorf("binance: decode server time: %w", err)
-	}
-	c.timeOffsetMS = payload.ServerTime - time.Now().UnixMilli()
-	c.timeSynced = true
-	return nil
-}
-
-func (c *Client) invalidateServerTime() {
-	c.timeMu.Lock()
-	c.timeSynced = false
-	c.timeOffsetMS = 0
-	c.timeMu.Unlock()
-}
-
-func isBinanceTimestampError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, `"code":-1021`) || strings.Contains(msg, "Timestamp for this request")
-}
-
-func sign(payload, secret string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(payload))
-	return hex.EncodeToString(mac.Sum(nil))
 }

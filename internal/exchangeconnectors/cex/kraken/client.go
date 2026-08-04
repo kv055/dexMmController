@@ -2,29 +2,21 @@ package kraken
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/sha512"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	sharedkraken "commons/cexclient/kraken"
 )
 
 const defaultBaseURL = "https://api.kraken.com"
 
 // Client represents a client.
 type Client struct {
-	baseURL    string
-	apiKey     string
-	secretKey  string
-	httpClient *http.Client
+	sdk *sharedkraken.Client
 }
 
 // DepositMethod represents a deposit method.
@@ -188,10 +180,7 @@ func NewClient(baseURL, apiKey, secretKey string) *Client {
 		baseURL = defaultBaseURL
 	}
 	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		apiKey:     apiKey,
-		secretKey:  secretKey,
-		httpClient: &http.Client{Timeout: 20 * time.Second},
+		sdk: sharedkraken.New(apiKey, secretKey, sharedkraken.Options{BaseURL: baseURL}),
 	}
 }
 
@@ -413,55 +402,16 @@ func (c *Client) ValidateOrderPermission(ctx context.Context, pair string) error
 	return c.privateRequest(ctx, "/0/private/AddOrder", form, &resp)
 }
 
-type nonceSequencer struct {
-	mu   sync.Mutex
-	last int64
-}
-
-var apiNonceSequencers sync.Map
-
 func (c *Client) privateRequest(ctx context.Context, path string, form url.Values, out any) error {
-	err := c.doPrivateRequest(ctx, path, form, out)
-	if err == nil || !isKrakenInvalidNonce(err) {
-		return err
+	body := make(map[string]any, len(form))
+	for key, values := range form {
+		if len(values) != 0 {
+			body[key] = values[len(values)-1]
+		}
 	}
-	c.bumpNonceAhead()
-	return c.doPrivateRequest(ctx, path, form, out)
-}
-
-func (c *Client) doPrivateRequest(ctx context.Context, path string, form url.Values, out any) error {
-	if form == nil {
-		form = url.Values{}
-	}
-	nonce := c.nextNonce()
-	form.Set("nonce", nonce)
-	encodedForm := form.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, strings.NewReader(encodedForm))
+	raw, err := c.sdk.PrivatePOST(ctx, path, path, body)
 	if err != nil {
 		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("API-Key", c.apiKey)
-
-	signature, err := sign(path, nonce, encodedForm, c.secretKey)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("API-Sign", signature)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("kraken: POST %s failed: %w", path, err)
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("kraken: reading response body: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("kraken: POST %s returned HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	// Kraken often returns result as {} or null alongside errors; check the error
 	// array before unmarshaling into a typed result so Invalid key / Permission denied
@@ -476,39 +426,6 @@ func (c *Client) doPrivateRequest(ctx context.Context, path string, form url.Val
 		return fmt.Errorf("kraken: decode response: %w", err)
 	}
 	return krakenAPIError(path, out)
-}
-
-func (c *Client) nextNonce() string {
-	value, _ := apiNonceSequencers.LoadOrStore(c.apiKey, &nonceSequencer{})
-	seq := value.(*nonceSequencer)
-	seq.mu.Lock()
-	defer seq.mu.Unlock()
-	now := time.Now().UnixMicro()
-	if now <= seq.last {
-		seq.last++
-	} else {
-		seq.last = now
-	}
-	return strconv.FormatInt(seq.last, 10)
-}
-
-func (c *Client) bumpNonceAhead() {
-	value, _ := apiNonceSequencers.LoadOrStore(c.apiKey, &nonceSequencer{})
-	seq := value.(*nonceSequencer)
-	seq.mu.Lock()
-	defer seq.mu.Unlock()
-	now := time.Now().UnixMicro()
-	if now > seq.last {
-		seq.last = now
-	}
-	seq.last += 1000
-}
-
-func isKrakenInvalidNonce(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "EAPI:Invalid nonce")
 }
 
 func krakenAPIError(path string, out any) error {
@@ -555,16 +472,4 @@ func krakenAPIError(path string, out any) error {
 		}
 	}
 	return nil
-}
-
-func sign(path, nonce, encodedForm, secret string) (string, error) {
-	secretBytes, err := base64.StdEncoding.DecodeString(secret)
-	if err != nil {
-		return "", fmt.Errorf("kraken: decode secret key: %w", err)
-	}
-
-	sha := sha256.Sum256([]byte(nonce + encodedForm))
-	mac := hmac.New(sha512.New, secretBytes)
-	_, _ = mac.Write(append([]byte(path), sha[:]...))
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil)), nil
 }

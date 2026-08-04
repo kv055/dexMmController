@@ -221,10 +221,7 @@ func TestCheckProviderHodlHodlMissingSignatureMarksUnhealthy(t *testing.T) {
 
 func TestCheckProviderBinanceCanonicalPermissions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v3/time" {
-			_ = json.NewEncoder(w).Encode(map[string]any{"serverTime": time.Now().UnixMilli()})
-			return
-		}
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"enableReading":              true,
 			"enableSpotAndMarginTrading": true,
@@ -433,9 +430,9 @@ func TestCheckProviderCoinbaseCombinesSpotAndINTXKeys(t *testing.T) {
 		case "/api/v3/brokerage/accounts":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"accounts": []map[string]any{{
-					"uuid":     "eur-account",
-					"currency": "EUR",
-					"active":   true,
+					"uuid":              "eur-account",
+					"currency":          "EUR",
+					"active":            true,
 					"available_balance": map[string]string{"value": "10", "currency": "EUR"},
 				}},
 				"has_next": false,
@@ -462,7 +459,7 @@ func TestCheckProviderCoinbaseCombinesSpotAndINTXKeys(t *testing.T) {
 	repo := &fakeRepo{
 		accountProvider: "Coinbase",
 		keys: []db.APIKey{
-			{ID: 1, Name: "spot", APIKey: "organizations/org/apiKeys/spot", APISecret: testECPrivateKeyPEM(t), IsActive: true}, // gitleaks:allow
+			{ID: 1, Name: "spot", APIKey: "organizations/org/apiKeys/spot", APISecret: testECPrivateKeyPEM(t), IsActive: true},                                      // gitleaks:allow
 			{ID: 2, Name: "intx", APIKey: "intx-key", APISecret: base64.StdEncoding.EncodeToString([]byte("intx-secret")), Passphrase: "intx-pass", IsActive: true}, // gitleaks:allow
 		},
 	}
@@ -489,10 +486,7 @@ func TestCheckProviderCoinbaseCombinesSpotAndINTXKeys(t *testing.T) {
 
 func TestCheckProviderBinanceCombinesPermissionsAcrossActiveKeys(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v3/time" {
-			_ = json.NewEncoder(w).Encode(map[string]any{"serverTime": time.Now().UnixMilli()})
-			return
-		}
+		w.Header().Set("Content-Type", "application/json")
 		switch r.Header.Get("X-MBX-APIKEY") {
 		case "trade-key":
 			_ = json.NewEncoder(w).Encode(map[string]any{"enableReading": true, "enableSpotAndMarginTrading": true, "enableWithdrawals": false, "enableFutures": false})
