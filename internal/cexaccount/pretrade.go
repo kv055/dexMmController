@@ -531,18 +531,18 @@ func (c *BidChecker) resolvePaymentMethod(ctx context.Context, paymentMethod str
 	}
 	if row == nil {
 		return "", fmt.Errorf(
-			"pre-trade check failed: none of the offer's payment methods (%s) is linked and active; configure one in the payment method categorization panel",
+			"pre-trade check failed: none of the offer's payment methods (%s) is linked and active; link one under Accounts Management → payment accounts",
 			strings.Join(names, ", "),
 		)
 	}
 	return row.Name, nil
 }
 
-// checkPaymentSetup validates one catalog method against the payment solution
+// checkPaymentSetup validates one catalog method against the payment account
 // its payment_methods row links to: Fiat Transmitter → accounts row with the
-// provider's required fields, Bank → the linked bank_accounts row
-// (active, iban_bic, IBAN present), Crypto → the linked wallet_addresses row.
-// Cash, Gift Cards and Others are never supported for automated trading.
+// provider's required fields, Bank → a bank_accounts row under that account
+// (active, iban_bic, IBAN present). Crypto, Cash, Gift Cards and Others are
+// never supported for automated trading.
 func (c *BidChecker) checkPaymentSetup(ctx context.Context, paymentMethod string) error {
 	method := strings.TrimSpace(paymentMethod)
 	if method == "" {
@@ -568,7 +568,7 @@ func (c *BidChecker) checkPaymentSetup(ctx context.Context, paymentMethod string
 	}
 	if !row.IsActive {
 		return fmt.Errorf(
-			"pre-trade check failed: %s is disabled; activate it in the payment method categorization panel",
+			"pre-trade check failed: %s is disabled; link or re-activate it under Accounts Management → payment accounts",
 			method,
 		)
 	}
@@ -578,8 +578,6 @@ func (c *BidChecker) checkPaymentSetup(ctx context.Context, paymentMethod string
 		return c.checkFiatTransmitterSetup(ctx, method, row)
 	case paymentmethods.CategoryBankTransfer:
 		return c.checkBankAccountSetup(ctx, method, row)
-	case paymentmethods.CategoryCrypto:
-		return c.checkWalletAddressSetup(ctx, method, row)
 	default:
 		return fmt.Errorf(
 			"pre-trade check failed: %s (%s) is not supported for automated trading",
@@ -591,7 +589,7 @@ func (c *BidChecker) checkPaymentSetup(ctx context.Context, paymentMethod string
 func (c *BidChecker) checkFiatTransmitterSetup(ctx context.Context, method string, row *PaymentMethodSnapshot) error {
 	if row.AccountID == nil {
 		return fmt.Errorf(
-			"pre-trade check failed: %s is not linked to a Fiat Transmitter account; link one in the payment method categorization panel",
+			"pre-trade check failed: %s is not linked to a Fiat Transmitter account; link one under Accounts Management → payment accounts",
 			method,
 		)
 	}
@@ -601,7 +599,7 @@ func (c *BidChecker) checkFiatTransmitterSetup(ctx context.Context, method strin
 	}
 	if account == nil {
 		return fmt.Errorf(
-			"pre-trade check failed: the account linked to %s no longer exists; re-link it in the payment method categorization panel",
+			"pre-trade check failed: the account linked to %s no longer exists; re-link it under Accounts Management → payment accounts",
 			method,
 		)
 	}
@@ -627,25 +625,25 @@ func (c *BidChecker) checkFiatTransmitterSetup(ctx context.Context, method strin
 }
 
 func (c *BidChecker) checkBankAccountSetup(ctx context.Context, method string, row *PaymentMethodSnapshot) error {
-	if row.BankAccountID == nil {
+	if row.AccountID == nil {
 		return fmt.Errorf(
-			"pre-trade check failed: %s is not linked to a bank account; link one in the payment method categorization panel",
+			"pre-trade check failed: %s is not linked to a Bank account; link one under Accounts Management → payment accounts",
 			method,
 		)
 	}
-	acct, err := c.paymentSetup.BankAccountByID(ctx, *row.BankAccountID)
+	acct, err := c.paymentSetup.BankAccountForAccount(ctx, *row.AccountID)
 	if err != nil {
 		return fmt.Errorf("loading bank account for %s pre-trade check: %w", method, err)
 	}
 	if acct == nil {
 		return fmt.Errorf(
-			"pre-trade check failed: the bank account linked to %s no longer exists; re-link it in the payment method categorization panel",
+			"pre-trade check failed: the Bank account linked to %s has no bank account details; add an IBAN under Trading Accounts",
 			method,
 		)
 	}
 	if !acct.IsActive {
 		return fmt.Errorf(
-			"pre-trade check failed: the bank account linked to %s is inactive; activate it under Trading Accounts or link another",
+			"pre-trade check failed: the bank account linked to %s is inactive; activate it under Trading Accounts or add another currency",
 			method,
 		)
 	}
@@ -689,32 +687,6 @@ func (c *BidChecker) checkMessageTemplate(ctx context.Context, dex, paymentMetho
 		return fmt.Errorf(
 			"pre-trade check failed: no message template is saved for %s on %s; add one in the payment method categorization panel or the generic default request will be sent",
 			paymentMethod, platform,
-		)
-	}
-	return nil
-}
-
-func (c *BidChecker) checkWalletAddressSetup(ctx context.Context, method string, row *PaymentMethodSnapshot) error {
-	if row.WalletAddressID == nil {
-		return fmt.Errorf(
-			"pre-trade check failed: %s is not linked to a wallet address; link one in the payment method categorization panel",
-			method,
-		)
-	}
-	wallet, err := c.paymentSetup.WalletAddressByID(ctx, *row.WalletAddressID)
-	if err != nil {
-		return fmt.Errorf("loading wallet address for %s pre-trade check: %w", method, err)
-	}
-	if wallet == nil {
-		return fmt.Errorf(
-			"pre-trade check failed: the wallet address linked to %s no longer exists; re-link it in the payment method categorization panel",
-			method,
-		)
-	}
-	if strings.TrimSpace(wallet.Address) == "" {
-		return fmt.Errorf(
-			"pre-trade check failed: the wallet address linked to %s is empty; re-link it in the payment method categorization panel",
-			method,
 		)
 	}
 	return nil

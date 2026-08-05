@@ -109,6 +109,24 @@ func (r *TransactionRepository) GetBankAccountByID(ctx context.Context, id int64
 	return &account, nil
 }
 
+// GetBankAccountForAccount retrieves one bank_accounts row for a parent
+// accounts.id. Prefers active rows, then lowest id. Returns (nil, nil) when
+// none exist.
+func (r *TransactionRepository) GetBankAccountForAccount(ctx context.Context, accountID int64) (*BankAccount, error) {
+	var account BankAccount
+	err := r.db.WithContext(ctx).
+		Where("account_id = ?", accountID).
+		Order("is_active DESC, id ASC").
+		First(&account).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load bank account for account %d: %w", accountID, err)
+	}
+	return &account, nil
+}
+
 // GetWalletAddressByID retrieves a wallet_addresses row by primary key.
 // Returns (nil, nil) when it does not exist.
 func (r *TransactionRepository) GetWalletAddressByID(ctx context.Context, id int64) (*WalletAddress, error) {

@@ -14,7 +14,6 @@ type fakePaymentSetup struct {
 	methods   map[string]*PaymentMethodSnapshot
 	accounts  map[int64]*FiatAccountSnapshot
 	banks     map[int64]*BankAccountSnapshot
-	wallets   map[int64]*WalletAddressSnapshot
 	methodErr error
 }
 
@@ -44,12 +43,8 @@ func (f *fakePaymentSetup) FiatAccountByID(_ context.Context, id int64) (*FiatAc
 	return f.accounts[id], nil
 }
 
-func (f *fakePaymentSetup) BankAccountByID(_ context.Context, id int64) (*BankAccountSnapshot, error) {
-	return f.banks[id], nil
-}
-
-func (f *fakePaymentSetup) WalletAddressByID(_ context.Context, id int64) (*WalletAddressSnapshot, error) {
-	return f.wallets[id], nil
+func (f *fakePaymentSetup) BankAccountForAccount(_ context.Context, accountID int64) (*BankAccountSnapshot, error) {
+	return f.banks[accountID], nil
 }
 
 func ptr(v int64) *int64 { return &v }
@@ -68,15 +63,14 @@ func okPaymentSetup() *fakePaymentSetup {
 	return &fakePaymentSetup{
 		methods: map[string]*PaymentMethodSnapshot{
 			"Revolut": {Name: "Revolut", Category: "Fiat Transmitter", AccountID: ptr(1), IsActive: true, IsLinked: true, Priority: 5},
-			"SEPA":    {Name: "SEPA", Category: "Bank", BankAccountID: ptr(1), IsActive: true, IsLinked: true, Priority: 1},
+			"SEPA":    {Name: "SEPA", Category: "Bank", AccountID: ptr(2), IsActive: true, IsLinked: true, Priority: 1},
 		},
 		accounts: map[int64]*FiatAccountSnapshot{
 			1: {Provider: "Revolut", Email: "user@example.com", PaymentTag: "@revtag"},
 		},
 		banks: map[int64]*BankAccountSnapshot{
-			1: {Scheme: "iban_bic", Details: map[string]string{"iban": "DE89370400440532013000"}, IsActive: true},
+			2: {Scheme: "iban_bic", Details: map[string]string{"iban": "DE89370400440532013000"}, IsActive: true},
 		},
-		wallets: map[int64]*WalletAddressSnapshot{},
 	}
 }
 
@@ -502,17 +496,17 @@ func TestPaymentSetupMissingRevolutTag(t *testing.T) {
 
 func TestPaymentSetupUnlinkedBankRail(t *testing.T) {
 	setup := okPaymentSetup()
-	setup.methods["SEPA"].BankAccountID = nil
+	setup.methods["SEPA"].AccountID = nil
 	setup.methods["SEPA"].IsLinked = false
 	_, chk := runPaymentCheck(t, setup, "SEPA", nil)
-	if chk.Passed || !strings.Contains(chk.Message, "not linked to a bank account") {
+	if chk.Passed || !strings.Contains(chk.Message, "not linked to a Bank account") {
 		t.Fatalf("payment_setup check = %+v", chk)
 	}
 }
 
 func TestPaymentSetupBankAccountInactive(t *testing.T) {
 	setup := okPaymentSetup()
-	setup.banks[1].IsActive = false
+	setup.banks[2].IsActive = false
 	_, chk := runPaymentCheck(t, setup, "SEPA", nil)
 	if chk.Passed || !strings.Contains(chk.Message, "inactive") {
 		t.Fatalf("payment_setup check = %+v", chk)
@@ -521,7 +515,7 @@ func TestPaymentSetupBankAccountInactive(t *testing.T) {
 
 func TestPaymentSetupBankAccountWrongScheme(t *testing.T) {
 	setup := okPaymentSetup()
-	setup.banks[1].Scheme = "sort_code"
+	setup.banks[2].Scheme = "sort_code"
 	_, chk := runPaymentCheck(t, setup, "SEPA", nil)
 	if chk.Passed || !strings.Contains(chk.Message, "expected iban_bic") {
 		t.Fatalf("payment_setup check = %+v", chk)
@@ -530,21 +524,20 @@ func TestPaymentSetupBankAccountWrongScheme(t *testing.T) {
 
 func TestPaymentSetupBankAccountMissingIBAN(t *testing.T) {
 	setup := okPaymentSetup()
-	setup.banks[1].Details = map[string]string{}
+	setup.banks[2].Details = map[string]string{}
 	_, chk := runPaymentCheck(t, setup, "SEPA", nil)
 	if chk.Passed || !strings.Contains(chk.Message, "no IBAN") {
 		t.Fatalf("payment_setup check = %+v", chk)
 	}
 }
 
-func TestPaymentSetupCryptoLinked(t *testing.T) {
+func TestPaymentSetupCryptoUnsupported(t *testing.T) {
 	setup := okPaymentSetup()
 	setup.methods["Lightning"] = &PaymentMethodSnapshot{
-		Name: "Lightning", Category: "Crypto", WalletAddressID: ptr(7), IsActive: true, IsLinked: true,
+		Name: "Lightning", Category: "Crypto", IsActive: true,
 	}
-	setup.wallets[7] = &WalletAddressSnapshot{Label: "Primary", Address: "bc1qwalletaddr"}
 	_, chk := runPaymentCheck(t, setup, "Lightning", nil)
-	if !chk.Passed {
+	if chk.Passed || !strings.Contains(chk.Message, "not supported for automated trading") {
 		t.Fatalf("payment_setup check = %+v", chk)
 	}
 }

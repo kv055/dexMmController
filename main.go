@@ -50,14 +50,12 @@ import (
 // checker's view of it.
 func paymentMethodSnapshot(row *db.PaymentMethod) *cexaccount.PaymentMethodSnapshot {
 	return &cexaccount.PaymentMethodSnapshot{
-		Name:            row.Name,
-		Category:        row.Category,
-		BankAccountID:   row.BankAccountID,
-		AccountID:       row.AccountID,
-		WalletAddressID: row.WalletAddressID,
-		IsActive:        row.IsActive,
-		IsLinked:        row.IsLinked,
-		Priority:        row.Priority,
+		Name:      row.Name,
+		Category:  row.Category,
+		AccountID: row.AccountID,
+		IsActive:  row.IsActive,
+		IsLinked:  row.IsLinked,
+		Priority:  row.Priority,
 	}
 }
 
@@ -362,8 +360,8 @@ func main() {
 					PaymentTag: acct.PaymentTag,
 				}, nil
 			},
-			BankFn: func(ctx context.Context, id int64) (*cexaccount.BankAccountSnapshot, error) {
-				row, err := repo.GetBankAccountByID(ctx, id)
+			BankFn: func(ctx context.Context, accountID int64) (*cexaccount.BankAccountSnapshot, error) {
+				row, err := repo.GetBankAccountForAccount(ctx, accountID)
 				if err != nil || row == nil {
 					return nil, err
 				}
@@ -371,16 +369,6 @@ func main() {
 					Scheme:   row.Scheme,
 					Details:  cexaccount.ParseBankAccountDetails(row.Details),
 					IsActive: row.IsActive,
-				}, nil
-			},
-			WalletFn: func(ctx context.Context, id int64) (*cexaccount.WalletAddressSnapshot, error) {
-				addr, err := repo.GetWalletAddressByID(ctx, id)
-				if err != nil || addr == nil {
-					return nil, err
-				}
-				return &cexaccount.WalletAddressSnapshot{
-					Label:   addr.Label,
-					Address: addr.Address,
 				}, nil
 			},
 		},

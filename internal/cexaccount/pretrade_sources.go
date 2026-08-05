@@ -113,16 +113,14 @@ func (f PermissionCheckerFunc) CEXPermissions(ctx context.Context, provider stri
 
 // PaymentMethodSnapshot is the subset of a payment_methods catalog row used by
 // pre-trade checks. Category holds the DB display value (e.g. "Fiat
-// Transmitter"); the link IDs are the row's foreign keys.
+// Transmitter"); AccountID is the row's accounts foreign key.
 type PaymentMethodSnapshot struct {
-	Name            string
-	Category        string
-	BankAccountID   *int64
-	AccountID       *int64
-	WalletAddressID *int64
-	IsActive        bool
-	IsLinked        bool
-	Priority        int
+	Name      string
+	Category  string
+	AccountID *int64
+	IsActive  bool
+	IsLinked  bool
+	Priority  int
 }
 
 // FiatAccountSnapshot is the subset of a fiat transmitter account used by pre-trade checks.
@@ -140,12 +138,6 @@ type BankAccountSnapshot struct {
 	IsActive bool
 }
 
-// WalletAddressSnapshot is the subset of a wallet_addresses row used by pre-trade checks.
-type WalletAddressSnapshot struct {
-	Label   string
-	Address string
-}
-
 // PaymentSetupFetcher loads payment_methods catalog rows and the payment
 // solutions they link to. Lookups return (nil, nil) when the row does not
 // exist; errors are reserved for real failures.
@@ -155,8 +147,9 @@ type PaymentSetupFetcher interface {
 	// priority among names, or (nil, nil) when none is eligible.
 	PickPaymentMethod(ctx context.Context, names []string) (*PaymentMethodSnapshot, error)
 	FiatAccountByID(ctx context.Context, id int64) (*FiatAccountSnapshot, error)
-	BankAccountByID(ctx context.Context, id int64) (*BankAccountSnapshot, error)
-	WalletAddressByID(ctx context.Context, id int64) (*WalletAddressSnapshot, error)
+	// BankAccountForAccount returns one bank_accounts row for the linked
+	// accounts.id (preferring active rows, lowest id).
+	BankAccountForAccount(ctx context.Context, accountID int64) (*BankAccountSnapshot, error)
 }
 
 // ChatTemplateFetcher loads the configured chat-request template for a payment
@@ -171,8 +164,7 @@ type PaymentSetupFetcherFuncs struct {
 	MethodFn func(ctx context.Context, name string) (*PaymentMethodSnapshot, error)
 	PickFn   func(ctx context.Context, names []string) (*PaymentMethodSnapshot, error)
 	FiatFn   func(ctx context.Context, id int64) (*FiatAccountSnapshot, error)
-	BankFn   func(ctx context.Context, id int64) (*BankAccountSnapshot, error)
-	WalletFn func(ctx context.Context, id int64) (*WalletAddressSnapshot, error)
+	BankFn   func(ctx context.Context, accountID int64) (*BankAccountSnapshot, error)
 }
 
 func (f PaymentSetupFetcherFuncs) PaymentMethodByName(ctx context.Context, name string) (*PaymentMethodSnapshot, error) {
@@ -196,16 +188,9 @@ func (f PaymentSetupFetcherFuncs) FiatAccountByID(ctx context.Context, id int64)
 	return f.FiatFn(ctx, id)
 }
 
-func (f PaymentSetupFetcherFuncs) BankAccountByID(ctx context.Context, id int64) (*BankAccountSnapshot, error) {
+func (f PaymentSetupFetcherFuncs) BankAccountForAccount(ctx context.Context, accountID int64) (*BankAccountSnapshot, error) {
 	if f.BankFn == nil {
 		return nil, fmt.Errorf("bank account fetcher not configured")
 	}
-	return f.BankFn(ctx, id)
-}
-
-func (f PaymentSetupFetcherFuncs) WalletAddressByID(ctx context.Context, id int64) (*WalletAddressSnapshot, error) {
-	if f.WalletFn == nil {
-		return nil, fmt.Errorf("wallet address fetcher not configured")
-	}
-	return f.WalletFn(ctx, id)
+	return f.BankFn(ctx, accountID)
 }
