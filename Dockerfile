@@ -1,13 +1,16 @@
 # Stage 1: Build
 FROM golang:1.25-alpine AS builder
-ARG GOPROXY=https://goproxy.io,https://proxy.golang.org,direct
+ARG GOPROXY=https://goproxy.io,direct
 ENV GOPROXY=${GOPROXY}
+RUN apk add --no-cache git
 
 WORKDIR /build/dexMmController
 
 COPY commons/ ../commons/
 COPY dexMmController/go.mod dexMmController/go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    sh -ec 'for attempt in 1 2 3 4 5; do go mod download && exit 0; echo "go mod download attempt $attempt failed, retrying..."; sleep $((attempt * 10)); done; exit 1'
 
 COPY dexMmController/main.go dexMmController/main_lnd_backup.go ./
 COPY dexMmController/internal/ ./internal/
