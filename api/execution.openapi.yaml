@@ -200,6 +200,9 @@ components:
             type: string
         dex:
           type: string
+        market_side:
+          type: string
+          enum: [bid, ask]
         trade_mode:
           $ref: '#/components/schemas/TradeMode'
         hedge_venue:
@@ -207,6 +210,9 @@ components:
         required_btc_liquidity:
           type: number
           minimum: 0
+          description: >
+            Position BTC plus security deposit. Required for hedgeless on-chain
+            liquidity-pool checks and for Swap_main2lightning Lightning liquidity.
     PreTradeCheckResult:
       type: object
       additionalProperties: false

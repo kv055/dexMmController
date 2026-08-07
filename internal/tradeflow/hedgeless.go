@@ -112,7 +112,8 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 		RequiredCapital:      order.RequiredCapital,
 		RequiredBTCLiquidity: order.RequiredBTCLiquidity,
 		PaymentMethod:        order.PaymentMethod, PaymentMethods: order.PaymentMethods,
-		Dex: order.Dex, TradeMode: order.TradeMode,
+		Dex: order.Dex, MarketSide: string(txroute.NormalizeSide(order.MarketSide)),
+		TradeMode: order.TradeMode,
 	}
 	report, err := tf.svc.PreTradeCheck(ctx, preTrade)
 	if err != nil {

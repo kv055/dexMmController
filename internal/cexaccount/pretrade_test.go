@@ -330,10 +330,12 @@ func TestMessageTemplatePresentPassesForChatVenue(t *testing.T) {
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
 		okPaymentSetup(),
 	)
+	withLightningSources(c, 0.05, 0.05, true)
 	c.chatTemplates = fakeChatTemplates{"RoboSats|Revolut": "custom template"}
 	report := c.Run(context.Background(), PreTradeParams{
 		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "robosats",
+		RequiredBTCLiquidity: 0.02,
 	})
 	if !report.OK {
 		t.Fatalf("expected OK, got %+v", report)
@@ -789,7 +791,17 @@ func TestLiquidityPoolCheckPassesWhenWalletSufficient(t *testing.T) {
 	}
 }
 
-func TestRoboSatsLiquidityPoolRequiresOutboundLightning(t *testing.T) {
+func withLightningSources(c *BidChecker, outbound, inbound float64, active bool) {
+	c.SetLightningBalance(LightningBalanceSourceFuncs{
+		OutboundFn: func(context.Context) (float64, error) { return outbound, nil },
+		InboundFn:  func(context.Context) (float64, error) { return inbound, nil },
+	})
+	c.SetLightningChannels(LightningChannelSourceFunc(func(context.Context) (bool, error) {
+		return active, nil
+	}))
+}
+
+func TestLightningLiquidityBidOutboundInsufficient(t *testing.T) {
 	c := newTestChecker(
 		func() (float64, error) { return 1000, nil },
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
@@ -797,15 +809,107 @@ func TestRoboSatsLiquidityPoolRequiresOutboundLightning(t *testing.T) {
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
 		okPaymentSetup(),
 	)
-	c.SetBTCBalance(BTCBalanceSourceFunc(func(context.Context) (float64, error) { return 1, nil }))
-	c.SetLightningBalance(LightningBalanceSourceFunc(func(context.Context) (float64, error) { return 0.01, nil }))
+	withLightningSources(c, 0.01, 1, true)
 	report := c.Run(context.Background(), PreTradeParams{
 		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
 		TradeMode: TradeModeHedgelessDoubleCollateral, Dex: "robosats", RequiredBTCLiquidity: 0.02,
 	})
-	chk := paymentCheckNamed(t, report, "liquidity_pool")
+	for _, chk := range report.Checks {
+		if chk.Name == "liquidity_pool" {
+			t.Fatal("liquidity_pool must not run for Swap routes")
+		}
+	}
+	chk := paymentCheckNamed(t, report, "lightning_liquidity")
 	if chk.Passed || !strings.Contains(chk.Message, "outbound Lightning") {
-		t.Fatalf("liquidity_pool check = %+v", chk)
+		t.Fatalf("lightning_liquidity check = %+v", chk)
+	}
+	if chk.Label != "LND outbound liquidity" {
+		t.Fatalf("label = %q", chk.Label)
+	}
+}
+
+func TestLightningLiquidityAskInboundInsufficient(t *testing.T) {
+	c := newTestChecker(
+		func() (float64, error) { return 1000, nil },
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPerms,
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPaymentSetup(),
+	)
+	withLightningSources(c, 1, 0.01, true)
+	report := c.Run(context.Background(), PreTradeParams{
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
+		Dex: "robosats", MarketSide: "ask", RequiredBTCLiquidity: 0.02,
+	})
+	chk := paymentCheckNamed(t, report, "lightning_liquidity")
+	if chk.Passed || !strings.Contains(chk.Message, "inbound Lightning") {
+		t.Fatalf("lightning_liquidity check = %+v", chk)
+	}
+	if chk.Label != "LND inbound liquidity" {
+		t.Fatalf("label = %q", chk.Label)
+	}
+}
+
+func TestLightningLiquidityRequiresActiveChannel(t *testing.T) {
+	c := newTestChecker(
+		func() (float64, error) { return 1000, nil },
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPerms,
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPaymentSetup(),
+	)
+	withLightningSources(c, 1, 1, false)
+	report := c.Run(context.Background(), PreTradeParams{
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
+		Dex: "robosats", RequiredBTCLiquidity: 0.02,
+	})
+	chk := paymentCheckNamed(t, report, "lightning_liquidity")
+	if chk.Passed || !strings.Contains(chk.Message, "no active Lightning channel") {
+		t.Fatalf("lightning_liquidity check = %+v", chk)
+	}
+}
+
+func TestLightningLiquidityPassesBidAndRunsInHedgefull(t *testing.T) {
+	c := newTestChecker(
+		func() (float64, error) { return 1000, nil },
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPerms,
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPaymentSetup(),
+	)
+	withLightningSources(c, 0.05, 0, true)
+	report := c.Run(context.Background(), PreTradeParams{
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
+		Dex: "robosats", RequiredBTCLiquidity: 0.02,
+	})
+	chk := paymentCheckNamed(t, report, "lightning_liquidity")
+	if !chk.Passed {
+		t.Fatalf("lightning_liquidity check = %+v", chk)
+	}
+	for _, cchk := range report.Checks {
+		if cchk.Name == "liquidity_pool" {
+			t.Fatal("liquidity_pool must not run for hedgefull Swap")
+		}
+	}
+}
+
+func TestLightningLiquiditySkippedForNonSwap(t *testing.T) {
+	c := newTestChecker(
+		func() (float64, error) { return 1000, nil },
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPerms,
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPaymentSetup(),
+	)
+	withLightningSources(c, 0, 0, false)
+	report := c.Run(context.Background(), PreTradeParams{
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
+		Dex: "bisq2",
+	})
+	for _, chk := range report.Checks {
+		if chk.Name == "lightning_liquidity" {
+			t.Fatal("lightning_liquidity must not run for non-Swap routes")
+		}
 	}
 }
 

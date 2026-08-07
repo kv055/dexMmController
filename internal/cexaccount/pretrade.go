@@ -10,6 +10,7 @@ import (
 
 	"commons/paymentmethods"
 	"dexMmController/internal/db"
+	"dexMmController/internal/txroute"
 )
 
 // Trade mode identifiers (aligned with commons/tradecost).
@@ -27,6 +28,8 @@ type PreTradeParams struct {
 	PaymentMethod   string
 	PaymentMethods  []string
 	Dex             string
+	// MarketSide is "bid" (sell BTC on DEX) or "ask" (buy BTC on DEX). Empty defaults to bid.
+	MarketSide string
 	// TradeMode selects permission / capital semantics. Empty defaults to
 	// hedgefull_single_collateral.
 	TradeMode string
@@ -35,24 +38,26 @@ type PreTradeParams struct {
 	// checked on that exchange separately (decoupled hedge).
 	HedgeVenue string
 	// RequiredBTCLiquidity is position_btc + security_deposit_btc. Required for
-	// the hedgeless liquidity-pool wallet check; ignored in hedgefull mode.
+	// the hedgeless on-chain liquidity-pool check and for Swap_main2lightning
+	// Lightning channel liquidity (any trade mode).
 	RequiredBTCLiquidity float64
 }
 
 // BidChecker runs all pre-trade checks for the bid side (buying BTC on a CEX).
 type BidChecker struct {
-	balance          BalanceFetcher
-	whitelist        WhitelistFetcher
-	permissions      PermissionChecker
-	paymentSetup     PaymentSetupFetcher
-	chatTemplates    ChatTemplateFetcher
-	communication    CommunicationGateway
-	fiatController   FiatControllerChecker
-	walletMu         sync.RWMutex
-	wallet           WalletSource
-	btcBalance       BTCBalanceSource
-	lightningBalance LightningBalanceSource
-	lndOnline        LNDOnlineSource
+	balance           BalanceFetcher
+	whitelist         WhitelistFetcher
+	permissions       PermissionChecker
+	paymentSetup      PaymentSetupFetcher
+	chatTemplates     ChatTemplateFetcher
+	communication     CommunicationGateway
+	fiatController    FiatControllerChecker
+	walletMu          sync.RWMutex
+	wallet            WalletSource
+	btcBalance        BTCBalanceSource
+	lightningBalance  LightningBalanceSource
+	lightningChannels LightningChannelSource
+	lndOnline         LNDOnlineSource
 }
 
 // NormalizeTradeMode returns a canonical trade mode, defaulting empty to hedgefull.
@@ -121,10 +126,18 @@ func (c *BidChecker) SetBTCBalance(src BTCBalanceSource) {
 	c.walletMu.Unlock()
 }
 
-// SetLightningBalance injects spendable local channel liquidity for RoboSats.
+// SetLightningBalance injects aggregate channel outbound/inbound balances for
+// Swap_main2lightning pre-trade checks.
 func (c *BidChecker) SetLightningBalance(src LightningBalanceSource) {
 	c.walletMu.Lock()
 	c.lightningBalance = src
+	c.walletMu.Unlock()
+}
+
+// SetLightningChannels injects the active-open-channel probe for Lightning routes.
+func (c *BidChecker) SetLightningChannels(src LightningChannelSource) {
+	c.walletMu.Lock()
+	c.lightningChannels = src
 	c.walletMu.Unlock()
 }
 
@@ -172,7 +185,8 @@ type Report struct {
 //
 // Checks are ordered by logical dependency groups so the UI can render them
 // coherently:
-//  1. Capital   — exchange fiat (+ BTC liquidity pool in hedgeless)
+//  1. Capital   — exchange fiat (+ on-chain BTC pool in hedgeless non-swap;
+//                 Lightning outbound/inbound when route is Swap_main2lightning)
 //  2. Exchange  — API permissions, LND online, withdrawal whitelist
 //  3. Payment   — account setup, message template
 //  4. Ops       — communication gateway, Fiat Controller service + channels
@@ -186,6 +200,9 @@ func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
 	provider := p.Provider
 	tradeMode := NormalizeTradeMode(p.TradeMode)
 	isHedgeless := tradeMode == TradeModeHedgelessDoubleCollateral
+	marketSide := txroute.NormalizeSide(p.MarketSide)
+	route := txroute.MethodFor(p.Dex, marketSide)
+	hasLightning := route.HasLightningLeg()
 
 	type namedCheck struct {
 		name, label string
@@ -201,7 +218,7 @@ func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
 		report.Checks = append(report.Checks, res)
 	}
 
-	report := Report{OK: true, Checks: make([]CheckResult, 0, 10)}
+	report := Report{OK: true, Checks: make([]CheckResult, 0, 11)}
 
 	// --- Capital ---
 	capitalLabel := "Exchange capital"
@@ -211,9 +228,20 @@ func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
 	appendResult(&report, namedCheck{"capital", capitalLabel, func() error {
 		return c.checkCapital(ctx, provider, p.FiatCurrency, p.RequiredCapital, tradeMode)
 	}})
-	if isHedgeless {
+	// Hedgeless on-chain DEXes need confirmed UTXOs. Swap (Lightning) routes use
+	// lightning_liquidity instead — channel balance is the spendable/receivable form.
+	if isHedgeless && !hasLightning {
 		appendResult(&report, namedCheck{"liquidity_pool", "BTC liquidity pool", func() error {
-			return c.checkLiquidityPool(ctx, p.Dex, p.RequiredBTCLiquidity)
+			return c.checkLiquidityPool(ctx, p.RequiredBTCLiquidity)
+		}})
+	}
+	if hasLightning {
+		label := "LND outbound liquidity"
+		if marketSide == txroute.SideAsk {
+			label = "LND inbound liquidity"
+		}
+		appendResult(&report, namedCheck{"lightning_liquidity", label, func() error {
+			return c.checkLightningLiquidity(ctx, marketSide, p.RequiredBTCLiquidity)
 		}})
 	}
 
@@ -377,32 +405,16 @@ func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string
 	return nil
 }
 
-// checkLiquidityPool verifies that the form of BTC the DEX can spend immediately
-// covers position plus security deposit. Bisq/HodlHodl require confirmed
-// on-chain BTC; RoboSats requires outbound Lightning channel liquidity.
-func (c *BidChecker) checkLiquidityPool(ctx context.Context, dex string, requiredBTC float64) error {
+// checkLiquidityPool verifies confirmed on-chain LND BTC covers position plus
+// security deposit for hedgeless on-chain DEX routes (Bisq/HodlHodl/Peach).
+// Swap_main2lightning routes use checkLightningLiquidity instead.
+func (c *BidChecker) checkLiquidityPool(ctx context.Context, requiredBTC float64) error {
 	if requiredBTC <= 0 {
 		return fmt.Errorf("pre-trade check failed: required BTC liquidity pool size is missing or zero")
 	}
 	c.walletMu.RLock()
 	src := c.btcBalance
-	lightning := c.lightningBalance
 	c.walletMu.RUnlock()
-	if strings.EqualFold(strings.TrimSpace(dex), "robosats") {
-		// Total wallet BTC is not enough for an immediate Lightning payment: only
-		// our local side of open channels is spendable without another rebalance.
-		if lightning == nil {
-			return fmt.Errorf("pre-trade check failed: LND outbound Lightning balance is not available")
-		}
-		available, err := lightning.OutboundLightningBTC(ctx)
-		if err != nil {
-			return fmt.Errorf("reading LND outbound Lightning balance: %w", err)
-		}
-		if available+1e-12 < requiredBTC {
-			return fmt.Errorf("insufficient LND outbound Lightning liquidity: available %.8f, required %.8f", available, requiredBTC)
-		}
-		return nil
-	}
 	if src == nil {
 		return fmt.Errorf("pre-trade check failed: LND wallet balance is not available; initialise the LND wallet before running hedgeless trades")
 	}
@@ -414,6 +426,56 @@ func (c *BidChecker) checkLiquidityPool(ctx context.Context, dex string, require
 		return fmt.Errorf(
 			"insufficient LND on-chain BTC for liquidity pool: available %.8f, required %.8f (DEX position + security deposit)",
 			available, requiredBTC,
+		)
+	}
+	return nil
+}
+
+// checkLightningLiquidity verifies an active open channel exists and that
+// outbound (bid) or inbound (ask) channel balance covers position + deposit.
+func (c *BidChecker) checkLightningLiquidity(ctx context.Context, side txroute.Side, requiredBTC float64) error {
+	if requiredBTC <= 0 {
+		return fmt.Errorf("pre-trade check failed: required BTC liquidity (position + security deposit) is missing or zero")
+	}
+	c.walletMu.RLock()
+	channels := c.lightningChannels
+	lightning := c.lightningBalance
+	c.walletMu.RUnlock()
+
+	if channels == nil {
+		return fmt.Errorf("pre-trade check failed: LND channel status is not available")
+	}
+	active, err := channels.HasActiveChannel(ctx)
+	if err != nil {
+		return fmt.Errorf("reading LND open channels: %w", err)
+	}
+	if !active {
+		return fmt.Errorf("pre-trade check failed: no active Lightning channel is open")
+	}
+
+	if lightning == nil {
+		return fmt.Errorf("pre-trade check failed: LND Lightning balance is not available")
+	}
+
+	var available float64
+	var direction string
+	if side == txroute.SideAsk {
+		direction = "inbound"
+		available, err = lightning.InboundLightningBTC(ctx)
+		if err != nil {
+			return fmt.Errorf("reading LND inbound Lightning balance: %w", err)
+		}
+	} else {
+		direction = "outbound"
+		available, err = lightning.OutboundLightningBTC(ctx)
+		if err != nil {
+			return fmt.Errorf("reading LND outbound Lightning balance: %w", err)
+		}
+	}
+	if available+1e-12 < requiredBTC {
+		return fmt.Errorf(
+			"insufficient LND %s Lightning liquidity: available %.8f, required %.8f (position + security deposit)",
+			direction, available, requiredBTC,
 		)
 	}
 	return nil

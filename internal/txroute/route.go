@@ -1,14 +1,10 @@
-// Package txroute mirrors the bid-side DEX routing matrix from
+// Package txroute mirrors the DEX routing matrix from
 // commons/tradecost/txrouting for use inside dexMmController.
 //
 // dexMmController is built and deployed as its own module/submodule and cannot
 // import the (separate, unpublished) commons module, so the small routing matrix is
 // duplicated here. Keep this in sync with
 // commons/tradecost/txrouting/dex_routing_profiles.go — the source of truth.
-//
-// Only the bid side is mirrored: the CEX→DEX second leg always sells BTC on the DEX
-// (we bought it on the CEX), so it is bid-only. The ask side is always Direct (BTC
-// arrives at our own CEX deposit) and is not needed here.
 package txroute
 
 import "strings"
@@ -23,28 +19,62 @@ const (
 	// Hub: CEX → our LND hub → forward on-chain to the counterparty's per-trade
 	// address (bisq2/hodlhodl/peach).
 	Hub Method = "onchain_hub"
-	// Swap: CEX → our LND hub on-chain, then the BTC leaves over Lightning by paying
-	// the offer's hold invoice (robosats).
+	// Swap: Lightning BTC leg (Swap_main2lightning). Bid pays a hold invoice from
+	// local channel outbound; ask receives over Lightning into inbound capacity.
 	Swap Method = "onchain_swap"
 )
 
-// bidMethods maps a DEX slug to its bid-side routing method.
-var bidMethods = map[string]Method{
-	"bisq":         Direct,
-	"bisq2":        Hub,
-	"hodlhodl":     Hub,
-	"robosats":     Swap,
-	"peachbitcoin": Hub,
+// Side is the DEX offer side from our perspective.
+type Side string
+
+const (
+	SideBid Side = "bid" // we sell BTC on the DEX
+	SideAsk Side = "ask" // we buy BTC on the DEX
+)
+
+// dexMethods maps a DEX slug to bid/ask routing methods (mirrors commons).
+var dexMethods = map[string]struct{ Bid, Ask Method }{
+	"bisq":         {Bid: Direct, Ask: Direct},
+	"bisq2":        {Bid: Hub, Ask: Direct},
+	"hodlhodl":     {Bid: Hub, Ask: Direct},
+	"robosats":     {Bid: Swap, Ask: Swap},
+	"peachbitcoin": {Bid: Hub, Ask: Direct},
 }
 
-// BidMethod returns the bid-side routing method for a DEX slug, defaulting to Hub
-// (the safe choice for an unknown, per-trade-changing destination).
-func BidMethod(dexSlug string) Method {
-	if m, ok := bidMethods[strings.ToLower(strings.TrimSpace(dexSlug))]; ok {
-		return m
+// NormalizeSide returns bid or ask; anything other than ask defaults to bid.
+func NormalizeSide(raw string) Side {
+	if strings.EqualFold(strings.TrimSpace(raw), string(SideAsk)) {
+		return SideAsk
 	}
-	return Hub
+	return SideBid
 }
+
+// MethodFor returns the routing method for a DEX slug and offer side.
+// Unknown DEXes default to Hub on bid (changing destination) and Direct on ask
+// (our own CEX deposit).
+func MethodFor(dexSlug string, side Side) Method {
+	key := strings.ToLower(strings.TrimSpace(dexSlug))
+	p, ok := dexMethods[key]
+	if !ok {
+		if side == SideAsk {
+			return Direct
+		}
+		return Hub
+	}
+	if side == SideAsk {
+		return p.Ask
+	}
+	return p.Bid
+}
+
+// BidMethod returns the bid-side routing method for a DEX slug.
+func BidMethod(dexSlug string) Method {
+	return MethodFor(dexSlug, SideBid)
+}
+
+// HasLightningLeg reports whether the route includes a Lightning payment leg
+// (routing profile Swap_main2lightning).
+func (m Method) HasLightningLeg() bool { return m == Swap }
 
 // NeedsHub reports whether the route funds through our LND hub (Hub or Swap), i.e. the
 // CEX withdraws to our LND wallet and the second leg watches that hub address.

@@ -24,6 +24,43 @@ func TestBidMethod(t *testing.T) {
 	}
 }
 
+func TestMethodForAsk(t *testing.T) {
+	cases := []struct {
+		dex  string
+		want Method
+	}{
+		{"bisq", Direct},
+		{"bisq2", Direct},
+		{"hodlhodl", Direct},
+		{"peachbitcoin", Direct},
+		{"robosats", Swap},
+		{"unknown", Direct},
+	}
+	for _, c := range cases {
+		if got := MethodFor(c.dex, SideAsk); got != c.want {
+			t.Errorf("MethodFor(%q, ask) = %q, want %q", c.dex, got, c.want)
+		}
+	}
+}
+
+func TestHasLightningLeg(t *testing.T) {
+	if Direct.HasLightningLeg() || Hub.HasLightningLeg() {
+		t.Fatal("Direct/Hub must not report a Lightning leg")
+	}
+	if !Swap.HasLightningLeg() {
+		t.Fatal("Swap must report a Lightning leg")
+	}
+}
+
+func TestNormalizeSide(t *testing.T) {
+	if NormalizeSide("ask") != SideAsk || NormalizeSide("ASK") != SideAsk {
+		t.Fatal("expected ask")
+	}
+	if NormalizeSide("bid") != SideBid || NormalizeSide("") != SideBid {
+		t.Fatal("expected bid default")
+	}
+}
+
 func TestNeedsHub(t *testing.T) {
 	if Direct.NeedsHub() {
 		t.Error("Direct should not need the hub")

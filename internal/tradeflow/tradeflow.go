@@ -43,8 +43,9 @@ type Order struct {
 	// hedgefull, spot notional + hedge collateral + security deposit; for
 	// hedgeless exchange-fiat check, fiat collateral only.
 	RequiredCapital float64
-	// RequiredBTCLiquidity is the hedgeless LND reservation: DEX position plus
-	// seller security deposit. It is ignored in hedgefull mode.
+	// RequiredBTCLiquidity is position plus security deposit. Used for hedgeless
+	// LND pool reservation and for Swap_main2lightning Lightning liquidity checks
+	// in any trade mode.
 	RequiredBTCLiquidity float64
 	// SecurityDepositBTC is carried separately for audit/UI detail.
 	SecurityDepositBTC float64
@@ -284,17 +285,20 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 
 	// The route decides where the CEX withdraws to: direct DEXes (bisq v1) fund their
 	// own wallet, hub/swap DEXes fund our LND hub.
-	method := txroute.BidMethod(order.Dex)
+	marketSide := txroute.NormalizeSide(order.MarketSide)
+	method := txroute.MethodFor(order.Dex, marketSide)
 
 	preTrade := cexaccount.PreTradeParams{
-		Provider:        order.Provider,
-		FiatCurrency:    order.FiatCurrency,
-		RequiredCapital: order.RequiredCapital,
-		PaymentMethod:   order.PaymentMethod,
-		PaymentMethods:  order.PaymentMethods,
-		Dex:             order.Dex,
-		TradeMode:       order.TradeMode,
-		HedgeVenue:      order.HedgeVenue,
+		Provider:             order.Provider,
+		FiatCurrency:         order.FiatCurrency,
+		RequiredCapital:      order.RequiredCapital,
+		RequiredBTCLiquidity: order.RequiredBTCLiquidity,
+		PaymentMethod:        order.PaymentMethod,
+		PaymentMethods:       order.PaymentMethods,
+		Dex:                  order.Dex,
+		MarketSide:           string(marketSide),
+		TradeMode:            order.TradeMode,
+		HedgeVenue:           order.HedgeVenue,
 	}
 
 	// Step 1: pre-trade checks (read-only; result logged for observability).
@@ -568,6 +572,9 @@ func validate(o Order) error {
 		return fmt.Errorf("tradeflow: required_capital must be greater than zero")
 	}
 	mode := cexaccount.NormalizeTradeMode(o.TradeMode)
+	if txroute.MethodFor(o.Dex, txroute.NormalizeSide(o.MarketSide)).HasLightningLeg() && o.RequiredBTCLiquidity <= 0 {
+		return fmt.Errorf("tradeflow: required_btc_liquidity must be greater than zero for Swap_main2lightning routes")
+	}
 	if mode == cexaccount.TradeModeHedgelessDoubleCollateral {
 		// Hedgeless execution intentionally has a narrow support matrix. Rejecting
 		// unsupported sides/venues/providers here prevents a partially completed

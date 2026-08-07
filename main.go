@@ -539,19 +539,47 @@ func main() {
 			}
 			return float64(sats) / 1e8, nil
 		}))
-		bidChecker.SetLightningBalance(cexaccount.LightningBalanceSourceFunc(func(ctx context.Context) (float64, error) {
-			bal, err := lndClient.ChannelBalance(ctx)
+		bidChecker.SetLightningBalance(cexaccount.LightningBalanceSourceFuncs{
+			OutboundFn: func(ctx context.Context) (float64, error) {
+				bal, err := lndClient.ChannelBalance(ctx)
+				if err != nil {
+					return 0, err
+				}
+				if bal == nil || strings.TrimSpace(bal.LocalBalance.Sat) == "" {
+					return 0, nil
+				}
+				sats, err := strconv.ParseInt(strings.TrimSpace(bal.LocalBalance.Sat), 10, 64)
+				if err != nil {
+					return 0, fmt.Errorf("parse LND local channel balance: %w", err)
+				}
+				return float64(sats) / 1e8, nil
+			},
+			InboundFn: func(ctx context.Context) (float64, error) {
+				bal, err := lndClient.ChannelBalance(ctx)
+				if err != nil {
+					return 0, err
+				}
+				if bal == nil || strings.TrimSpace(bal.RemoteBalance.Sat) == "" {
+					return 0, nil
+				}
+				sats, err := strconv.ParseInt(strings.TrimSpace(bal.RemoteBalance.Sat), 10, 64)
+				if err != nil {
+					return 0, fmt.Errorf("parse LND remote channel balance: %w", err)
+				}
+				return float64(sats) / 1e8, nil
+			},
+		})
+		bidChecker.SetLightningChannels(cexaccount.LightningChannelSourceFunc(func(ctx context.Context) (bool, error) {
+			channels, err := lndClient.ListChannels(ctx)
 			if err != nil {
-				return 0, err
+				return false, err
 			}
-			if bal == nil || strings.TrimSpace(bal.LocalBalance.Sat) == "" {
-				return 0, nil
+			for _, ch := range channels {
+				if ch.Active {
+					return true, nil
+				}
 			}
-			sats, err := strconv.ParseInt(strings.TrimSpace(bal.LocalBalance.Sat), 10, 64)
-			if err != nil {
-				return 0, fmt.Errorf("parse LND local channel balance: %w", err)
-			}
-			return float64(sats) / 1e8, nil
+			return false, nil
 		}))
 		bidChecker.SetLNDOnline(cexaccount.LNDOnlineSourceFunc(func(ctx context.Context) error {
 			return lndClient.HealthCheck(ctx)

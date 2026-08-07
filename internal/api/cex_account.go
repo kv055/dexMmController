@@ -14,6 +14,7 @@ import (
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/tradeflow"
+	"dexMmController/internal/txroute"
 )
 
 // TradeFlowRunner executes a full bid-side CEX trade cycle.
@@ -82,6 +83,11 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	marketSide := string(txroute.NormalizeSide(req.MarketSide))
+	if txroute.MethodFor(strings.TrimSpace(req.Dex), txroute.Side(marketSide)).HasLightningLeg() && req.RequiredBTCLiquidity <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero for Swap_main2lightning routes"))
+		return
+	}
 	if tradeMode == cexaccount.TradeModeHedgelessDoubleCollateral {
 		// Keep this public boundary aligned with tradeflow.validate. The duplicate
 		// checks give clients a 400 before any execution object is invoked, while
@@ -90,7 +96,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero in hedgeless mode"))
 			return
 		}
-		if !strings.EqualFold(strings.TrimSpace(req.MarketSide), "bid") && strings.TrimSpace(req.MarketSide) != "" {
+		if marketSide != string(txroute.SideBid) {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("hedgeless execution is supported only for bid-side offers"))
 			return
 		}
@@ -117,10 +123,6 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 	if err := s.requireCEXCapabilities(r.Context(), canonical, tradeMode, req.HedgeVenue); err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
-	}
-	marketSide := strings.TrimSpace(req.MarketSide)
-	if marketSide == "" {
-		marketSide = "bid"
 	}
 
 	result, err := s.tradeFlow.Run(r.Context(), tradeflow.Order{
@@ -211,14 +213,15 @@ type preTradeCheckRequest struct {
 	PaymentMethod        string   `json:"payment_method"`
 	PaymentMethods       []string `json:"payment_methods"`
 	Dex                  string   `json:"dex"`
+	MarketSide           string   `json:"market_side"`
 	TradeMode            string   `json:"trade_mode"`
 	HedgeVenue           string   `json:"hedge_venue"`
 	RequiredBTCLiquidity float64  `json:"required_btc_liquidity"`
 }
 
-// handleCexPreTradeCheck runs all bid-side pre-trade checks (read-only) and reports
-// the per-check results, so the UI can show what passes/fails before the operator
-// confirms a market buy. It places no order.
+// handleCexPreTradeCheck runs pre-trade checks (read-only) and reports the
+// per-check results, so the UI can show what passes/fails before the operator
+// confirms. It places no order.
 func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) {
 	if s.cexAccount == nil {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("cex account service is not configured"))
@@ -249,6 +252,12 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	marketSide := string(txroute.NormalizeSide(req.MarketSide))
+	dex := strings.TrimSpace(req.Dex)
+	if txroute.MethodFor(dex, txroute.Side(marketSide)).HasLightningLeg() && req.RequiredBTCLiquidity <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero for Swap_main2lightning routes"))
+		return
+	}
 	if err := s.requireCEXCapabilities(r.Context(), canonical, tradeMode, req.HedgeVenue); err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
@@ -260,7 +269,8 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		RequiredCapital:      req.RequiredCapital,
 		PaymentMethod:        strings.TrimSpace(req.PaymentMethod),
 		PaymentMethods:       req.PaymentMethods,
-		Dex:                  strings.TrimSpace(req.Dex),
+		Dex:                  dex,
+		MarketSide:           marketSide,
 		TradeMode:            tradeMode,
 		HedgeVenue:           strings.TrimSpace(req.HedgeVenue),
 		RequiredBTCLiquidity: req.RequiredBTCLiquidity,

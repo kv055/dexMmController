@@ -47,15 +47,42 @@ func (f BTCBalanceSourceFunc) ConfirmedOnChainBTC(ctx context.Context) (float64,
 	return f(ctx)
 }
 
-// LightningBalanceSource returns spendable local channel balance. RoboSats
-// requires this rather than merely owning confirmed on-chain UTXOs.
+// LightningBalanceSource returns aggregate channel balances.
+// Outbound is local (spendable); inbound is remote (receivable).
 type LightningBalanceSource interface {
 	OutboundLightningBTC(ctx context.Context) (float64, error)
+	InboundLightningBTC(ctx context.Context) (float64, error)
 }
 
-type LightningBalanceSourceFunc func(ctx context.Context) (float64, error)
+// LightningBalanceSourceFuncs implements LightningBalanceSource as plain functions.
+type LightningBalanceSourceFuncs struct {
+	OutboundFn func(ctx context.Context) (float64, error)
+	InboundFn  func(ctx context.Context) (float64, error)
+}
 
-func (f LightningBalanceSourceFunc) OutboundLightningBTC(ctx context.Context) (float64, error) {
+func (f LightningBalanceSourceFuncs) OutboundLightningBTC(ctx context.Context) (float64, error) {
+	if f.OutboundFn == nil {
+		return 0, fmt.Errorf("LND outbound Lightning balance is not available")
+	}
+	return f.OutboundFn(ctx)
+}
+
+func (f LightningBalanceSourceFuncs) InboundLightningBTC(ctx context.Context) (float64, error) {
+	if f.InboundFn == nil {
+		return 0, fmt.Errorf("LND inbound Lightning balance is not available")
+	}
+	return f.InboundFn(ctx)
+}
+
+// LightningChannelSource reports whether at least one active open channel exists.
+type LightningChannelSource interface {
+	HasActiveChannel(ctx context.Context) (bool, error)
+}
+
+// LightningChannelSourceFunc implements LightningChannelSource as a plain function.
+type LightningChannelSourceFunc func(ctx context.Context) (bool, error)
+
+func (f LightningChannelSourceFunc) HasActiveChannel(ctx context.Context) (bool, error) {
 	return f(ctx)
 }
 
