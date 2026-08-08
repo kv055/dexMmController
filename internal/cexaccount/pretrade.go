@@ -185,8 +185,8 @@ type Report struct {
 //
 // Checks are ordered by logical dependency groups so the UI can render them
 // coherently:
-//  1. Capital   — exchange fiat (+ on-chain BTC pool in hedgeless non-swap;
-//                 Lightning outbound/inbound when route is Swap_main2lightning)
+//  1. Capital   — exchange fiat (+ hedgeless LND pool; Lightning outbound/inbound
+//                 when route is Swap_main2lightning — complementary checks)
 //  2. Exchange  — API permissions, LND online, withdrawal whitelist
 //  3. Payment   — account setup, message template
 //  4. Ops       — communication gateway, Fiat Controller service + channels
@@ -218,7 +218,7 @@ func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
 		report.Checks = append(report.Checks, res)
 	}
 
-	report := Report{OK: true, Checks: make([]CheckResult, 0, 11)}
+	report := Report{OK: true, Checks: make([]CheckResult, 0, 12)}
 
 	// --- Capital ---
 	capitalLabel := "Exchange capital"
@@ -228,11 +228,11 @@ func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
 	appendResult(&report, namedCheck{"capital", capitalLabel, func() error {
 		return c.checkCapital(ctx, provider, p.FiatCurrency, p.RequiredCapital, tradeMode)
 	}})
-	// Hedgeless on-chain DEXes need confirmed UTXOs. Swap (Lightning) routes use
-	// lightning_liquidity instead — channel balance is the spendable/receivable form.
-	if isHedgeless && !hasLightning {
+	// Hedgeless: total LND pool must cover position + deposit (all DEXes).
+	// Swap routes also run lightning_liquidity for directional channel capacity.
+	if isHedgeless {
 		appendResult(&report, namedCheck{"liquidity_pool", "BTC liquidity pool", func() error {
-			return c.checkLiquidityPool(ctx, p.RequiredBTCLiquidity)
+			return c.checkLiquidityPool(ctx, p.Dex, p.RequiredBTCLiquidity)
 		}})
 	}
 	if hasLightning {
@@ -405,22 +405,42 @@ func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string
 	return nil
 }
 
-// checkLiquidityPool verifies confirmed on-chain LND BTC covers position plus
-// security deposit for hedgeless on-chain DEX routes (Bisq/HodlHodl/Peach).
-// Swap_main2lightning routes use checkLightningLiquidity instead.
-func (c *BidChecker) checkLiquidityPool(ctx context.Context, requiredBTC float64) error {
+// checkLiquidityPool verifies the hedgeless LND pool covers position plus
+// security deposit. Non-Swap DEXes need confirmed on-chain BTC; Swap routes
+// use on-chain + local channel balance (same form as LNDPoolBalanceBTC).
+// Directional channel capacity is checked separately by checkLightningLiquidity.
+func (c *BidChecker) checkLiquidityPool(ctx context.Context, dex string, requiredBTC float64) error {
 	if requiredBTC <= 0 {
 		return fmt.Errorf("pre-trade check failed: required BTC liquidity pool size is missing or zero")
 	}
 	c.walletMu.RLock()
 	src := c.btcBalance
+	lightning := c.lightningBalance
 	c.walletMu.RUnlock()
 	if src == nil {
 		return fmt.Errorf("pre-trade check failed: LND wallet balance is not available; initialise the LND wallet before running hedgeless trades")
 	}
-	available, err := src.ConfirmedOnChainBTC(ctx)
+	onChain, err := src.ConfirmedOnChainBTC(ctx)
 	if err != nil {
 		return fmt.Errorf("reading LND on-chain balance for liquidity pool check: %w", err)
+	}
+	available := onChain
+	if txroute.MethodFor(dex, txroute.SideBid).HasLightningLeg() {
+		if lightning == nil {
+			return fmt.Errorf("pre-trade check failed: LND Lightning balance is not available for Swap liquidity pool")
+		}
+		local, err := lightning.OutboundLightningBTC(ctx)
+		if err != nil {
+			return fmt.Errorf("reading LND local channel balance for liquidity pool check: %w", err)
+		}
+		available = onChain + local
+		if available+1e-12 < requiredBTC {
+			return fmt.Errorf(
+				"insufficient LND pool BTC (on-chain + local channel): available %.8f, required %.8f (DEX position + security deposit)",
+				available, requiredBTC,
+			)
+		}
+		return nil
 	}
 	if available+1e-12 < requiredBTC {
 		return fmt.Errorf(
