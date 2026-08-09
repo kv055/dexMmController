@@ -65,12 +65,12 @@ func TestPaymentRequestMessage(t *testing.T) {
 func TestPaymentRequestMessageCustomTemplate(t *testing.T) {
 	custom := "Please send {{amount}} {{currency}} via your preferred method."
 	msg := paymentRequestMessage(custom, "100.00", "EUR")
-	if msg != "Please send 100.00 EUR via your preferred method." {
+	if !strings.Contains(msg, "Please send 100.00 EUR via your preferred method.") || !strings.Contains(msg, paymentRequestMarker) {
 		t.Errorf("unexpected rendered message: %q", msg)
 	}
 	// Empty placeholders fall back to the agreed-amount phrase; whitespace runs are collapsed.
 	msg = paymentRequestMessage(custom, "", "")
-	if msg != "Please send the agreed amount via your preferred method." {
+	if !strings.Contains(msg, "Please send the agreed amount via your preferred method.") || !strings.Contains(msg, paymentRequestMarker) {
 		t.Errorf("unexpected fallback message: %q", msg)
 	}
 }
@@ -170,7 +170,7 @@ func TestCaptureFromChatUsesCustomTemplate(t *testing.T) {
 		t.Fatalf("expected exactly one request sent, got %d", len(chat.sent))
 	}
 	want := "Hi, please send 100.00 EUR via Revolut and reply with your handle."
-	if chat.sent[0] != want {
-		t.Fatalf("unexpected sent message: %q, want %q", chat.sent[0], want)
+	if !strings.Contains(chat.sent[0], want) || !strings.Contains(chat.sent[0], paymentRequestMarker) {
+		t.Fatalf("unexpected sent message: %q", chat.sent[0])
 	}
 }

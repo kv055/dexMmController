@@ -13,6 +13,7 @@ import (
 	"dexMmController/internal/exchangeconnectors/dex/bisq2"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
 	"dexMmController/internal/exchangeconnectors/dex/robosats"
+	"dexMmController/internal/tradechat"
 )
 
 // paymentStyle classifies how a venue exposes the counterparty's fiat details — the "two taker
@@ -146,37 +147,10 @@ type ChatRequest struct {
 	PaymentMethod string
 }
 
-const paymentRequestMarker = "match what you provide in this chat"
-
-const paymentRequestTemplate = `Hi! To release the Bitcoin I need to confirm your payment.
-
-Please reply here with:
-• The full name on your account
-• The account / handle / IBAN the payment will come from
-• The payment method
-
-I will release the Bitcoin only after I receive exactly {{amount}} {{currency}} and the sender name, handle and payment details match what you provide in this chat. If they don't match, I'll have to open a dispute. Thank you!`
-
-// renderChatTemplate substitutes the supported placeholders in a custom or default
-// chat template. Supported placeholders: {{amount}}, {{currency}}.
-func renderChatTemplate(template, amount, currency string) string {
-	amount = strings.TrimSpace(amount)
-	currency = strings.TrimSpace(currency)
-	if amount == "" && currency == "" {
-		amount = "the agreed amount"
-	}
-	out := strings.ReplaceAll(template, "{{amount}}", amount)
-	out = strings.ReplaceAll(out, "{{currency}}", currency)
-	// Collapse whitespace runs left when one of the placeholders is empty.
-	out = strings.ReplaceAll(out, "  ", " ")
-	return out
-}
+const paymentRequestMarker = tradechat.PaymentRequestMarker
 
 func paymentRequestMessage(template, amount, currency string) string {
-	if strings.TrimSpace(template) == "" {
-		template = paymentRequestTemplate
-	}
-	return renderChatTemplate(template, amount, currency)
+	return tradechat.RenderPaymentRequest(template, amount, currency)
 }
 
 type chatPaymentEnvelope struct {
@@ -224,19 +198,15 @@ func (p *PaymentResolver) TradeChatFor(ctx context.Context, exchange string) (Tr
 }
 
 func captureFromChat(ctx context.Context, chat TradeChat, req ChatRequest, template string) (json.RawMessage, error) {
-	msgs, err := chat.Messages(ctx, req.OrderID)
+	result, err := tradechat.EnsurePaymentRequest(ctx, chat, tradechat.PaymentRequest{
+		OrderID:          req.OrderID,
+		ExpectedAmount:   req.ExpectedAmount,
+		ExpectedCurrency: req.ExpectedCurrency,
+	}, template)
 	if err != nil {
 		return nil, err
 	}
-	if !requestAlreadySent(msgs) {
-		if err := chat.SendMessage(ctx, req.OrderID, paymentRequestMessage(template, req.ExpectedAmount, req.ExpectedCurrency)); err != nil {
-			return nil, fmt.Errorf("dexaccount: send payment request: %w", err)
-		}
-		if refreshed, rerr := chat.Messages(ctx, req.OrderID); rerr == nil {
-			msgs = refreshed
-		}
-	}
-	return marshalChatEnvelope(req, msgs)
+	return marshalChatEnvelope(req, result.Messages)
 }
 
 func (p *PaymentResolver) tradeChat(ctx context.Context, exchange string) (TradeChat, error) {
@@ -256,6 +226,8 @@ func (p *PaymentResolver) tradeChat(ctx context.Context, exchange string) (Trade
 			return nil, fmt.Errorf("hodlhodl client is not configured")
 		}
 		return hodlhodlChat{client: p.hodlhodl}, nil
+	case db.DexBisq:
+		return nil, fmt.Errorf("%w: Bisq1 daemon API exposes no trade-chat transport", tradechat.ErrTradeChatUnavailable)
 	default:
 		return nil, fmt.Errorf("dexaccount: chat flow not implemented for exchange %q", exchange)
 	}
@@ -324,15 +296,6 @@ func marshalChatEnvelope(req ChatRequest, msgs []TradeChatMessage) (json.RawMess
 		return nil, fmt.Errorf("dexaccount: marshal chat payment envelope: %w", err)
 	}
 	return out, nil
-}
-
-func requestAlreadySent(msgs []TradeChatMessage) bool {
-	for _, m := range msgs {
-		if m.Outbound || strings.Contains(m.Text, paymentRequestMarker) {
-			return true
-		}
-	}
-	return false
 }
 
 func isInbound(m TradeChatMessage) bool {
