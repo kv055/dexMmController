@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"dexMmController/internal/exchangeconnectors/cex"
-	"dexMmController/internal/obs"
+	"dexMmController/internal/metrics"
 )
 
 const (
@@ -41,7 +41,7 @@ func (c *FuturesClient) StreamPositions(ctx context.Context) (<-chan cex.HedgePo
 				return
 			}
 			emitDisconnected(ctx, out, err)
-			obs.WSReconnects.WithLabelValues("binance_futures_positions").Inc()
+			metrics.WSReconnects.WithLabelValues("binance_futures_positions").Inc()
 			log.Printf("binance futures position stream disconnected: %v; reconnecting in %s", err, backoff)
 			select {
 			case <-ctx.Done():

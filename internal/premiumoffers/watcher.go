@@ -14,11 +14,11 @@ import (
 	"time"
 
 	"dexMmController/internal/db"
-	"dexMmController/internal/obs"
 	"dexMmController/internal/dexaccount"
 	"dexMmController/internal/exchangeconnectors/dex/bisq"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
 	"dexMmController/internal/exchangeconnectors/dex/robosats"
+	"dexMmController/internal/metrics"
 
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
@@ -109,7 +109,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 
-		obs.WSReconnects.WithLabelValues("premium_offers").Inc()
+		metrics.WSReconnects.WithLabelValues("premium_offers").Inc()
 		log.Printf("premium-offer watcher disconnected: %v; reconnecting in %s", err, backoff)
 		select {
 		case <-ctx.Done():

@@ -5,7 +5,7 @@
 // constructor. main registers them onto the commons service registry via
 // Register; until then they exist but are simply never scraped, which keeps
 // tests dependency-free.
-package obs
+package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
