@@ -18,6 +18,7 @@ import (
 	"dexMmController/internal/exchangeconnectors/cex/coinbase"
 	"dexMmController/internal/exchangeconnectors/cex/coinbaseexchange"
 	"dexMmController/internal/exchangeconnectors/cex/kraken"
+	"dexMmController/internal/pretrade"
 	lnd "dexMmController/internal/wallethub"
 )
 
@@ -29,16 +30,22 @@ type Repository interface {
 
 // Service fetches live CEX account data for the trading UI.
 type Service struct {
-	repo       Repository
-	cfg        Config
-	bidChecker *BidChecker
-	lnd        *lnd.Client
+	repo            Repository
+	cfg             Config
+	preTradeChecker pretrade.Checker
+	lnd             *lnd.Client
 }
 
-// WithBidChecker attaches the pre-trade checker used by MarketBuyBTC.
-func (s *Service) WithBidChecker(c *BidChecker) *Service {
-	s.bidChecker = c
+// WithPreTradeChecker attaches the policy checker used by PreTradeCheck.
+func (s *Service) WithPreTradeChecker(c pretrade.Checker) *Service {
+	s.preTradeChecker = c
 	return s
+}
+
+// WithBidChecker is kept as a compatibility shim for the current wiring. The
+// checker contract itself now lives in internal/pretrade.
+func (s *Service) WithBidChecker(c *BidChecker) *Service {
+	return s.WithPreTradeChecker(c)
 }
 
 // WithLND attaches the LND wallet client used by the withdrawal methods.
@@ -450,25 +457,24 @@ func marketBuyPair(provider, fiatCurrency string) string {
 // order) and returns the per-check report so the UI can show exactly which checks pass
 // or fail before the operator confirms the trade. It performs only read-only lookups.
 func (s *Service) PreTradeCheck(ctx context.Context, p PreTradeParams) (*Report, error) {
-	if s.bidChecker == nil {
+	if s.preTradeChecker == nil {
 		return nil, fmt.Errorf("bid pre-trade checker not configured")
 	}
 	if p.RequiredCapital <= 0 {
 		return nil, fmt.Errorf("required_capital must be greater than zero")
 	}
-	report := s.bidChecker.Run(ctx, p)
+	report := s.preTradeChecker.Run(ctx, p)
 	return &report, nil
 }
 
 // MarketBuyBTC places a market buy order for btcAmount of BTC on the given CEX provider,
 // pairing BTC against fiatCurrency. It is the trade-tracing "Start trade" action.
 //
-// p.RequiredCapital is the fiat capital the trade needs (in FiatCurrency units),
-// as computed by dexUnifiedApi's CapitalRequirement. Before placing the order,
-// the account's available fiat balance is checked against this figure so a trade
-// is never started if it can't also fund the hedge that follows.
+// Pre-trade validation is performed by TradeFlow before calling this execution
+// primitive. Keeping orchestration there makes this service responsible only
+// for placing the CEX order.
 func (s *Service) MarketBuyBTC(ctx context.Context, btcAmount float64, p PreTradeParams) (*SpotOrderResult, error) {
-	return s.marketBuyBTC(ctx, btcAmount, p, true)
+	return s.marketBuyBTC(ctx, btcAmount, p, false)
 }
 
 // MarketBuyBTCForRefill buys replacement BTC after the hedgeless LND spend.
@@ -488,11 +494,11 @@ func (s *Service) marketBuyBTC(ctx context.Context, btcAmount float64, p PreTrad
 	if p.RequiredCapital <= 0 {
 		return nil, fmt.Errorf("required_capital must be greater than zero")
 	}
-	if runPreTrade && s.bidChecker == nil {
-		return nil, fmt.Errorf("bid pre-trade checker not configured")
-	}
 	if runPreTrade {
-		if err := s.bidChecker.RunAll(ctx, p); err != nil {
+		if s.preTradeChecker == nil {
+			return nil, fmt.Errorf("pre-trade checker not configured")
+		}
+		if err := s.preTradeChecker.RunAll(ctx, p); err != nil {
 			return nil, err
 		}
 	}

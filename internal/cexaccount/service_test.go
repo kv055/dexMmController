@@ -150,7 +150,7 @@ func TestHedgePositionFromTransactionActiveVsPast(t *testing.T) {
 
 	active := hedgePositionFromTransaction(db.Transaction{
 		ID:                            1,
-		Direction:                     "BUY",
+		Direction:                     "buy",
 		Status:                        db.StatusCexTradeSuccessful,
 		CexBitcoinAmount:              0.01,
 		CexCounterPositionOpenDetails: openDetails,
@@ -163,7 +163,7 @@ func TestHedgePositionFromTransactionActiveVsPast(t *testing.T) {
 
 	past := db.Transaction{
 		ID:                             2,
-		Direction:                      "SELL",
+		Direction:                      "sell",
 		Status:                         db.StatusDexPositionReleased,
 		CexCounterPositionOpenDetails:  openDetails,
 		CexCounterPositionCloseDetails: closeDetails,

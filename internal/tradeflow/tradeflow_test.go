@@ -10,13 +10,14 @@ import (
 
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
+	"dexMmController/internal/pretrade"
 	"dexMmController/internal/txroute"
 	lnd "dexMmController/internal/wallethub"
 )
 
 // fakeService is a controllable Service for unit tests.
 type fakeService struct {
-	preTradeReport *cexaccount.Report
+	preTradeReport *pretrade.Report
 	preTradeErr    error
 	spotResult     *cexaccount.SpotOrderResult
 	spotErr        error
@@ -43,12 +44,12 @@ type fakeService struct {
 	lastWithdrawClientReqID string
 }
 
-func (f *fakeService) PreTradeCheck(_ context.Context, _ cexaccount.PreTradeParams) (*cexaccount.Report, error) {
+func (f *fakeService) PreTradeCheck(_ context.Context, _ pretrade.Params) (*pretrade.Report, error) {
 	f.preTradeCallCount++
 	return f.preTradeReport, f.preTradeErr
 }
 
-func (f *fakeService) MarketBuyBTC(_ context.Context, _ float64, _ cexaccount.PreTradeParams) (*cexaccount.SpotOrderResult, error) {
+func (f *fakeService) MarketBuyBTC(_ context.Context, _ float64, _ pretrade.Params) (*cexaccount.SpotOrderResult, error) {
 	f.spotCallCount++
 	return f.spotResult, f.spotErr
 }
@@ -174,7 +175,7 @@ func persistOrder() Order {
 
 func happyFake() *fakeService {
 	return &fakeService{
-		preTradeReport: &cexaccount.Report{
+		preTradeReport: &pretrade.Report{
 			OK:                 true,
 			LNDWithdrawAddress: "bc1qtest",
 		},
@@ -251,7 +252,7 @@ func TestRun_HappyPath(t *testing.T) {
 
 func TestRun_PreTradeCheckFails_ShortCircuits(t *testing.T) {
 	svc := happyFake()
-	svc.preTradeReport = &cexaccount.Report{
+	svc.preTradeReport = &pretrade.Report{
 		OK: false,
 		Checks: []cexaccount.CheckResult{
 			{Name: "capital", Passed: false, Message: "insufficient balance"},
@@ -275,7 +276,7 @@ func TestRun_PreTradeCheckFails_ShortCircuits(t *testing.T) {
 
 func TestRun_PreTradePaymentSetupFails_ShortCircuits(t *testing.T) {
 	svc := happyFake()
-	svc.preTradeReport = &cexaccount.Report{
+	svc.preTradeReport = &pretrade.Report{
 		OK: false,
 		Checks: []cexaccount.CheckResult{
 			{Name: "payment_setup", Passed: false, Message: "pre-trade check failed: no Revolut account in Trading Accounts"},
@@ -356,7 +357,7 @@ func TestRun_WithdrawUsesPreTradeAddress(t *testing.T) {
 
 func TestRun_PreTradeOKWithoutAddress_SkipsWithdraw(t *testing.T) {
 	svc := happyFake()
-	svc.preTradeReport = &cexaccount.Report{OK: true}
+	svc.preTradeReport = &pretrade.Report{OK: true}
 
 	_, err := New(svc, nil).Run(context.Background(), validOrder())
 	if err == nil {

@@ -88,7 +88,7 @@ func (w *Worker) SetLND(client dexaccount.LNDRelay) {
 	w.lnd = client
 }
 
-// RunPeriodic polls Initiated and Arrived BUY transactions on interval until ctx is cancelled.
+// RunPeriodic polls initiated and arrived buy transactions on interval until ctx is cancelled.
 func (w *Worker) RunPeriodic(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -111,7 +111,7 @@ func (w *Worker) runOnce(ctx context.Context) {
 		db.StatusCexCryptoWithdrawalInitiated,
 		db.StatusCexCryptoWithdrawalArrived,
 	}
-	txs, err := w.repo.GetTransactionsByStatuses(statuses, "BUY")
+	txs, err := w.repo.GetTransactionsByStatuses(statuses, "buy")
 	if err != nil {
 		log.Printf("dexrelay: list transactions: %v", err)
 		return
@@ -392,7 +392,7 @@ func (w *Worker) finishRelay(tx *db.Transaction, meta db.DexOfferMeta, relayDeta
 
 // deriveExchange resolves the DEX venue slug from the offer metadata, falling back to
 // the transaction's Dex column. The slug carries the bisq vs bisq2 distinction that the
-// Dex column ("Bisq") does not.
+// Dex column ("bisq") does not.
 func deriveExchange(tx *db.Transaction, meta db.DexOfferMeta) string {
 	if ex := strings.TrimSpace(meta.Exchange()); ex != "" {
 		return ex

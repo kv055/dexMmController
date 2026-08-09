@@ -13,6 +13,7 @@ import (
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
+	"dexMmController/internal/pretrade"
 	"dexMmController/internal/tradeflow"
 	"dexMmController/internal/txroute"
 )
@@ -78,7 +79,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital must be greater than zero"))
 		return
 	}
-	tradeMode, err := cexaccount.ParseTradeMode(req.TradeMode)
+	tradeMode, err := pretrade.ParseTradeMode(req.TradeMode)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -88,7 +89,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero for Swap_main2lightning routes"))
 		return
 	}
-	if tradeMode == cexaccount.TradeModeHedgelessDoubleCollateral {
+	if tradeMode == pretrade.TradeModeHedgelessDoubleCollateral {
 		// Keep this public boundary aligned with tradeflow.validate. The duplicate
 		// checks give clients a 400 before any execution object is invoked, while
 		// TradeFlow still protects non-HTTP callers.
@@ -247,7 +248,7 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital must be greater than zero"))
 		return
 	}
-	tradeMode, err := cexaccount.ParseTradeMode(req.TradeMode)
+	tradeMode, err := pretrade.ParseTradeMode(req.TradeMode)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -263,7 +264,7 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	report, err := s.cexAccount.PreTradeCheck(r.Context(), cexaccount.PreTradeParams{
+	report, err := s.cexAccount.PreTradeCheck(r.Context(), pretrade.Params{
 		Provider:             provider,
 		FiatCurrency:         req.FiatCurrency,
 		RequiredCapital:      req.RequiredCapital,

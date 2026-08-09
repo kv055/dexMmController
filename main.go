@@ -31,12 +31,13 @@ import (
 	"dexMmController/internal/healthcheck"
 	"dexMmController/internal/hedgestream"
 	"dexMmController/internal/lndhealth"
-	"dexMmController/internal/obs"
-	"dexMmController/internal/openclaw"
+	mmmetrics "dexMmController/internal/metrics"
 	"dexMmController/internal/premiumoffers"
+	"dexMmController/internal/pretrade"
 	"dexMmController/internal/tradeflow"
 	lnd "dexMmController/internal/wallethub"
 
+	"commons/credentialcrypto"
 	"commons/logging"
 	"commons/metrics"
 	"commons/mmcapabilities"
@@ -48,8 +49,8 @@ import (
 
 // paymentMethodSnapshot converts a payment_methods DB row into the pre-trade
 // checker's view of it.
-func paymentMethodSnapshot(row *db.PaymentMethod) *cexaccount.PaymentMethodSnapshot {
-	return &cexaccount.PaymentMethodSnapshot{
+func paymentMethodSnapshot(row *db.PaymentMethod) *pretrade.PaymentMethodSnapshot {
+	return &pretrade.PaymentMethodSnapshot{
 		Name:      row.Name,
 		Category:  row.Category,
 		AccountID: row.AccountID,
@@ -62,7 +63,6 @@ func paymentMethodSnapshot(row *db.PaymentMethod) *cexaccount.PaymentMethodSnaps
 func main() {
 	// ── Config ────────────────────────────────────────────────────────────────
 	databaseURL := resolveDatabaseURL()
-	openclawURL := envOr("OPENCLAW_URL", "")
 	hhBaseURL := envOr("HODLHODL_URL", "")
 	hhEscrowSeed := envOr("HODLHODL_ESCROW_SEED", "")
 	hhEscrowPaymentPassword := envOr("HODLHODL_ESCROW_PAYMENT_PASSWORD", "")
@@ -122,7 +122,7 @@ func main() {
 		defer func() { _ = shutdownTracing(context.Background()) }()
 	}
 	metricsReg := metrics.NewServiceRegistry("mmcontroller")
-	obs.Register(metricsReg.Registry)
+	mmmetrics.Register(metricsReg.Registry)
 	telegram.RegisterMetrics(metricsReg.Registry)
 	startupState := api.NewStartupState()
 	startupState.RegisterMetrics(metricsReg.Registry)
@@ -154,7 +154,7 @@ func main() {
 	capabilityStore := mmcapabilities.NewStore(rawDatabase, mmcapabilities.ParseMaxAge(os.Getenv("MM_CEX_CAPABILITY_MAX_AGE")))
 
 	repo := db.NewTransactionRepository(database)
-	obs.RegisterTradeStats(metricsReg.Registry, repo)
+	mmmetrics.RegisterTradeStats(metricsReg.Registry, repo)
 
 	lndAccount, err := repo.EnsureAccount(ctx, db.LNDAccountProvider)
 	if err != nil {
@@ -179,15 +179,6 @@ func main() {
 	}
 	// LND wallet bootstrap is defined below (lndInit) so it can run at startup when a
 	// password already exists, or on demand from the UI via POST /api/lnd/wallet/init.
-
-	// ── OpenClaw ──────────────────────────────────────────────────────────────
-	claw := openclaw.NewClient(openclawURL)
-	if openclawURL == "" {
-		log.Println("OPENCLAW_URL is not set; continuing without openclaw connection")
-	} else if err := claw.Connect(context.Background()); err != nil {
-		log.Printf("warning: failed to connect to openclaw at %s: %v", openclawURL, err)
-	}
-	defer func() { _ = claw.Close() }()
 
 	// ── Bitcoin ───────────────────────────────────────────────────────────────
 	btc := bitcoin.NewNetworkDataFetcher()
@@ -275,8 +266,8 @@ func main() {
 		RobosatsBaseURL:         robosatsURL,
 		TorProxyURL:             torProxyURL,
 	})
-	bidChecker := cexaccount.NewBidChecker(
-		cexaccount.BalanceFetcherFunc(func(ctx context.Context, provider, currency string) (float64, error) {
+	preTradeChecker := pretrade.NewPreTradeChecker(
+		pretrade.BalanceFetcherFunc(func(ctx context.Context, provider, currency string) (float64, error) {
 			b, err := cexAccountService.Balances(ctx, provider)
 			if err != nil {
 				return 0, err
@@ -288,7 +279,7 @@ func main() {
 			}
 			return 0, nil
 		}),
-		cexaccount.WhitelistFetcherFunc(func(ctx context.Context, provider string) ([]string, error) {
+		pretrade.WhitelistFetcherFunc(func(ctx context.Context, provider string) ([]string, error) {
 			addrs, err := cexAccountService.WithdrawalAddresses(ctx, provider)
 			if err != nil {
 				return nil, err
@@ -301,7 +292,7 @@ func main() {
 			}
 			return out, nil
 		}),
-		cexaccount.PermissionCheckerFunc(func(ctx context.Context, provider string) (map[string]string, error) {
+		pretrade.PermissionCheckerFunc(func(ctx context.Context, provider string) (map[string]string, error) {
 			canonical, err := cexaccount.CanonicalProvider(provider)
 			if err != nil || !cexaccount.IsCEXProvider(canonical) {
 				return nil, fmt.Errorf("unsupported CEX provider %q", provider)
@@ -333,15 +324,15 @@ func main() {
 			}
 			return combined, nil
 		}),
-		cexaccount.PaymentSetupFetcherFuncs{
-			MethodFn: func(ctx context.Context, name string) (*cexaccount.PaymentMethodSnapshot, error) {
+		pretrade.PaymentSetupFetcherFuncs{
+			MethodFn: func(ctx context.Context, name string) (*pretrade.PaymentMethodSnapshot, error) {
 				row, err := repo.GetPaymentMethodByName(ctx, name)
 				if err != nil || row == nil {
 					return nil, err
 				}
 				return paymentMethodSnapshot(row), nil
 			},
-			PickFn: func(ctx context.Context, names []string) (*cexaccount.PaymentMethodSnapshot, error) {
+			PickFn: func(ctx context.Context, names []string) (*pretrade.PaymentMethodSnapshot, error) {
 				row, err := repo.PickPaymentMethod(ctx, names)
 				if err != nil || row == nil {
 					return nil, err
@@ -353,7 +344,7 @@ func main() {
 				if err != nil || acct == nil {
 					return nil, err
 				}
-				return &cexaccount.FiatAccountSnapshot{
+				return &pretrade.FiatAccountSnapshot{
 					Provider:   acct.Provider,
 					Email:      acct.Email,
 					Phone:      acct.Phone,
@@ -365,22 +356,26 @@ func main() {
 				if err != nil || row == nil {
 					return nil, err
 				}
-				return &cexaccount.BankAccountSnapshot{
+				details, err := credentialcrypto.Decrypt(row.DetailsEncrypted)
+				if err != nil {
+					return nil, fmt.Errorf("decrypt bank account details: %w", err)
+				}
+				return &pretrade.BankAccountSnapshot{
 					Scheme:   row.Scheme,
-					Details:  cexaccount.ParseBankAccountDetails(row.Details),
+					Details:  pretrade.ParseBankAccountDetails([]byte(details)),
 					IsActive: row.IsActive,
 				}, nil
 			},
 		},
 		repo,
 	)
-	bidChecker.SetCommunicationGateway(telegramStore)
-	bidChecker.SetFiatControllerChecker(cexaccount.NewHTTPFiatControllerChecker(
+	preTradeChecker.SetCommunicationGateway(telegramStore)
+	preTradeChecker.SetFiatControllerChecker(cexaccount.NewHTTPFiatControllerChecker(
 		fiatControllerURL,
 		fiatControllerHeartbeatSecret,
 		&http.Client{Timeout: 5 * time.Second},
 	))
-	cexAccountService.WithBidChecker(bidChecker)
+	cexAccountService.WithPreTradeChecker(preTradeChecker)
 	dexRelayWorker := dexrelay.NewWorker(repo, cexAccountService, btc, dexTaker, dexPaymentResolver)
 	lndHealthChecker := lndhealth.NewChecker(repo, nil)
 	// hedgeStreamManager multiplexes each futures venue's live position feed to any
@@ -401,7 +396,7 @@ func main() {
 		WithDirectDestinationResolver(dexaccount.NewDirectResolver(bq)).
 		WithChainConfirmationSource(btc).
 		WithCapabilities(capabilityStore)
-	hc := healthcheck.NewHealthChecker(repo, claw, btc, hh, tradeFlow).
+	hc := healthcheck.NewHealthChecker(repo, btc, hh, tradeFlow).
 		WithRecoveryGracePeriod(parseAccountHealthInterval(envOr("TRADEFLOW_RECOVERY_GRACE", "3m"))).
 		WithPaymentResolver(dexPaymentResolver).
 		WithTelegramRelay(telegramSvc, anomalyNotifier).
@@ -509,8 +504,8 @@ func main() {
 
 		apiServer.WithLNDWallet(lndClient)
 		lndHealthChecker.SetClient(lndClient)
-		obs.SetLNDStatsSource(lndStatsFetcher(lndClient))
-		bidChecker.SetWallet(cexaccount.WalletSourceFunc(func(ctx context.Context) ([]string, error) {
+		mmmetrics.SetLNDStatsSource(lndStatsFetcher(lndClient))
+		preTradeChecker.SetWallet(pretrade.WalletSourceFunc(func(ctx context.Context) ([]string, error) {
 			props, err := lndClient.ListWalletAddresses(ctx)
 			if err != nil {
 				return nil, err
@@ -521,7 +516,7 @@ func main() {
 			}
 			return addrs, nil
 		}))
-		bidChecker.SetBTCBalance(cexaccount.BTCBalanceSourceFunc(func(ctx context.Context) (float64, error) {
+		preTradeChecker.SetBTCBalance(pretrade.BTCBalanceSourceFunc(func(ctx context.Context) (float64, error) {
 			bal, err := lndClient.OnChainBalance(ctx)
 			if err != nil {
 				return 0, err
@@ -539,7 +534,7 @@ func main() {
 			}
 			return float64(sats) / 1e8, nil
 		}))
-		bidChecker.SetLightningBalance(cexaccount.LightningBalanceSourceFuncs{
+		preTradeChecker.SetLightningBalance(pretrade.LightningBalanceSourceFuncs{
 			OutboundFn: func(ctx context.Context) (float64, error) {
 				bal, err := lndClient.ChannelBalance(ctx)
 				if err != nil {
@@ -569,7 +564,7 @@ func main() {
 				return float64(sats) / 1e8, nil
 			},
 		})
-		bidChecker.SetLightningChannels(cexaccount.LightningChannelSourceFunc(func(ctx context.Context) (bool, error) {
+		preTradeChecker.SetLightningChannels(pretrade.LightningChannelSourceFunc(func(ctx context.Context) (bool, error) {
 			channels, err := lndClient.ListChannels(ctx)
 			if err != nil {
 				return false, err
@@ -581,7 +576,7 @@ func main() {
 			}
 			return false, nil
 		}))
-		bidChecker.SetLNDOnline(cexaccount.LNDOnlineSourceFunc(func(ctx context.Context) error {
+		preTradeChecker.SetLNDOnline(pretrade.LNDOnlineSourceFunc(func(ctx context.Context) error {
 			return lndClient.HealthCheck(ctx)
 		}))
 		cexAccountService.WithLND(lndClient)
@@ -653,10 +648,10 @@ func main() {
 	}
 }
 
-// lndStatsFetcher adapts the live wallet client to the obs LND collector. Wired
-// here (not in obs) because obs must not import wallethub — wallethub pulls in
-// the CEX connectors, which already record into obs.
-func lndStatsFetcher(client *lnd.Client) obs.LNDStatsFunc {
+// lndStatsFetcher adapts the live wallet client to the metrics LND collector. Wired
+// here (not in metrics) because metrics must not import wallethub — wallethub pulls in
+// the CEX connectors, which already record into metrics.
+func lndStatsFetcher(client *lnd.Client) mmmetrics.LNDStatsFunc {
 	parseSat := func(raw string) float64 {
 		v, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
@@ -664,8 +659,8 @@ func lndStatsFetcher(client *lnd.Client) obs.LNDStatsFunc {
 		}
 		return v
 	}
-	return func(ctx context.Context) obs.LNDStats {
-		var s obs.LNDStats
+	return func(ctx context.Context) mmmetrics.LNDStats {
+		var s mmmetrics.LNDStats
 		if err := client.HealthCheck(ctx); err != nil {
 			return s
 		}

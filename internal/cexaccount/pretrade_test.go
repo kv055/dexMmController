@@ -308,7 +308,7 @@ func TestMessageTemplateMissingFailsForChatVenue(t *testing.T) {
 		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
 		okPaymentSetup(),
 	)
-	c.chatTemplates = fakeChatTemplates{}
+	c.SetChatTemplates(fakeChatTemplates{})
 	report := c.Run(context.Background(), PreTradeParams{
 		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "bisq2",
@@ -332,7 +332,7 @@ func TestMessageTemplatePresentPassesForChatVenue(t *testing.T) {
 	)
 	c.SetBTCBalance(BTCBalanceSourceFunc(func(context.Context) (float64, error) { return 0.01, nil }))
 	withLightningSources(c, 0.05, 0.05, true)
-	c.chatTemplates = fakeChatTemplates{"RoboSats|Revolut": "custom template"}
+	c.SetChatTemplates(fakeChatTemplates{"robosats|Revolut": "custom template"})
 	report := c.Run(context.Background(), PreTradeParams{
 		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500,
 		PaymentMethod: "Revolut", PaymentMethods: nil, Dex: "robosats",

@@ -12,6 +12,7 @@ import (
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
+	"dexMmController/internal/pretrade"
 	"dexMmController/internal/txroute"
 )
 
@@ -42,7 +43,7 @@ const (
 type hedgelessCEX interface {
 	// MarketBuyBTCForRefill skips the liquidity-pool pre-check. That check has
 	// already passed before funding, and must fail after the pool is spent.
-	MarketBuyBTCForRefill(ctx context.Context, btcAmount float64, p cexaccount.PreTradeParams) (*cexaccount.SpotOrderResult, error)
+	MarketBuyBTCForRefill(ctx context.Context, btcAmount float64, p pretrade.Params) (*cexaccount.SpotOrderResult, error)
 	// LNDPoolBalanceBTC returns the form of liquidity consumed by this DEX:
 	// confirmed on-chain BTC for Bisq/HodlHodl, and on-chain plus local channel
 	// liquidity for RoboSats.
@@ -107,7 +108,7 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 		}
 	}
 
-	preTrade := cexaccount.PreTradeParams{
+	preTrade := pretrade.Params{
 		Provider: order.Provider, FiatCurrency: order.FiatCurrency,
 		RequiredCapital:      order.RequiredCapital,
 		RequiredBTCLiquidity: order.RequiredBTCLiquidity,
@@ -303,7 +304,7 @@ func waitForBisqFunding(ctx context.Context, resolver directBalanceResolver, exc
 	}
 }
 
-func (tf *TradeFlow) startRefill(ctx context.Context, txID uint, order Order, preTrade cexaccount.PreTradeParams, lndAddress string, amountBTC float64, attempt int) (*cexaccount.SpotOrderResult, *WithdrawalResult, error) {
+func (tf *TradeFlow) startRefill(ctx context.Context, txID uint, order Order, preTrade pretrade.Params, lndAddress string, amountBTC float64, attempt int) (*cexaccount.SpotOrderResult, *WithdrawalResult, error) {
 	hc := tf.svc.(hedgelessCEX)
 	entry := refillAttempt{Attempt: attempt, RequestedBTC: amountBTC, CreatedAt: time.Now().UTC()}
 	// Persist intent before the market order. Market buys have no portable
@@ -358,7 +359,7 @@ func createHedgelessRow(store transactionStore, order Order, poolTarget float64,
 		return 0, err
 	}
 	tx := &db.Transaction{
-		Direction: "BUY", FiatAmount: order.FiatAmount, FiatCurrency: strings.ToUpper(strings.TrimSpace(order.FiatCurrency)),
+		Direction: "buy", FiatAmount: order.FiatAmount, FiatCurrency: strings.ToUpper(strings.TrimSpace(order.FiatCurrency)),
 		PaymentMethod: order.PaymentMethod, Cex: db.CexExchangeFromProvider(order.Provider), Dex: db.DexPlatformFromSlug(order.Dex),
 		Status: db.StatusHedgelessTradeStarted, TradeMode: order.TradeMode, DexOfferID: order.OfferID,
 		DexOfferCreation: meta, HubAddress: lndAddress, BTCPoolTargetBTC: poolTarget,
@@ -554,7 +555,7 @@ func (tf *TradeFlow) advanceRefill(ctx context.Context, tx *db.Transaction) erro
 			return nil
 		}
 		deficit := tx.BTCPoolTargetBTC - current
-		_, _, err := tf.startRefill(ctx, tx.ID, rc.order, cexaccount.PreTradeParams{
+		_, _, err := tf.startRefill(ctx, tx.ID, rc.order, pretrade.Params{
 			Provider: rc.order.Provider, FiatCurrency: rc.order.FiatCurrency, RequiredCapital: rc.order.RequiredCapital,
 			TradeMode: rc.order.TradeMode, Dex: rc.order.Dex, PaymentMethod: rc.order.PaymentMethod,
 		}, details.LNDAddress, deficit, 1)
@@ -633,7 +634,7 @@ func (tf *TradeFlow) advanceRefill(ctx context.Context, tx *db.Transaction) erro
 	// Fees or a partial fill can leave the pool slightly below its recorded
 	// target. Buy only the measured shortfall, and allow at most one correction.
 	deficit := tx.BTCPoolTargetBTC - current
-	_, _, err = tf.startRefill(ctx, tx.ID, rc.order, cexaccount.PreTradeParams{
+	_, _, err = tf.startRefill(ctx, tx.ID, rc.order, pretrade.Params{
 		Provider: rc.order.Provider, FiatCurrency: rc.order.FiatCurrency, RequiredCapital: rc.order.RequiredCapital,
 		TradeMode: rc.order.TradeMode, Dex: rc.order.Dex, PaymentMethod: rc.order.PaymentMethod,
 	}, details.LNDAddress, deficit, len(details.Attempts)+1)

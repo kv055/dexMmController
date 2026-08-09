@@ -1,4 +1,4 @@
-package cexaccount
+package pretrade
 
 import (
 	"context"
@@ -8,40 +8,17 @@ import (
 	"strings"
 	"sync"
 
+	"commons/mmcapabilities"
 	"commons/paymentmethods"
 	"dexMmController/internal/db"
 	"dexMmController/internal/txroute"
 )
 
-// Trade mode identifiers (aligned with commons/tradecost).
 const (
-	TradeModeHedgefullSingleCollateral = "hedgefull_single_collateral"
-	TradeModeHedgelessDoubleCollateral = "hedgeless_double_collateral"
+	PermSpotTrading    = mmcapabilities.PermSpotTrading
+	PermHedgePositions = mmcapabilities.PermHedgePositions
+	PermGranted        = mmcapabilities.StatusGranted
 )
-
-// PreTradeParams carries every input for bid-side pre-trade checks.
-type PreTradeParams struct {
-	Provider     string
-	FiatCurrency string
-	// RequiredCapital is the fiat amount to check on the exchange, in FiatCurrency units.
-	RequiredCapital float64
-	PaymentMethod   string
-	PaymentMethods  []string
-	Dex             string
-	// MarketSide is "bid" (sell BTC on DEX) or "ask" (buy BTC on DEX). Empty defaults to bid.
-	MarketSide string
-	// TradeMode selects permission / capital semantics. Empty defaults to
-	// hedgefull_single_collateral.
-	TradeMode string
-	// HedgeVenue is the futures venue for hedgefull mode (e.g. coinbase_futures).
-	// When it maps to a different exchange than Provider, hedge permissions are
-	// checked on that exchange separately (decoupled hedge).
-	HedgeVenue string
-	// RequiredBTCLiquidity is position_btc + security_deposit_btc. Required for
-	// the hedgeless on-chain liquidity-pool check and for Swap_main2lightning
-	// Lightning channel liquidity (any trade mode).
-	RequiredBTCLiquidity float64
-}
 
 // BidChecker runs all pre-trade checks for the bid side (buying BTC on a CEX).
 type BidChecker struct {
@@ -60,29 +37,6 @@ type BidChecker struct {
 	lndOnline         LNDOnlineSource
 }
 
-// NormalizeTradeMode returns a canonical trade mode, defaulting empty to hedgefull.
-func NormalizeTradeMode(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case TradeModeHedgelessDoubleCollateral, "hedgeless":
-		return TradeModeHedgelessDoubleCollateral
-	default:
-		return TradeModeHedgefullSingleCollateral
-	}
-}
-
-// ParseTradeMode validates an API-supplied mode while retaining the legacy
-// empty-default behavior.
-func ParseTradeMode(raw string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", TradeModeHedgefullSingleCollateral, "hedgefull":
-		return TradeModeHedgefullSingleCollateral, nil
-	case TradeModeHedgelessDoubleCollateral, "hedgeless":
-		return TradeModeHedgelessDoubleCollateral, nil
-	default:
-		return "", fmt.Errorf("unsupported trade_mode %q", raw)
-	}
-}
-
 // ProviderForHedgeVenue maps a futures venue id to its spot/account provider slug.
 func ProviderForHedgeVenue(venue string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(venue)) {
@@ -99,9 +53,10 @@ func ProviderForHedgeVenue(venue string) (string, error) {
 	}
 }
 
-// NewBidChecker creates a BidChecker. The wallet source is set lazily via SetWallet
-// because the LND client initialises asynchronously after startup.
-func NewBidChecker(balance BalanceFetcher, whitelist WhitelistFetcher, permissions PermissionChecker, paymentSetup PaymentSetupFetcher, chatTemplates ChatTemplateFetcher) *BidChecker {
+// NewPreTradeChecker creates the current pre-trade policy implementation. The
+// wallet source is set lazily via SetWallet because the LND client initialises
+// asynchronously after startup.
+func NewPreTradeChecker(balance BalanceFetcher, whitelist WhitelistFetcher, permissions PermissionChecker, paymentSetup PaymentSetupFetcher, chatTemplates ChatTemplateFetcher) *BidChecker {
 	return &BidChecker{
 		balance:       balance,
 		whitelist:     whitelist,
@@ -109,6 +64,11 @@ func NewBidChecker(balance BalanceFetcher, whitelist WhitelistFetcher, permissio
 		paymentSetup:  paymentSetup,
 		chatTemplates: chatTemplates,
 	}
+}
+
+// NewBidChecker is retained for source compatibility with older wiring.
+func NewBidChecker(balance BalanceFetcher, whitelist WhitelistFetcher, permissions PermissionChecker, paymentSetup PaymentSetupFetcher, chatTemplates ChatTemplateFetcher) *BidChecker {
+	return NewPreTradeChecker(balance, whitelist, permissions, paymentSetup, chatTemplates)
 }
 
 // SetWallet injects (or replaces) the wallet source. Safe to call concurrently.
@@ -160,33 +120,19 @@ func (c *BidChecker) SetFiatControllerChecker(checker FiatControllerChecker) {
 	c.fiatController = checker
 }
 
+// SetChatTemplates injects the venue message-template source.
+func (c *BidChecker) SetChatTemplates(fetcher ChatTemplateFetcher) {
+	c.chatTemplates = fetcher
+}
+
 // CheckResult is the outcome of a single named pre-trade check.
-type CheckResult struct {
-	Name    string `json:"name"`
-	Label   string `json:"label"`
-	Passed  bool   `json:"passed"`
-	Message string `json:"message,omitempty"`
-}
-
-// Report is the full result of running every pre-trade check. OK is true only when
-// every check passed.
-type Report struct {
-	OK                 bool          `json:"ok"`
-	Checks             []CheckResult `json:"checks"`
-	LNDWithdrawAddress string        `json:"lnd_withdraw_address,omitempty"`
-	// ResolvedPaymentMethod is the catalog method the payment check validated —
-	// either the explicitly requested one or the highest-priority linked+active
-	// method among the offer's accepted list.
-	ResolvedPaymentMethod string `json:"resolved_payment_method,omitempty"`
-}
-
 // Run executes every pre-trade check to completion — it never short-circuits on the
 // first failure — and returns a per-check Report.
 //
 // Checks are ordered by logical dependency groups so the UI can render them
 // coherently:
 //  1. Capital   — exchange fiat (+ hedgeless LND pool; Lightning outbound/inbound
-//                 when route is Swap_main2lightning — complementary checks)
+//     when route is Swap_main2lightning — complementary checks)
 //  2. Exchange  — API permissions, LND online, withdrawal whitelist
 //  3. Payment   — account setup, message template
 //  4. Ops       — communication gateway, Fiat Controller service + channels
@@ -196,7 +142,7 @@ type Report struct {
 // catalog row with the highest priority is picked. Dex is the DEX venue slug
 // (e.g. "bisq2", "robosats") the offer belongs to — used only to scope the
 // message-template check to chat-style venues.
-func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
+func (c *BidChecker) Run(ctx context.Context, p Params) Report {
 	provider := p.Provider
 	tradeMode := NormalizeTradeMode(p.TradeMode)
 	isHedgeless := tradeMode == TradeModeHedgelessDoubleCollateral
@@ -312,7 +258,7 @@ func (c *BidChecker) Run(ctx context.Context, p PreTradeParams) Report {
 
 // RunAll runs every check and returns an aggregated error listing all failures,
 // or nil when all checks pass.
-func (c *BidChecker) RunAll(ctx context.Context, p PreTradeParams) error {
+func (c *BidChecker) RunAll(ctx context.Context, p Params) error {
 	report := c.Run(ctx, p)
 	if report.OK {
 		return nil

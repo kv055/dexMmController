@@ -1,4 +1,4 @@
-package cexaccount
+package pretrade
 
 import (
 	"context"

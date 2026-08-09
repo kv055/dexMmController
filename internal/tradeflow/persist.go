@@ -67,7 +67,7 @@ func createTradeflowRow(store transactionStore, order Order, target string, meth
 	}
 
 	tx := &db.Transaction{
-		Direction:     "BUY",
+		Direction:     "buy",
 		FiatAmount:    order.FiatAmount,
 		FiatCurrency:  fiatCurrency,
 		PaymentMethod: strings.TrimSpace(order.PaymentMethod),

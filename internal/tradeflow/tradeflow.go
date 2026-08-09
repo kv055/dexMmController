@@ -10,7 +10,8 @@ import (
 	"commons/mmcapabilities"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/dexaccount"
-	"dexMmController/internal/obs"
+	"dexMmController/internal/metrics"
+	"dexMmController/internal/pretrade"
 	"dexMmController/internal/txroute"
 	lnd "dexMmController/internal/wallethub"
 )
@@ -122,8 +123,8 @@ type WithdrawalResult struct {
 
 // Service is the subset of cexaccount.Service used by TradeFlow.
 type Service interface {
-	PreTradeCheck(ctx context.Context, p cexaccount.PreTradeParams) (*cexaccount.Report, error)
-	MarketBuyBTC(ctx context.Context, btcAmount float64, p cexaccount.PreTradeParams) (*cexaccount.SpotOrderResult, error)
+	PreTradeCheck(ctx context.Context, p pretrade.Params) (*pretrade.Report, error)
+	MarketBuyBTC(ctx context.Context, btcAmount float64, p pretrade.Params) (*cexaccount.SpotOrderResult, error)
 	OpenHedge(ctx context.Context, venue, side string, btcNotional, leverage float64) (*cexaccount.HedgeOpenResult, error)
 	LiveHedgePosition(ctx context.Context, venue string) (*cexaccount.HedgeSnapshot, error)
 	WithdrawSpotToLND(ctx context.Context, rawProvider string, amountBTC float64, lndAddress, clientRequestID string) (*lnd.WithdrawFromExchangeResult, error)
@@ -238,7 +239,7 @@ func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 		} else {
 			res, err = tf.runAsk(ctx, order)
 		}
-		obs.TradeflowRuns.WithLabelValues(side, obs.Result(err)).Inc()
+		metrics.TradeflowRuns.WithLabelValues(side, metrics.Result(err)).Inc()
 		return res, err
 	default:
 		return nil, fmt.Errorf("tradeflow: unsupported market side %q", order.MarketSide)
@@ -288,7 +289,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	marketSide := txroute.NormalizeSide(order.MarketSide)
 	method := txroute.MethodFor(order.Dex, marketSide)
 
-	preTrade := cexaccount.PreTradeParams{
+	preTrade := pretrade.Params{
 		Provider:             order.Provider,
 		FiatCurrency:         order.FiatCurrency,
 		RequiredCapital:      order.RequiredCapital,
@@ -344,8 +345,8 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	// Step 2: spot market buy.
 	spotStart := time.Now()
 	spot, err := tf.svc.MarketBuyBTC(ctx, order.BTCAmount, preTrade)
-	obs.OrderDuration.WithLabelValues(order.Provider, "spot").Observe(time.Since(spotStart).Seconds())
-	obs.OrdersPlaced.WithLabelValues(order.Provider, "spot", obs.Result(err)).Inc()
+	metrics.OrderDuration.WithLabelValues(order.Provider, "spot").Observe(time.Since(spotStart).Seconds())
+	metrics.OrdersPlaced.WithLabelValues(order.Provider, "spot", metrics.Result(err)).Inc()
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: spot buy failed: %w", err)
 	}
@@ -368,7 +369,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	// hard failure means we hold unhedged BTC — recorded as HedgeFailedNeedsReview.
 	hedge, err := tf.openHedgeWithRetry(ctx, order)
 	if err != nil {
-		obs.HedgeFailures.WithLabelValues(order.HedgeVenue).Inc()
+		metrics.HedgeFailures.WithLabelValues(order.HedgeVenue).Inc()
 		if persist {
 			if perr := markHedgeFailed(tf.store, txID, spot); perr != nil {
 				slog.Error("tradeflow: failed to persist HedgeFailedNeedsReview", "transaction_id", txID, "err", perr)
@@ -403,8 +404,8 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	}
 	wdStart := time.Now()
 	wd, err := tf.svc.WithdrawSpotToLND(ctx, order.Provider, filledBTC, target, clientReqID)
-	obs.OrderDuration.WithLabelValues(order.Provider, "withdrawal").Observe(time.Since(wdStart).Seconds())
-	obs.OrdersPlaced.WithLabelValues(order.Provider, "withdrawal", obs.Result(err)).Inc()
+	metrics.OrderDuration.WithLabelValues(order.Provider, "withdrawal").Observe(time.Since(wdStart).Seconds())
+	metrics.OrdersPlaced.WithLabelValues(order.Provider, "withdrawal", metrics.Result(err)).Inc()
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: withdrawal failed (spot order_id=%s, hedge open): %w", spot.OrderID, err)
 	}
@@ -442,7 +443,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 // returning the messages of any blocking failures. The "whitelist" check verifies that
 // an LND hub address is whitelisted at the CEX — only relevant for hub/swap routes; the
 // direct route withdraws to the bisq wallet instead, so its failure is not blocking.
-func preTradePassed(report *cexaccount.Report, method txroute.Method) (bool, []string) {
+func preTradePassed(report *pretrade.Report, method txroute.Method) (bool, []string) {
 	var failed []string
 	for _, chk := range report.Checks {
 		if chk.Passed {
@@ -459,7 +460,7 @@ func preTradePassed(report *cexaccount.Report, method txroute.Method) (bool, []s
 // resolveWithdrawTarget returns the address the CEX withdrawal is sent to: the bisq
 // wallet's funding address for the direct route, or the whitelisted LND hub address for
 // the hub/swap routes.
-func (tf *TradeFlow) resolveWithdrawTarget(ctx context.Context, order Order, method txroute.Method, report *cexaccount.Report) (string, error) {
+func (tf *TradeFlow) resolveWithdrawTarget(ctx context.Context, order Order, method txroute.Method, report *pretrade.Report) (string, error) {
 	if method == txroute.Direct {
 		if tf.directResolver == nil {
 			return "", fmt.Errorf("tradeflow: direct route (%s) requires a DEX wallet resolver, none configured", order.Dex)
@@ -496,8 +497,8 @@ func (tf *TradeFlow) openHedgeWithRetry(ctx context.Context, order Order) (*cexa
 	for attempt := 1; attempt <= hedgeMaxAttempts; attempt++ {
 		attemptStart := time.Now()
 		hedge, err := tf.svc.OpenHedge(ctx, order.HedgeVenue, order.HedgeSide, order.HedgeNotionalBTC, order.Leverage)
-		obs.OrderDuration.WithLabelValues(order.HedgeVenue, "hedge").Observe(time.Since(attemptStart).Seconds())
-		obs.OrdersPlaced.WithLabelValues(order.HedgeVenue, "hedge", obs.Result(err)).Inc()
+		metrics.OrderDuration.WithLabelValues(order.HedgeVenue, "hedge").Observe(time.Since(attemptStart).Seconds())
+		metrics.OrdersPlaced.WithLabelValues(order.HedgeVenue, "hedge", metrics.Result(err)).Inc()
 		if err == nil {
 			return hedge, nil
 		}

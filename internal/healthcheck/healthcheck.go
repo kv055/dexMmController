@@ -13,7 +13,6 @@ import (
 	"dexMmController/internal/dexnotify"
 	"dexMmController/internal/exchangeconnectors/dex/bisq"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
-	"dexMmController/internal/openclaw"
 )
 
 // defaultRecoveryGracePeriod is how long a row must sit in an intermediate tradeflow
@@ -33,7 +32,6 @@ type TradeflowRecoverer interface {
 // actual state against external systems, advancing the status where appropriate.
 type HealthChecker struct {
 	repo                *db.TransactionRepository
-	openclaw            *openclaw.Client
 	btc                 *bitcoin.NetworkDataFetcher
 	hodlhodl            *hodlhodl.Client
 	bisq                *bisq.Client
@@ -47,10 +45,9 @@ type HealthChecker struct {
 // NewHealthChecker creates a health checker. recoverer drives recovery of stuck
 // tradeflow rows; it may be nil to disable tradeflow recovery (those states then
 // no-op rather than erroring).
-func NewHealthChecker(repo *db.TransactionRepository, oc *openclaw.Client, btc *bitcoin.NetworkDataFetcher, hh *hodlhodl.Client, recoverer TradeflowRecoverer) *HealthChecker {
+func NewHealthChecker(repo *db.TransactionRepository, btc *bitcoin.NetworkDataFetcher, hh *hodlhodl.Client, recoverer TradeflowRecoverer) *HealthChecker {
 	return &HealthChecker{
 		repo:                repo,
-		openclaw:            oc,
 		btc:                 btc,
 		hodlhodl:            hh,
 		recoverer:           recoverer,
@@ -128,10 +125,8 @@ func (h *HealthChecker) Run(ctx context.Context) error {
 // verify dispatches to the appropriate scenario based on the current status.
 func (h *HealthChecker) verify(ctx context.Context, tx *db.Transaction) error {
 	switch tx.Status {
-	case db.StatusFiatToCexInitiated:
-		return h.verifyFiatToCexInitiated(ctx, tx)
-	case db.StatusFiatToCexArrived:
-		return h.verifyFiatToCexArrived(ctx, tx)
+	case db.StatusFiatToCexInitiated, db.StatusFiatToCexArrived:
+		return nil // bank-transfer progression is no longer managed by mm-controller.
 	case db.StatusCexTradeflowStarted:
 		return h.verifyCexTradeflowStarted(ctx, tx)
 	case db.StatusHedgeFailedNeedsReview:
@@ -151,7 +146,7 @@ func (h *HealthChecker) verify(ctx context.Context, tx *db.Transaction) error {
 	case db.StatusDexPositionTaken:
 		return h.verifyDexPositionTaken(ctx, tx)
 	case db.StatusDexFiatHasArrived:
-		return h.verifyDexFiatHasArrived(ctx, tx)
+		return nil // BTC release is handled by dexrelease after external confirmation.
 	case db.StatusDexPositionReleased:
 		return h.verifyDexPositionReleased(ctx, tx)
 	default:
@@ -373,21 +368,6 @@ func (h *HealthChecker) verifyDexPositionTaken(ctx context.Context, tx *db.Trans
 	return nil
 }
 
-// verifyDexFiatHasArrived asks the local openclaw instance whether the fiat
-// payment has actually arrived in the bank account. Advances to
-// DexPositionReleased if confirmed, so the BTC release can be triggered.
-func (h *HealthChecker) verifyDexFiatHasArrived(ctx context.Context, tx *db.Transaction) error {
-	arrived, err := h.openclaw.PollBankTxArrivedFromDex(ctx, fmt.Sprintf("tx-%d", tx.ID), 5*time.Second)
-	if err != nil {
-		return fmt.Errorf("verifyDexFiatHasArrived: openclaw poll failed: %w", err)
-	}
-	if !arrived {
-		return fmt.Errorf("verifyDexFiatHasArrived: fiat not yet confirmed in bank account")
-	}
-	// Fiat confirmed — caller should now trigger BTC release on the DEX.
-	return nil
-}
-
 // verifyDexPositionReleased connects to the DEX specified in tx.Dex and checks
 // whether the BTC has actually been released to the buyer.
 func (h *HealthChecker) verifyDexPositionReleased(ctx context.Context, tx *db.Transaction) error {
@@ -411,25 +391,5 @@ func (h *HealthChecker) verifyDexPositionReleased(ctx context.Context, tx *db.Tr
 	default:
 		return fmt.Errorf("verifyDexPositionReleased: unknown DEX %q", tx.Dex)
 	}
-	return nil
-}
-
-// verifyFiatToCexInitiated asks openclaw (the bank gateway) whether the fiat
-// wire to the CEX has been sent. The transaction ID is used as the openclaw
-// reference code, matching the pattern used for DEX fiat checks.
-func (h *HealthChecker) verifyFiatToCexInitiated(ctx context.Context, tx *db.Transaction) error {
-	arrived, err := h.openclaw.BankTxHasBeenSentToCex(ctx, fmt.Sprintf("tx-%d", tx.ID))
-	if err != nil {
-		return fmt.Errorf("verifyFiatToCexInitiated: openclaw check failed: %w", err)
-	}
-	if arrived {
-		tx.Status = db.StatusFiatToCexArrived
-		return h.repo.UpdateTransaction(tx)
-	}
-	return nil
-}
-
-// verifyFiatToCexArrived is handled by the tradeflow orchestrator for bid rows.
-func (h *HealthChecker) verifyFiatToCexArrived(_ context.Context, _ *db.Transaction) error {
 	return nil
 }

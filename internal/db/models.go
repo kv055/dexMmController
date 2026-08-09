@@ -46,8 +46,8 @@ type BankAccount struct {
 	AccountID uint `json:"account_id"`
 	// Scheme identifies the payment scheme (e.g. iban_bic).
 	Scheme string `json:"scheme"`
-	// Details holds scheme-specific fields (iban, bic, …).
-	Details json.RawMessage `gorm:"type:jsonb" json:"details"`
+	// DetailsEncrypted holds encrypted scheme-specific fields (iban, bic, …).
+	DetailsEncrypted string `json:"-"`
 	// IsActive reports whether this bank account is active.
 	IsActive bool `json:"is_active"`
 }
@@ -95,21 +95,21 @@ type CexExchange string
 
 const (
 	// CexBinance is the cex binance value.
-	CexBinance CexExchange = "Binance"
+	CexBinance CexExchange = "binance"
 	// CexKraken is the cex kraken value.
-	CexKraken CexExchange = "Kraken"
+	CexKraken CexExchange = "kraken"
 	// CexCoinbase is the cex coinbase value.
-	CexCoinbase CexExchange = "Coinbase"
+	CexCoinbase CexExchange = "coinbase"
 	// CexBybit is the cex bybit value.
-	CexBybit CexExchange = "Bybit"
+	CexBybit CexExchange = "bybit"
 	// CexOKX is the cex okx value.
-	CexOKX CexExchange = "OKX"
+	CexOKX CexExchange = "okx"
 	// CexBitfinex is the cex bitfinex value.
-	CexBitfinex CexExchange = "Bitfinex"
+	CexBitfinex CexExchange = "bitfinex"
 	// CexGemini is the cex gemini value.
-	CexGemini CexExchange = "Gemini"
+	CexGemini CexExchange = "gemini"
 	// CexBitStamp is the cex bit stamp value.
-	CexBitStamp CexExchange = "Bitstamp"
+	CexBitStamp CexExchange = "bitstamp"
 )
 
 // // CexHedgingPositionType represents the type of hedging position on a CEX
@@ -126,15 +126,15 @@ type DexPlatform string
 
 const (
 	// DexBisq is the dex bisq value (bisq v1; Direct route).
-	DexBisq DexPlatform = "Bisq"
+	DexBisq DexPlatform = "bisq"
 	// DexBisq2 is the dex bisq2 value (Hub route).
-	DexBisq2 DexPlatform = "Bisq2"
+	DexBisq2 DexPlatform = "bisq2"
 	// DexHodlHodl is the dex hodl hodl value (Hub route).
-	DexHodlHodl DexPlatform = "HodlHodl"
+	DexHodlHodl DexPlatform = "hodlhodl"
 	// DexRoboSats is the dex robo sats value (Swap route).
-	DexRoboSats DexPlatform = "RoboSats"
+	DexRoboSats DexPlatform = "robosats"
 	// DexPeachBitcoin is the dex peach bitcoin value (Hub route).
-	DexPeachBitcoin DexPlatform = "PeachBitcoin"
+	DexPeachBitcoin DexPlatform = "peachbitcoin"
 )
 
 // TransactionStatus represents the lifecycle state of a transaction
@@ -190,7 +190,7 @@ type Transaction struct {
 	ID uint `gorm:"primaryKey" json:"id"`
 
 	// Direction is the direction value for the transaction.
-	Direction string `gorm:"index" json:"direction"` // "BUY" or "SELL"
+	Direction string `gorm:"index" json:"direction"` // "buy" or "sell"
 	// FiatAmount is a fiat-denominated fiat amount value.
 	FiatAmount float64 `json:"fiat_amount"`
 	// FiatCurrency is a fiat-denominated fiat currency value.

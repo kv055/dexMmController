@@ -8,6 +8,7 @@ import (
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
+	"dexMmController/internal/pretrade"
 )
 
 type hedgelessFakeService struct {
@@ -27,7 +28,7 @@ func (s *hedgelessFakeService) LNDPoolBalanceBTC(context.Context, string) (float
 	return v, nil
 }
 
-func (s *hedgelessFakeService) MarketBuyBTCForRefill(_ context.Context, amount float64, _ cexaccount.PreTradeParams) (*cexaccount.SpotOrderResult, error) {
+func (s *hedgelessFakeService) MarketBuyBTCForRefill(_ context.Context, amount float64, _ pretrade.Params) (*cexaccount.SpotOrderResult, error) {
 	s.refillCalls++
 	return &cexaccount.SpotOrderResult{Provider: "binance", OrderID: "refill-1", Status: "filled", Execution: &cexaccount.ExecutionDetail{FilledBTC: amount}}, nil
 }
@@ -77,7 +78,7 @@ func hedgelessOrder(dex string) Order {
 
 func hedgelessService() *hedgelessFakeService {
 	base := happyFake()
-	base.preTradeReport = &cexaccount.Report{OK: true, LNDWithdrawAddress: "bc1qlnd"}
+	base.preTradeReport = &pretrade.Report{OK: true, LNDWithdrawAddress: "bc1qlnd"}
 	return &hedgelessFakeService{fakeService: base, balances: []float64{0.10, 0.08}}
 }
 

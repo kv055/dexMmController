@@ -373,7 +373,7 @@ func (r *TransactionRepository) ListTransactions(filters TransactionFilters) ([]
 }
 
 // GetTransactionsByStatuses returns transactions matching any of the given statuses.
-// When direction is non-empty, results are limited to that direction (BUY/SELL).
+// When direction is non-empty, results are limited to that direction (buy/sell).
 func (r *TransactionRepository) GetTransactionsByStatuses(statuses []TransactionStatus, direction string) ([]Transaction, error) {
 	if len(statuses) == 0 {
 		return nil, nil
@@ -381,7 +381,7 @@ func (r *TransactionRepository) GetTransactionsByStatuses(statuses []Transaction
 	var transactions []Transaction
 	query := r.db.Where("status IN ?", statuses)
 	if dir := strings.TrimSpace(direction); dir != "" {
-		query = query.Where("direction = ?", strings.ToUpper(dir))
+		query = query.Where("direction = ?", strings.ToLower(dir))
 	}
 	if err := query.Order("created_at ASC").Find(&transactions).Error; err != nil {
 		return nil, fmt.Errorf("failed to get transactions by statuses: %w", err)
@@ -403,10 +403,10 @@ func (r *TransactionRepository) GetActiveHedgelessRefills() ([]Transaction, erro
 	return transactions, nil
 }
 
-// GetTransactionsByDirection retrieves transactions filtered by direction (BUY/SELL)
+// GetTransactionsByDirection retrieves transactions filtered by direction (buy/sell).
 func (r *TransactionRepository) GetTransactionsByDirection(direction string) ([]Transaction, error) {
 	var transactions []Transaction
-	if err := r.db.Where("direction = ?", direction).Order("created_at DESC").Find(&transactions).Error; err != nil {
+	if err := r.db.Where("direction = ?", strings.ToLower(strings.TrimSpace(direction))).Order("created_at DESC").Find(&transactions).Error; err != nil {
 		return nil, fmt.Errorf("failed to get transactions by direction: %w", err)
 	}
 	return transactions, nil
@@ -420,7 +420,7 @@ func (r *TransactionRepository) applyTransactionFilters(query *gorm.DB, filters 
 		query = query.Where("status = ?", status)
 	}
 	if direction := strings.TrimSpace(filters.Direction); direction != "" {
-		query = query.Where("direction = ?", strings.ToUpper(direction))
+		query = query.Where("direction = ?", strings.ToLower(direction))
 	}
 	if cex := strings.TrimSpace(filters.CEX); cex != "" {
 		query = query.Where("cex = ?", cex)
