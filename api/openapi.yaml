@@ -317,6 +317,27 @@ paths:
           description: Successful response
         default:
           description: Error response
+  '/api/transactional-liquidity':
+    get:
+      operationId: getApiTransactionalLiquidity
+      tags: ['transactional-liquidity']
+      summary: 'GET /api/transactional-liquidity'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
+    put:
+      operationId: putApiTransactionalLiquidity
+      tags: ['transactional-liquidity']
+      summary: 'PUT /api/transactional-liquidity'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
   '/api/transactions':
     get:
       operationId: getApiTransactions
