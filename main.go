@@ -32,7 +32,7 @@ import (
 	"dexMmController/internal/hedgestream"
 	"dexMmController/internal/lndhealth"
 	mmmetrics "dexMmController/internal/metrics"
-	"dexMmController/internal/premiumoffers"
+	// "dexMmController/internal/premiumoffers" // Disabled: premium-offer watcher is not currently in use.
 	"dexMmController/internal/pretrade"
 	"dexMmController/internal/tradeflow"
 	lnd "dexMmController/internal/wallethub"
@@ -81,12 +81,10 @@ func main() {
 	bisq2APIPassword := envOr("BISQ2_API_PASSWORD", "")
 	telegramCfg := telegram.LoadConfig("DEXMM")
 	torProxyURL := envOr("TOR_PROXY_URL", "")
-	offerPremiumWSSURL := envOr("OFFER_PREMIUM_WSS_URL", "")
-	// Internal secret for the secret-gated /internal/ws/live_offers route on
-	// unified-api. Empty when OFFER_PREMIUM_WSS_URL points at the browser
-	// session-cookie path or when running without INTERNAL_API_SECRET
-	// (unified-api then fails the dial closed unless ALLOW_INSECURE_INTERNAL).
-	offerPremiumWSSSecret := os.Getenv("INTERNAL_API_SECRET")
+	// offerPremiumWSSURL := envOr("OFFER_PREMIUM_WSS_URL", "")
+	// Internal secret for the disabled premium-offer watcher. It formerly
+	// connected to unified-api's /internal/ws/live_offers route.
+	// offerPremiumWSSSecret := os.Getenv("INTERNAL_API_SECRET")
 	// The same secret gates every inbound API/WS route (except health, metrics
 	// and the self-authenticating webhooks). Running without it leaves wallet
 	// and trading endpoints open to anything on the Docker network, so refuse
@@ -154,6 +152,7 @@ func main() {
 	capabilityStore := mmcapabilities.NewStore(rawDatabase, mmcapabilities.ParseMaxAge(os.Getenv("MM_CEX_CAPABILITY_MAX_AGE")))
 
 	repo := db.NewTransactionRepository(database)
+	transactionalLiquiditySettingsRepo := db.NewTransactionalLiquiditySettingsRepository(database)
 	mmmetrics.RegisterTradeStats(metricsReg.Registry, repo)
 
 	lndAccount, err := repo.EnsureAccount(ctx, db.LNDAccountProvider)
@@ -448,7 +447,8 @@ func main() {
 			return result
 		}).
 		WithTelegramRelay(chatRelay).
-		WithTelegramSettings(telegramSettingsRepo, telegramStore, anomalyNotifier)
+		WithTelegramSettings(telegramSettingsRepo, telegramStore, anomalyNotifier).
+		WithTransactionalLiquiditySettings(transactionalLiquiditySettingsRepo)
 
 	// lndInit creates (or restores) the LND wallet using the password stored in the
 	// database, persists the generated seed + primary address + channel backup, and
@@ -635,17 +635,21 @@ func main() {
 	// money-moving poll), so it runs unconditionally — unlike the team-gated dexrelay loop.
 	go dexReleaseWorker.Run(ctx)
 
-	// ── Offer Premium WSS Stream ──────────────────────────────────────────────
-	if offerPremiumWSSURL == "" {
-		log.Println("OFFER_PREMIUM_WSS_URL is not set; API server will stay up without premium stream")
-		<-ctx.Done()
-		return
-	}
-
-	watcher := premiumoffers.NewWatcher(repo, bq, hh, rs, offerPremiumWSSURL, offerPremiumWSSSecret)
-	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
-		log.Printf("premium-offer watcher failed: %v", err)
-	}
+	// ── Offer Premium WSS Stream (disabled) ───────────────────────────────────
+	// The premium-offer watcher is intentionally not started at present.
+	//
+	// if offerPremiumWSSURL == "" {
+	// 	log.Println("OFFER_PREMIUM_WSS_URL is not set; API server will stay up without premium stream")
+	// 	<-ctx.Done()
+	// 	return
+	// }
+	//
+	// watcher := premiumoffers.NewWatcher(repo, bq, hh, rs, offerPremiumWSSURL, offerPremiumWSSSecret)
+	// if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
+	// 	log.Printf("premium-offer watcher failed: %v", err)
+	// }
+	log.Println("premium-offer watcher is disabled")
+	<-ctx.Done()
 }
 
 // lndStatsFetcher adapts the live wallet client to the metrics LND collector. Wired
