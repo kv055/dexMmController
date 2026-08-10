@@ -16,10 +16,11 @@ type transactionalLiquiditySettingsBackend interface {
 }
 
 type transactionalLiquidityUpdateRequest struct {
-	FiatCurrency string   `json:"fiat_currency"`
-	AmountSource string   `json:"amount_source"`
-	CustomAmount *float64 `json:"custom_amount"`
-	TradeMode    string   `json:"trade_mode"`
+	FiatCurrency    string   `json:"fiat_currency"`
+	AmountSource    string   `json:"amount_source"`
+	CustomAmount    *float64 `json:"custom_amount"`
+	TradeMode       string   `json:"trade_mode"`
+	TargetDirection string   `json:"target_direction"`
 }
 
 func (s *Server) WithTransactionalLiquiditySettings(repo transactionalLiquiditySettingsBackend) *Server {
@@ -63,10 +64,11 @@ func (s *Server) updateTransactionalLiquiditySettings(w http.ResponseWriter, r *
 		return
 	}
 	updated, err := s.transactionalLiquiditySettingsRepo.Update(r.Context(), db.TransactionalLiquiditySettingsUpdate{
-		FiatCurrency: strings.TrimSpace(req.FiatCurrency),
-		AmountSource: strings.TrimSpace(req.AmountSource),
-		CustomAmount: req.CustomAmount,
-		TradeMode:    strings.TrimSpace(req.TradeMode),
+		FiatCurrency:    strings.TrimSpace(req.FiatCurrency),
+		AmountSource:    strings.TrimSpace(req.AmountSource),
+		CustomAmount:    req.CustomAmount,
+		TradeMode:       strings.TrimSpace(req.TradeMode),
+		TargetDirection: strings.TrimSpace(req.TargetDirection),
 	})
 	if err != nil {
 		var validation db.TransactionalLiquidityValidationError

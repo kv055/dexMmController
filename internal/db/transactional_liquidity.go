@@ -15,6 +15,8 @@ const transactionalLiquidityRowID = 1
 const (
 	TransactionalLiquidityCustomAmount = "custom"
 	TransactionalLiquidityCappedVolume = "capped_volume"
+	TransactionalLiquidityTargetBid    = "bid"
+	TransactionalLiquidityTargetAsk    = "ask"
 )
 
 // TransactionalLiquiditySettings is the singleton operator target profile.
@@ -23,11 +25,12 @@ type TransactionalLiquiditySettings struct {
 	FiatCurrency string `gorm:"column:fiat_currency" json:"fiat_currency"`
 	// AmountSource is a virtual API field. It is derived from CustomAmount and
 	// is intentionally not persisted in the database.
-	AmountSource  string    `gorm:"-" json:"amount_source"`
-	CustomAmount  *float64  `gorm:"column:custom_amount" json:"custom_amount"`
-	TradeMode     string    `gorm:"column:trade_mode" json:"trade_mode"`
-	ConfigVersion int64     `gorm:"column:config_version" json:"config_version"`
-	UpdatedAt     time.Time `gorm:"column:updated_at" json:"updated_at"`
+	AmountSource    string    `gorm:"-" json:"amount_source"`
+	CustomAmount    *float64  `gorm:"column:custom_amount" json:"custom_amount"`
+	TradeMode       string    `gorm:"column:trade_mode" json:"trade_mode"`
+	TargetDirection string    `gorm:"column:target_direction" json:"target_direction"`
+	ConfigVersion   int64     `gorm:"column:config_version" json:"config_version"`
+	UpdatedAt       time.Time `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (TransactionalLiquiditySettings) TableName() string { return "transactional_liquidity_settings" }
@@ -35,10 +38,11 @@ func (TransactionalLiquiditySettings) TableName() string { return "transactional
 var ErrTransactionalLiquiditySettingsNotFound = errors.New("transactional liquidity settings row not found")
 
 type TransactionalLiquiditySettingsUpdate struct {
-	FiatCurrency string
-	AmountSource string
-	CustomAmount *float64
-	TradeMode    string
+	FiatCurrency    string
+	AmountSource    string
+	CustomAmount    *float64
+	TradeMode       string
+	TargetDirection string
 }
 
 type TransactionalLiquidityValidationError struct{ Message string }
@@ -71,6 +75,7 @@ func (r *TransactionalLiquiditySettingsRepository) Update(ctx context.Context, u
 	fiat := strings.ToUpper(strings.TrimSpace(u.FiatCurrency))
 	source := strings.TrimSpace(u.AmountSource)
 	mode := strings.TrimSpace(u.TradeMode)
+	direction := strings.ToLower(strings.TrimSpace(u.TargetDirection))
 	if fiat == "" {
 		return TransactionalLiquiditySettings{}, TransactionalLiquidityValidationError{"fiat_currency is required"}
 	}
@@ -84,6 +89,9 @@ func (r *TransactionalLiquiditySettingsRepository) Update(ctx context.Context, u
 	if mode != "hedgefull_single_collateral" && mode != "hedgeless_double_collateral" {
 		return TransactionalLiquiditySettings{}, TransactionalLiquidityValidationError{"trade_mode is unsupported"}
 	}
+	if direction != TransactionalLiquidityTargetBid && direction != TransactionalLiquidityTargetAsk {
+		return TransactionalLiquiditySettings{}, TransactionalLiquidityValidationError{"target_direction must be bid or ask"}
+	}
 	if source == TransactionalLiquidityCustomAmount && (u.CustomAmount == nil || *u.CustomAmount <= 0) {
 		return TransactionalLiquiditySettings{}, TransactionalLiquidityValidationError{"custom_amount must be greater than zero for custom amount source"}
 	}
@@ -92,11 +100,12 @@ func (r *TransactionalLiquiditySettingsRepository) Update(ctx context.Context, u
 	}
 
 	updates := map[string]any{
-		"fiat_currency":  fiat,
-		"custom_amount":  u.CustomAmount,
-		"trade_mode":     mode,
-		"config_version": gorm.Expr("config_version + 1"),
-		"updated_at":     time.Now().UTC(),
+		"fiat_currency":    fiat,
+		"custom_amount":    u.CustomAmount,
+		"trade_mode":       mode,
+		"target_direction": direction,
+		"config_version":   gorm.Expr("config_version + 1"),
+		"updated_at":       time.Now().UTC(),
 	}
 	res := r.db.WithContext(ctx).Model(&TransactionalLiquiditySettings{}).
 		Where("id = ?", transactionalLiquidityRowID).Updates(updates)
@@ -104,7 +113,7 @@ func (r *TransactionalLiquiditySettingsRepository) Update(ctx context.Context, u
 		return TransactionalLiquiditySettings{}, fmt.Errorf("update transactional liquidity settings: %w", res.Error)
 	}
 	if res.RowsAffected == 0 {
-		row := TransactionalLiquiditySettings{ID: transactionalLiquidityRowID, FiatCurrency: fiat, CustomAmount: u.CustomAmount, TradeMode: mode}
+		row := TransactionalLiquiditySettings{ID: transactionalLiquidityRowID, FiatCurrency: fiat, CustomAmount: u.CustomAmount, TradeMode: mode, TargetDirection: direction}
 		if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
 			return TransactionalLiquiditySettings{}, fmt.Errorf("create transactional liquidity settings: %w", err)
 		}
