@@ -12,7 +12,6 @@ import (
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
-	"dexMmController/internal/txroute"
 )
 
 // Worker advances bid-side tradeflow part 2: confirm the CEX withdrawal arrived, take
@@ -142,10 +141,12 @@ func (w *Worker) confirmWithdrawal(ctx context.Context, tx *db.Transaction) erro
 	if err != nil {
 		return err
 	}
-	method := txroute.BidMethod(deriveExchange(tx, meta))
+	if meta.ResolvedRoute == nil || !meta.ResolvedRoute.ValidForExecution() {
+		return fmt.Errorf("transaction has no valid resolved_route")
+	}
 
 	var arrived bool
-	if method.NeedsHub() {
+	if meta.ResolvedRoute.UsesHub() {
 		arrived, err = w.hubFundsArrived(ctx, tx, &meta)
 	} else {
 		arrived, err = w.destinationFundsArrived(ctx, tx)
@@ -241,7 +242,9 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	}
 
 	exchange := deriveExchange(tx, meta)
-	method := txroute.BidMethod(exchange)
+	if meta.ResolvedRoute == nil || !meta.ResolvedRoute.ValidForExecution() {
+		return fmt.Errorf("transaction has no valid resolved_route")
+	}
 	offerID := meta.OfferID()
 	if offerID == "" {
 		offerID = strings.TrimSpace(stringFromSelectedOffer(meta.SelectedOffer, "offer_id"))
@@ -295,7 +298,7 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 
 	// Direct route (bisq v1): the funds are already in our bisq wallet; the daemon funds
 	// the multisig from there. Nothing to send on-chain — just record the taken offer.
-	if method == txroute.Direct {
+	if meta.ResolvedRoute.IsDirect() {
 		relayDetails.DepositAddress = strings.TrimSpace(tx.DestinationAddress)
 		relayDetails.PaymentMethod = "direct"
 		return w.finishRelay(tx, meta, relayDetails)

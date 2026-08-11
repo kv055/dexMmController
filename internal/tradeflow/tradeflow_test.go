@@ -11,7 +11,6 @@ import (
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/pretrade"
-	"dexMmController/internal/txroute"
 	lnd "dexMmController/internal/wallethub"
 )
 
@@ -161,6 +160,7 @@ func validOrder() Order {
 		HedgeNotionalBTC: 0.01,
 		Leverage:         10,
 		PaymentMethod:    "Revolut",
+		ResolvedRoute:    &ResolvedRoute{ConfigVersion: 1, TradeMode: "hedgefull_single_collateral", MarketSide: "bid", Provider: "binance", Settlement: "onchain_hub", NeedsHub: true, BTCAmount: 0.01, FiatCurrency: "EUR", RequiredCapital: 1000, HedgeVenue: "binance_futures", HedgeSide: "short", HedgeNotional: 0.01, Leverage: 10},
 	}
 }
 
@@ -554,7 +554,7 @@ func TestRecordSpotBuy_PersistsCexTransactionFee(t *testing.T) {
 	svc := happyFake()
 	store := newFakeStore()
 	order := persistOrder() // FiatCurrency "EUR"
-	id, err := createTradeflowRow(store, order, "bc1qtest", txroute.BidMethod(order.Dex))
+	id, err := createTradeflowRow(store, order, "bc1qtest", "onchain_hub")
 	if err != nil {
 		t.Fatalf("createTradeflowRow: %v", err)
 	}
@@ -578,7 +578,7 @@ func TestRecordSpotBuy_PersistsCexTransactionFee(t *testing.T) {
 func tradeSuccessfulRow(t *testing.T, store *fakeStore, svc *fakeService) *db.Transaction {
 	t.Helper()
 	order := persistOrder()
-	id, err := createTradeflowRow(store, order, "bc1qtest", txroute.BidMethod(order.Dex))
+	id, err := createTradeflowRow(store, order, "bc1qtest", "onchain_hub")
 	if err != nil {
 		t.Fatalf("createTradeflowRow: %v", err)
 	}
@@ -639,7 +639,7 @@ func TestResumeFromTradeflowStarted_SpotKnown_ResumesHedge(t *testing.T) {
 	svc := happyFake()
 	store := newFakeStore()
 	order := persistOrder()
-	id, _ := createTradeflowRow(store, order, "bc1qtest", txroute.BidMethod(order.Dex))
+	id, _ := createTradeflowRow(store, order, "bc1qtest", "onchain_hub")
 	if err := recordSpotBuy(store, id, svc.spotResult, 0.00999); err != nil {
 		t.Fatalf("recordSpotBuy: %v", err)
 	}
@@ -663,7 +663,7 @@ func TestResumeFromTradeflowStarted_SpotUnknown_ParksForReview(t *testing.T) {
 	svc := happyFake()
 	store := newFakeStore()
 	order := persistOrder()
-	id, _ := createTradeflowRow(store, order, "bc1qtest", txroute.BidMethod(order.Dex)) // no spot recorded
+	id, _ := createTradeflowRow(store, order, "bc1qtest", "onchain_hub") // no spot recorded
 	tx, _ := store.GetTransaction(id)
 
 	if err := New(svc, store).ResumeFromTradeflowStarted(context.Background(), tx); err != nil {
@@ -680,7 +680,7 @@ func TestResumeFromTradeflowStarted_SpotUnknown_ParksForReview(t *testing.T) {
 func hedgeFailedRow(t *testing.T, store *fakeStore, svc *fakeService) *db.Transaction {
 	t.Helper()
 	order := persistOrder()
-	id, _ := createTradeflowRow(store, order, "bc1qtest", txroute.BidMethod(order.Dex))
+	id, _ := createTradeflowRow(store, order, "bc1qtest", "onchain_hub")
 	if err := recordSpotBuy(store, id, svc.spotResult, 0.00999); err != nil {
 		t.Fatalf("recordSpotBuy: %v", err)
 	}

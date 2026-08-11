@@ -73,6 +73,7 @@ func TestHandleCexTradeflowSuccess(t *testing.T) {
 		HedgeSide:        "short",
 		HedgeNotionalBTC: 0.01,
 		Leverage:         10,
+		ResolvedRoute:    &tradeflow.ResolvedRoute{ConfigVersion: 1, TradeMode: cexaccount.TradeModeHedgefullSingleCollateral, MarketSide: "bid", Provider: "binance", HedgeVenue: "binance_futures", HedgeSide: "short", HedgeNotional: 0.01, Leverage: 10, Settlement: "onchain_hub", BTCAmount: 0.01, FiatCurrency: "EUR", FiatAmount: 500, RequiredCapital: 1000},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/cex/tradeflow", bytes.NewReader(payload))
 	rec := httptest.NewRecorder()
@@ -116,6 +117,7 @@ func TestHandleCexTradeflowAcceptsHedgelessWithoutHedgeFields(t *testing.T) {
 		Provider: "binance", MarketSide: "bid", BTCAmount: 0.01, FiatCurrency: "EUR",
 		RequiredCapital: 500, RequiredBTCLiquidity: 0.0115, SecurityDepositBTC: 0.0015,
 		OfferID: "offer-1", Dex: "hodlhodl", TradeMode: cexaccount.TradeModeHedgelessDoubleCollateral,
+		ResolvedRoute: &tradeflow.ResolvedRoute{ConfigVersion: 1, TradeMode: cexaccount.TradeModeHedgelessDoubleCollateral, MarketSide: "bid", Provider: "binance", Settlement: "onchain_hub", NeedsHub: true, BTCAmount: 0.01, FiatCurrency: "EUR", FiatAmount: 500, RequiredCapital: 500, RequiredBTCLiquidity: 0.0115, SecurityDepositBTC: 0.0015},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/cex/tradeflow", bytes.NewReader(payload))
 	rec := httptest.NewRecorder()

@@ -15,7 +15,6 @@ import (
 	"dexMmController/internal/db"
 	"dexMmController/internal/pretrade"
 	"dexMmController/internal/tradeflow"
-	"dexMmController/internal/txroute"
 )
 
 // TradeFlowRunner executes a full bid-side CEX trade cycle.
@@ -29,25 +28,26 @@ type poolRefillReconciler interface {
 
 // tradeflowRequest is the JSON body for POST /api/cex/tradeflow.
 type tradeflowRequest struct {
-	Provider             string          `json:"provider"`
-	MarketSide           string          `json:"market_side"`
-	BTCAmount            float64         `json:"btc_amount"`
-	FiatCurrency         string          `json:"fiat_currency"`
-	RequiredCapital      float64         `json:"required_capital"`
-	RequiredBTCLiquidity float64         `json:"required_btc_liquidity"`
-	SecurityDepositBTC   float64         `json:"security_deposit_btc"`
-	HedgeVenue           string          `json:"hedge_venue"`
-	HedgeSide            string          `json:"hedge_side"`
-	HedgeNotionalBTC     float64         `json:"hedge_notional_btc"`
-	Leverage             float64         `json:"leverage"`
-	OfferID              string          `json:"offer_id"`
-	Dex                  string          `json:"dex"`
-	FiatAmount           float64         `json:"fiat_amount"`
-	TransactionID        uint            `json:"transaction_id,omitempty"`
-	SelectedOffer        json.RawMessage `json:"selected_offer,omitempty"`
-	PaymentMethod        string          `json:"payment_method"`
-	PaymentMethods       []string        `json:"payment_methods"`
-	TradeMode            string          `json:"trade_mode"`
+	Provider             string                   `json:"provider"`
+	MarketSide           string                   `json:"market_side"`
+	BTCAmount            float64                  `json:"btc_amount"`
+	FiatCurrency         string                   `json:"fiat_currency"`
+	RequiredCapital      float64                  `json:"required_capital"`
+	RequiredBTCLiquidity float64                  `json:"required_btc_liquidity"`
+	SecurityDepositBTC   float64                  `json:"security_deposit_btc"`
+	HedgeVenue           string                   `json:"hedge_venue"`
+	HedgeSide            string                   `json:"hedge_side"`
+	HedgeNotionalBTC     float64                  `json:"hedge_notional_btc"`
+	Leverage             float64                  `json:"leverage"`
+	OfferID              string                   `json:"offer_id"`
+	Dex                  string                   `json:"dex"`
+	FiatAmount           float64                  `json:"fiat_amount"`
+	TransactionID        uint                     `json:"transaction_id,omitempty"`
+	SelectedOffer        json.RawMessage          `json:"selected_offer,omitempty"`
+	PaymentMethod        string                   `json:"payment_method"`
+	PaymentMethods       []string                 `json:"payment_methods"`
+	TradeMode            string                   `json:"trade_mode"`
+	ResolvedRoute        *tradeflow.ResolvedRoute `json:"resolved_route"`
 }
 
 func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +61,27 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
 	}
+	if req.ResolvedRoute == nil && len(req.SelectedOffer) > 0 {
+		var selected struct {
+			Metadata struct {
+				ResolvedRoute *tradeflow.ResolvedRoute `json:"resolved_route"`
+			} `json:"metadata"`
+		}
+		if err := json.Unmarshal(req.SelectedOffer, &selected); err == nil {
+			req.ResolvedRoute = selected.Metadata.ResolvedRoute
+		}
+	}
+	if req.ResolvedRoute != nil {
+		if strings.TrimSpace(req.Provider) == "" {
+			req.Provider = req.ResolvedRoute.Provider
+		}
+		if strings.TrimSpace(req.MarketSide) == "" {
+			req.MarketSide = req.ResolvedRoute.MarketSide
+		}
+		if strings.TrimSpace(req.TradeMode) == "" {
+			req.TradeMode = req.ResolvedRoute.TradeMode
+		}
+	}
 	provider := strings.TrimSpace(req.Provider)
 	if provider == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("provider is required"))
@@ -71,21 +92,34 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
 		return
 	}
-	if req.BTCAmount <= 0 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("btc_amount must be greater than zero"))
-		return
-	}
-	if req.RequiredCapital <= 0 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital must be greater than zero"))
-		return
-	}
 	tradeMode, err := pretrade.ParseTradeMode(req.TradeMode)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	marketSide := string(txroute.NormalizeSide(req.MarketSide))
-	if txroute.MethodFor(strings.TrimSpace(req.Dex), txroute.Side(marketSide)).HasLightningLeg() && req.RequiredBTCLiquidity <= 0 {
+	marketSide := normalizeMarketSide(req.MarketSide)
+	if req.ResolvedRoute == nil || !req.ResolvedRoute.ValidForExecution() {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route from unified API is required"))
+		return
+	}
+	if !strings.EqualFold(req.ResolvedRoute.Provider, provider) ||
+		!strings.EqualFold(req.ResolvedRoute.MarketSide, marketSide) ||
+		!strings.EqualFold(req.ResolvedRoute.TradeMode, tradeMode) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route does not match the requested trade"))
+		return
+	}
+	// The route snapshot is authoritative for every CEX-side execution input.
+	req.BTCAmount = req.ResolvedRoute.BTCAmount
+	req.FiatCurrency = req.ResolvedRoute.FiatCurrency
+	req.FiatAmount = req.ResolvedRoute.FiatAmount
+	req.RequiredCapital = req.ResolvedRoute.RequiredCapital
+	req.RequiredBTCLiquidity = req.ResolvedRoute.RequiredBTCLiquidity
+	req.SecurityDepositBTC = req.ResolvedRoute.SecurityDepositBTC
+	req.HedgeVenue = req.ResolvedRoute.HedgeVenue
+	req.HedgeSide = req.ResolvedRoute.HedgeSide
+	req.HedgeNotionalBTC = req.ResolvedRoute.HedgeNotional
+	req.Leverage = req.ResolvedRoute.Leverage
+	if req.ResolvedRoute.NeedsLightning && req.RequiredBTCLiquidity <= 0 {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero for Swap_main2lightning routes"))
 		return
 	}
@@ -97,7 +131,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero in hedgeless mode"))
 			return
 		}
-		if marketSide != string(txroute.SideBid) {
+		if marketSide != "bid" {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("hedgeless execution is supported only for bid-side offers"))
 			return
 		}
@@ -146,6 +180,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		PaymentMethod:        strings.TrimSpace(req.PaymentMethod),
 		PaymentMethods:       req.PaymentMethods,
 		TradeMode:            tradeMode,
+		ResolvedRoute:        req.ResolvedRoute,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -215,6 +250,7 @@ type preTradeCheckRequest struct {
 	PaymentMethods       []string `json:"payment_methods"`
 	Dex                  string   `json:"dex"`
 	MarketSide           string   `json:"market_side"`
+	Settlement           string   `json:"settlement"`
 	TradeMode            string   `json:"trade_mode"`
 	HedgeVenue           string   `json:"hedge_venue"`
 	RequiredBTCLiquidity float64  `json:"required_btc_liquidity"`
@@ -253,9 +289,13 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	marketSide := string(txroute.NormalizeSide(req.MarketSide))
+	marketSide := normalizeMarketSide(req.MarketSide)
 	dex := strings.TrimSpace(req.Dex)
-	if txroute.MethodFor(dex, txroute.Side(marketSide)).HasLightningLeg() && req.RequiredBTCLiquidity <= 0 {
+	if strings.TrimSpace(req.Settlement) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route settlement is required"))
+		return
+	}
+	if req.Settlement == "onchain_swap" && req.RequiredBTCLiquidity <= 0 {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero for Swap_main2lightning routes"))
 		return
 	}
@@ -272,6 +312,7 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		PaymentMethods:       req.PaymentMethods,
 		Dex:                  dex,
 		MarketSide:           marketSide,
+		Settlement:           req.Settlement,
 		TradeMode:            tradeMode,
 		HedgeVenue:           strings.TrimSpace(req.HedgeVenue),
 		RequiredBTCLiquidity: req.RequiredBTCLiquidity,
@@ -281,6 +322,13 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+func normalizeMarketSide(raw string) string {
+	if strings.EqualFold(strings.TrimSpace(raw), "ask") {
+		return "ask"
+	}
+	return "bid"
 }
 
 // WithCexAccount attaches the CEX account overview service.

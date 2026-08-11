@@ -7,7 +7,7 @@ import (
 )
 
 func TestDexPlatformFromSlug(t *testing.T) {
-	// Covers all five routing-matrix venues (txroute) and the casing/whitespace
+	// Covers all five supported DEX venues and casing/whitespace normalization.
 	// normalization; bisq2 and peachbitcoin are the ones the old 3-venue mapper missed.
 	cases := map[string]DexPlatform{
 		"bisq":          DexBisq,

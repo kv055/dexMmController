@@ -9,10 +9,10 @@ import (
 
 	"commons/mmcapabilities"
 	"dexMmController/internal/cexaccount"
+	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
 	"dexMmController/internal/metrics"
 	"dexMmController/internal/pretrade"
-	"dexMmController/internal/txroute"
 	lnd "dexMmController/internal/wallethub"
 )
 
@@ -78,7 +78,13 @@ type Order struct {
 	// TradeMode selects pre-trade permission semantics (hedgefull vs hedgeless).
 	// Empty defaults to hedgefull_single_collateral.
 	TradeMode string
+	// ResolvedRoute is the immutable Unified API routing decision for this offer.
+	// New HTTP executions require it; the small legacy fallback exists only for
+	// in-process callers and old persisted transactions during rollout.
+	ResolvedRoute *ResolvedRoute
 }
+
+type ResolvedRoute = db.ResolvedRoute
 
 // Result bundles the outcomes of all steps in the CEX→wallet trade cycle.
 type Result struct {
@@ -286,8 +292,11 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 
 	// The route decides where the CEX withdraws to: direct DEXes (bisq v1) fund their
 	// own wallet, hub/swap DEXes fund our LND hub.
-	marketSide := txroute.NormalizeSide(order.MarketSide)
-	method := txroute.MethodFor(order.Dex, marketSide)
+	marketSide := normalizeMarketSide(order.MarketSide)
+	settlement, err := settlementFor(order)
+	if err != nil {
+		return nil, err
+	}
 
 	preTrade := pretrade.Params{
 		Provider:             order.Provider,
@@ -297,7 +306,8 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 		PaymentMethod:        order.PaymentMethod,
 		PaymentMethods:       order.PaymentMethods,
 		Dex:                  order.Dex,
-		MarketSide:           string(marketSide),
+		MarketSide:           marketSide,
+		Settlement:           order.ResolvedRouteSettlement(),
 		TradeMode:            order.TradeMode,
 		HedgeVenue:           order.HedgeVenue,
 	}
@@ -307,7 +317,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: pre-trade check error: %w", err)
 	}
-	if ok, failed := preTradePassed(report, method); !ok {
+	if ok, failed := preTradePassed(report, settlement); !ok {
 		return nil, fmt.Errorf("tradeflow: pre-trade checks failed: %s", strings.Join(failed, "; "))
 	}
 	// If the caller did not explicitly pick a payment method, the pre-trade check
@@ -319,13 +329,13 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	}
 
 	// target is the address the CEX withdrawal is sent to.
-	target, err := tf.resolveWithdrawTarget(ctx, order, method, report)
+	target, err := tf.resolveWithdrawTarget(ctx, order, settlement, report)
 	if err != nil {
 		return nil, err
 	}
 	slog.Info("tradeflow: pre-trade checks passed",
 		"provider", order.Provider,
-		"route_method", string(method),
+		"route_method", settlement,
 		"withdraw_target", target,
 	)
 
@@ -335,7 +345,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 
 	var txID uint
 	if persist {
-		txID, err = createTradeflowRow(tf.store, order, target, method)
+		txID, err = createTradeflowRow(tf.store, order, target, settlement)
 		if err != nil {
 			return nil, fmt.Errorf("tradeflow: persist tradeflow start: %w", err)
 		}
@@ -431,7 +441,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	}
 
 	if persist {
-		if err := recordWithdrawal(tf.store, txID, order, spot, hedge, result, target, method); err != nil {
+		if err := recordWithdrawal(tf.store, txID, order, spot, hedge, result, target, settlement); err != nil {
 			return nil, fmt.Errorf("tradeflow: persist withdrawal: %w", err)
 		}
 	}
@@ -439,17 +449,42 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	return result, nil
 }
 
+// ResolvedRouteSettlement returns the immutable Unified API settlement method.
+// Empty is reserved for the legacy compatibility path.
+func (o Order) ResolvedRouteSettlement() string {
+	if o.ResolvedRoute == nil {
+		return ""
+	}
+	return o.ResolvedRoute.Settlement
+}
+
+// resolvedMethod converts the already-selected Unified API method into the
+// controller's execution enum. It intentionally does not inspect the DEX.
+func settlementFor(order Order) (string, error) {
+	if order.ResolvedRoute == nil || !order.ResolvedRoute.ValidForExecution() {
+		return "", fmt.Errorf("tradeflow: resolved_route is required")
+	}
+	return order.ResolvedRoute.Settlement, nil
+}
+
+func normalizeMarketSide(raw string) string {
+	if strings.EqualFold(strings.TrimSpace(raw), "ask") {
+		return "ask"
+	}
+	return "bid"
+}
+
 // preTradePassed reports whether the pre-trade checks allow the trade to proceed,
 // returning the messages of any blocking failures. The "whitelist" check verifies that
 // an LND hub address is whitelisted at the CEX — only relevant for hub/swap routes; the
 // direct route withdraws to the bisq wallet instead, so its failure is not blocking.
-func preTradePassed(report *pretrade.Report, method txroute.Method) (bool, []string) {
+func preTradePassed(report *pretrade.Report, settlement string) (bool, []string) {
 	var failed []string
 	for _, chk := range report.Checks {
 		if chk.Passed {
 			continue
 		}
-		if method == txroute.Direct && chk.Name == "whitelist" {
+		if settlement == "onchain_direct" && chk.Name == "whitelist" {
 			continue
 		}
 		failed = append(failed, chk.Message)
@@ -460,8 +495,8 @@ func preTradePassed(report *pretrade.Report, method txroute.Method) (bool, []str
 // resolveWithdrawTarget returns the address the CEX withdrawal is sent to: the bisq
 // wallet's funding address for the direct route, or the whitelisted LND hub address for
 // the hub/swap routes.
-func (tf *TradeFlow) resolveWithdrawTarget(ctx context.Context, order Order, method txroute.Method, report *pretrade.Report) (string, error) {
-	if method == txroute.Direct {
+func (tf *TradeFlow) resolveWithdrawTarget(ctx context.Context, order Order, settlement string, report *pretrade.Report) (string, error) {
+	if settlement == "onchain_direct" {
 		if tf.directResolver == nil {
 			return "", fmt.Errorf("tradeflow: direct route (%s) requires a DEX wallet resolver, none configured", order.Dex)
 		}
@@ -559,6 +594,9 @@ func (tf *TradeFlow) runAsk(_ context.Context, _ Order) (*Result, error) {
 }
 
 func validate(o Order) error {
+	if o.ResolvedRoute != nil && !o.ResolvedRoute.ValidForExecution() {
+		return fmt.Errorf("tradeflow: invalid resolved_route")
+	}
 	side := strings.ToLower(strings.TrimSpace(o.MarketSide))
 	if side != "bid" && side != "ask" {
 		return fmt.Errorf("tradeflow: market_side must be \"bid\" or \"ask\", got %q", o.MarketSide)
@@ -573,7 +611,7 @@ func validate(o Order) error {
 		return fmt.Errorf("tradeflow: required_capital must be greater than zero")
 	}
 	mode := cexaccount.NormalizeTradeMode(o.TradeMode)
-	if txroute.MethodFor(o.Dex, txroute.NormalizeSide(o.MarketSide)).HasLightningLeg() && o.RequiredBTCLiquidity <= 0 {
+	if o.ResolvedRoute != nil && o.ResolvedRoute.UsesLightning() && o.RequiredBTCLiquidity <= 0 {
 		return fmt.Errorf("tradeflow: required_btc_liquidity must be greater than zero for Swap_main2lightning routes")
 	}
 	if mode == cexaccount.TradeModeHedgelessDoubleCollateral {

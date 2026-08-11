@@ -25,9 +25,12 @@ import (
 
 // Server represents a server.
 type Server struct {
-	addr          string
-	repoMu        sync.RWMutex
-	repo          *db.TransactionRepository
+	addr                    string
+	repoMu                  sync.RWMutex
+	repo                    *db.TransactionRepository
+	dexPendingLiquidityRepo interface {
+		GetDexPendingLiquidity() (float64, int64, error)
+	}
 	startup       *StartupState
 	accountHealth accountHealthChecker
 	cexAccount    *cexaccount.Service
@@ -139,9 +142,10 @@ type healthResponse struct {
 // NewServer creates a server.
 func NewServer(addr string, repo *db.TransactionRepository) *Server {
 	server := &Server{
-		addr:    addr,
-		repo:    repo,
-		startup: NewStartupState(),
+		addr:                    addr,
+		repo:                    repo,
+		dexPendingLiquidityRepo: repo,
+		startup:                 NewStartupState(),
 	}
 	if repo != nil {
 		server.startup.SetDatabaseReady(true, "database_ready", nil)
@@ -153,6 +157,7 @@ func NewServer(addr string, repo *db.TransactionRepository) *Server {
 func (s *Server) WithRepository(repo *db.TransactionRepository) *Server {
 	s.repoMu.Lock()
 	s.repo = repo
+	s.dexPendingLiquidityRepo = repo
 	s.repoMu.Unlock()
 	return s
 }
@@ -232,6 +237,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /api/transactions", s.handleTransactions)
+	mux.HandleFunc("GET /api/transactions/dex-pending-liquidity", s.handleDexPendingLiquidity)
 	mux.HandleFunc("GET /api/transactions/{id}", s.handleTransactionByID)
 	mux.HandleFunc("GET /api/transactions/{id}/payment-details", s.handleTransactionPaymentDetails)
 	mux.HandleFunc("POST /api/transactions/{id}/pool-refill/reconcile", s.handlePoolRefillReconcile)

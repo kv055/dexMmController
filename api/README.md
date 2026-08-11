@@ -28,5 +28,10 @@ Regenerate the full route catalog from the repository root with:
 python3 scripts/openapi-route-catalogs.py
 ```
 
+The `GET /api/transactions/dex-pending-liquidity` route reports the sum of
+`btc_required_liquidity` and count of non-deleted transactions whose status is
+`DexPositionTaken` or `DexFiatHasArrived`. The monitor publishes this controller
+route as `GET /api/mm-controller/transactions/dex-pending-liquidity`.
+
 Only transport schemas belong in the typed contract. Domain models and UI-only
 view models remain handwritten in their owning packages.

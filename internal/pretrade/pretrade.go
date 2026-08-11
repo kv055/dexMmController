@@ -17,13 +17,16 @@ const (
 // deliberately neutral so the same checker contract can serve bid and ask
 // execution as ask-side trading is added.
 type Params struct {
-	Provider             string
-	FiatCurrency         string
-	RequiredCapital      float64
-	PaymentMethod        string
-	PaymentMethods       []string
-	Dex                  string
-	MarketSide           string
+	Provider        string
+	FiatCurrency    string
+	RequiredCapital float64
+	PaymentMethod   string
+	PaymentMethods  []string
+	Dex             string
+	MarketSide      string
+	// Settlement is Unified API's selected method (onchain_direct,
+	// onchain_hub, or onchain_swap). Empty retains legacy DEX-derived checks.
+	Settlement           string
 	TradeMode            string
 	HedgeVenue           string
 	RequiredBTCLiquidity float64

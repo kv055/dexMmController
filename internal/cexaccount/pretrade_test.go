@@ -815,7 +815,7 @@ func TestLightningLiquidityBidOutboundInsufficient(t *testing.T) {
 	withLightningSources(c, 0.01, 1, true)
 	report := c.Run(context.Background(), PreTradeParams{
 		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
-		TradeMode: TradeModeHedgelessDoubleCollateral, Dex: "robosats", RequiredBTCLiquidity: 0.02,
+		TradeMode: TradeModeHedgelessDoubleCollateral, Dex: "robosats", Settlement: "onchain_swap", RequiredBTCLiquidity: 0.02,
 	})
 	pool := paymentCheckNamed(t, report, "liquidity_pool")
 	if !pool.Passed {
@@ -844,7 +844,7 @@ func TestHedgelessSwapRunsPoolAndLightningComplementary(t *testing.T) {
 	withLightningSources(c, 0.01, 0, true)
 	report := c.Run(context.Background(), PreTradeParams{
 		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
-		TradeMode: TradeModeHedgelessDoubleCollateral, Dex: "robosats", RequiredBTCLiquidity: 0.02,
+		TradeMode: TradeModeHedgelessDoubleCollateral, Dex: "robosats", Settlement: "onchain_swap", RequiredBTCLiquidity: 0.02,
 	})
 	if report.Checks[0].Name != "capital" || report.Checks[1].Name != "liquidity_pool" || report.Checks[2].Name != "lightning_liquidity" {
 		t.Fatalf("capital order = %q, %q, %q", report.Checks[0].Name, report.Checks[1].Name, report.Checks[2].Name)
@@ -873,7 +873,7 @@ func TestHedgelessSwapPoolAndLightningBothPass(t *testing.T) {
 	withLightningSources(c, 0.05, 0, true)
 	report := c.Run(context.Background(), PreTradeParams{
 		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
-		TradeMode: TradeModeHedgelessDoubleCollateral, Dex: "robosats", RequiredBTCLiquidity: 0.02,
+		TradeMode: TradeModeHedgelessDoubleCollateral, Dex: "robosats", Settlement: "onchain_swap", RequiredBTCLiquidity: 0.02,
 	})
 	if !paymentCheckNamed(t, report, "liquidity_pool").Passed {
 		t.Fatalf("liquidity_pool = %+v", paymentCheckNamed(t, report, "liquidity_pool"))
@@ -897,7 +897,7 @@ func TestLightningLiquidityAskInboundInsufficient(t *testing.T) {
 	withLightningSources(c, 1, 0.01, true)
 	report := c.Run(context.Background(), PreTradeParams{
 		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
-		Dex: "robosats", MarketSide: "ask", RequiredBTCLiquidity: 0.02,
+		Dex: "robosats", Settlement: "onchain_swap", MarketSide: "ask", RequiredBTCLiquidity: 0.02,
 	})
 	chk := paymentCheckNamed(t, report, "lightning_liquidity")
 	if chk.Passed || !strings.Contains(chk.Message, "inbound Lightning") {
@@ -919,7 +919,7 @@ func TestLightningLiquidityRequiresActiveChannel(t *testing.T) {
 	withLightningSources(c, 1, 1, false)
 	report := c.Run(context.Background(), PreTradeParams{
 		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
-		Dex: "robosats", RequiredBTCLiquidity: 0.02,
+		Dex: "robosats", Settlement: "onchain_swap", RequiredBTCLiquidity: 0.02,
 	})
 	chk := paymentCheckNamed(t, report, "lightning_liquidity")
 	if chk.Passed || !strings.Contains(chk.Message, "no active Lightning channel") {
@@ -938,7 +938,7 @@ func TestLightningLiquidityPassesBidAndRunsInHedgefull(t *testing.T) {
 	withLightningSources(c, 0.05, 0, true)
 	report := c.Run(context.Background(), PreTradeParams{
 		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
-		Dex: "robosats", RequiredBTCLiquidity: 0.02,
+		Dex: "robosats", Settlement: "onchain_swap", RequiredBTCLiquidity: 0.02,
 	})
 	chk := paymentCheckNamed(t, report, "lightning_liquidity")
 	if !chk.Passed {

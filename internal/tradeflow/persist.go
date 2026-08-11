@@ -8,15 +8,14 @@ import (
 
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
-	"dexMmController/internal/txroute"
 )
 
 // applyWithdrawTarget records the CEX withdrawal target on the row (and the hub address
 // in meta) according to the route: the LND hub address for hub/swap routes, or the
 // direct DEX-wallet destination (bisq v1) for the direct route.
-func applyWithdrawTarget(tx *db.Transaction, meta *db.DexOfferMeta, target string, method txroute.Method) {
+func applyWithdrawTarget(tx *db.Transaction, meta *db.DexOfferMeta, target string, settlement string) {
 	target = strings.TrimSpace(target)
-	if method.NeedsHub() {
+	if settlement == "onchain_hub" || settlement == "onchain_swap" {
 		tx.HubAddress = target
 		if meta != nil {
 			meta.LNDReceiveAddress = target
@@ -38,7 +37,7 @@ type transactionStore interface {
 // createTradeflowRow creates (or reuses, when order.TransactionID is set) the
 // transaction row before the spot buy, at StatusCexTradeflowStarted. Returning the
 // row ID early gives the rest of the flow a stable idempotency key.
-func createTradeflowRow(store transactionStore, order Order, target string, method txroute.Method) (uint, error) {
+func createTradeflowRow(store transactionStore, order Order, target string, settlement string) (uint, error) {
 	offerID := strings.TrimSpace(order.OfferID)
 	dexSlug := strings.TrimSpace(order.Dex)
 
@@ -57,6 +56,7 @@ func createTradeflowRow(store transactionStore, order Order, target string, meth
 	}
 	meta := db.DexOfferMeta{
 		SelectedOffer:  selectedOffer,
+		ResolvedRoute:  order.ResolvedRoute,
 		TradeflowAt:    &now,
 		TradeflowOrder: orderSnapshot,
 	}
@@ -76,7 +76,7 @@ func createTradeflowRow(store transactionStore, order Order, target string, meth
 		Status:        db.StatusCexTradeflowStarted,
 		DexOfferID:    offerID,
 	}
-	applyWithdrawTarget(tx, &meta, target, method)
+	applyWithdrawTarget(tx, &meta, target, settlement)
 
 	dexOfferJSON, err := db.MarshalDexOfferCreation(meta)
 	if err != nil {
@@ -162,7 +162,7 @@ func markHedgeFailed(store transactionStore, id uint, spot *cexaccount.SpotOrder
 // recordWithdrawal persists the withdrawal as the final tradeflow step, advancing
 // the row to StatusCexCryptoWithdrawalInitiated and writing offer linkage so the
 // downstream dexrelay worker can take over.
-func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexaccount.SpotOrderResult, hedge *cexaccount.HedgeOpenResult, result *Result, target string, method txroute.Method) error {
+func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexaccount.SpotOrderResult, hedge *cexaccount.HedgeOpenResult, result *Result, target string, settlement string) error {
 	if result == nil || result.Withdrawal == nil {
 		return fmt.Errorf("withdrawal result is required")
 	}
@@ -188,6 +188,7 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 
 	meta := db.DexOfferMeta{
 		SelectedOffer: selectedOffer,
+		ResolvedRoute: order.ResolvedRoute,
 		CexWithdrawal: &db.CexWithdrawalMeta{
 			WithdrawalID:    result.Withdrawal.WithdrawalID,
 			ClientRequestID: result.Withdrawal.ClientRequestID,
@@ -196,7 +197,7 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 		TradeflowAt:    &now,
 		TradeflowOrder: orderSnapshot,
 	}
-	if method.NeedsHub() {
+	if settlement == "onchain_hub" || settlement == "onchain_swap" {
 		meta.LNDReceiveAddress = addr
 	}
 	dexOfferJSON, err := db.MarshalDexOfferCreation(meta)
@@ -216,7 +217,7 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 		if tx.DexOfferID == "" {
 			tx.DexOfferID = offerID
 		}
-		applyWithdrawTarget(tx, nil, addr, method)
+		applyWithdrawTarget(tx, nil, addr, settlement)
 	})
 }
 

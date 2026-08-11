@@ -11,7 +11,6 @@ import (
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/metrics"
-	"dexMmController/internal/txroute"
 )
 
 // withdrawalLookback bounds how far back the withdrawal history-match guard looks
@@ -168,7 +167,10 @@ func (tf *TradeFlow) ResumeWithdrawal(ctx context.Context, tx *db.Transaction) (
 	if rc.lndAddr == "" {
 		return fmt.Errorf("tradeflow recovery: no LND withdrawal address on row %d", tx.ID)
 	}
-	method := txroute.BidMethod(rc.order.Dex)
+	settlement, err := settlementFor(rc.order)
+	if err != nil {
+		return err
+	}
 
 	filledBTC := tx.CexBitcoinAmount
 	if filledBTC <= 0 && rc.bundle.Spot.Execution != nil {
@@ -188,7 +190,7 @@ func (tf *TradeFlow) ResumeWithdrawal(ctx context.Context, tx *db.Transaction) (
 		slog.Warn("tradeflow recovery: withdrawal already exists on venue — recording, not resending",
 			"transaction_id", tx.ID, "withdrawal_id", existing.WithdrawalID)
 		result := withdrawalResultFrom(rc.order.Provider, existing, clientReqID, rc.lndAddr, filledBTC)
-		return recordWithdrawal(tf.store, tx.ID, rc.order, rc.bundle.Spot, rc.bundle.Hedge, result, rc.lndAddr, method)
+		return recordWithdrawal(tf.store, tx.ID, rc.order, rc.bundle.Spot, rc.bundle.Hedge, result, rc.lndAddr, settlement)
 	}
 
 	wd, err := tf.svc.WithdrawSpotToLND(ctx, rc.order.Provider, filledBTC, rc.lndAddr, clientReqID)
@@ -210,7 +212,7 @@ func (tf *TradeFlow) ResumeWithdrawal(ctx context.Context, tx *db.Transaction) (
 		},
 		TransactionID: tx.ID,
 	}
-	return recordWithdrawal(tf.store, tx.ID, rc.order, rc.bundle.Spot, rc.bundle.Hedge, result, rc.lndAddr, method)
+	return recordWithdrawal(tf.store, tx.ID, rc.order, rc.bundle.Spot, rc.bundle.Hedge, result, rc.lndAddr, settlement)
 }
 
 // withdrawalResultFrom builds a Result around an already-existing withdrawal found by

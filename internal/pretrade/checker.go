@@ -11,7 +11,6 @@ import (
 	"commons/mmcapabilities"
 	"commons/paymentmethods"
 	"dexMmController/internal/db"
-	"dexMmController/internal/txroute"
 )
 
 const (
@@ -146,9 +145,11 @@ func (c *BidChecker) Run(ctx context.Context, p Params) Report {
 	provider := p.Provider
 	tradeMode := NormalizeTradeMode(p.TradeMode)
 	isHedgeless := tradeMode == TradeModeHedgelessDoubleCollateral
-	marketSide := txroute.NormalizeSide(p.MarketSide)
-	route := txroute.MethodFor(p.Dex, marketSide)
-	hasLightning := route.HasLightningLeg()
+	marketSide := "bid"
+	if strings.EqualFold(strings.TrimSpace(p.MarketSide), "ask") {
+		marketSide = "ask"
+	}
+	hasLightning := p.Settlement == "onchain_swap"
 
 	type namedCheck struct {
 		name, label string
@@ -178,12 +179,12 @@ func (c *BidChecker) Run(ctx context.Context, p Params) Report {
 	// Swap routes also run lightning_liquidity for directional channel capacity.
 	if isHedgeless {
 		appendResult(&report, namedCheck{"liquidity_pool", "BTC liquidity pool", func() error {
-			return c.checkLiquidityPool(ctx, p.Dex, p.RequiredBTCLiquidity)
+			return c.checkLiquidityPool(ctx, hasLightning, p.RequiredBTCLiquidity)
 		}})
 	}
 	if hasLightning {
 		label := "LND outbound liquidity"
-		if marketSide == txroute.SideAsk {
+		if marketSide == "ask" {
 			label = "LND inbound liquidity"
 		}
 		appendResult(&report, namedCheck{"lightning_liquidity", label, func() error {
@@ -355,7 +356,7 @@ func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string
 // security deposit. Non-Swap DEXes need confirmed on-chain BTC; Swap routes
 // use on-chain + local channel balance (same form as LNDPoolBalanceBTC).
 // Directional channel capacity is checked separately by checkLightningLiquidity.
-func (c *BidChecker) checkLiquidityPool(ctx context.Context, dex string, requiredBTC float64) error {
+func (c *BidChecker) checkLiquidityPool(ctx context.Context, hasLightning bool, requiredBTC float64) error {
 	if requiredBTC <= 0 {
 		return fmt.Errorf("pre-trade check failed: required BTC liquidity pool size is missing or zero")
 	}
@@ -371,7 +372,7 @@ func (c *BidChecker) checkLiquidityPool(ctx context.Context, dex string, require
 		return fmt.Errorf("reading LND on-chain balance for liquidity pool check: %w", err)
 	}
 	available := onChain
-	if txroute.MethodFor(dex, txroute.SideBid).HasLightningLeg() {
+	if hasLightning {
 		if lightning == nil {
 			return fmt.Errorf("pre-trade check failed: LND Lightning balance is not available for Swap liquidity pool")
 		}
@@ -399,7 +400,7 @@ func (c *BidChecker) checkLiquidityPool(ctx context.Context, dex string, require
 
 // checkLightningLiquidity verifies an active open channel exists and that
 // outbound (bid) or inbound (ask) channel balance covers position + deposit.
-func (c *BidChecker) checkLightningLiquidity(ctx context.Context, side txroute.Side, requiredBTC float64) error {
+func (c *BidChecker) checkLightningLiquidity(ctx context.Context, side string, requiredBTC float64) error {
 	if requiredBTC <= 0 {
 		return fmt.Errorf("pre-trade check failed: required BTC liquidity (position + security deposit) is missing or zero")
 	}
@@ -425,7 +426,7 @@ func (c *BidChecker) checkLightningLiquidity(ctx context.Context, side txroute.S
 
 	var available float64
 	var direction string
-	if side == txroute.SideAsk {
+	if side == "ask" {
 		direction = "inbound"
 		available, err = lightning.InboundLightningBTC(ctx)
 		if err != nil {

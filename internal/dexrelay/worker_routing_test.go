@@ -55,7 +55,13 @@ func (f *fakeLND) ConfirmedBalanceForAddress(context.Context, string) (int64, er
 
 func metaFor(exchange string) json.RawMessage {
 	sel, _ := json.Marshal(map[string]any{"offer_id": "offer-1", "exchange": exchange})
-	raw, _ := db.MarshalDexOfferCreation(db.DexOfferMeta{SelectedOffer: sel})
+	settlement := "onchain_hub"
+	if exchange == "bisq" {
+		settlement = "onchain_direct"
+	} else if exchange == "robosats" {
+		settlement = "onchain_swap"
+	}
+	raw, _ := db.MarshalDexOfferCreation(db.DexOfferMeta{SelectedOffer: sel, ResolvedRoute: &db.ResolvedRoute{ConfigVersion: 1, Provider: "binance", BTCAmount: 0.01, RequiredCapital: 1, Settlement: settlement}})
 	return raw
 }
 

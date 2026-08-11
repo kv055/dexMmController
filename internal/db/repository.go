@@ -389,6 +389,23 @@ func (r *TransactionRepository) GetTransactionsByStatuses(statuses []Transaction
 	return transactions, nil
 }
 
+// GetDexPendingLiquidity returns the BTC currently reserved by DEX contracts
+// that have been taken or have received fiat but have not yet been released.
+// The normal GORM model scope excludes soft-deleted transactions.
+func (r *TransactionRepository) GetDexPendingLiquidity() (float64, int64, error) {
+	var result struct {
+		BTCValue         float64 `gorm:"column:btc_value"`
+		TransactionCount int64   `gorm:"column:transaction_count"`
+	}
+	if err := r.db.Model(&Transaction{}).
+		Select("COALESCE(SUM(btc_required_liquidity), 0) AS btc_value, COUNT(*) AS transaction_count").
+		Where("status IN ?", []TransactionStatus{StatusDexPositionTaken, StatusDexFiatHasArrived}).
+		Scan(&result).Error; err != nil {
+		return 0, 0, fmt.Errorf("failed to get DEX pending liquidity: %w", err)
+	}
+	return result.BTCValue, result.TransactionCount, nil
+}
+
 // GetActiveHedgelessRefills returns hedgeless cycles whose LND pool has not yet
 // been restored. The database's partial unique index limits this to one row, but
 // a slice keeps the method tolerant while a migration is being rolled out.

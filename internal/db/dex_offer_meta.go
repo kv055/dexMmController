@@ -10,6 +10,7 @@ import (
 // DexOfferMeta is the structured DexOfferCreation JSON used by bid tradeflow and dexrelay.
 type DexOfferMeta struct {
 	SelectedOffer     json.RawMessage    `json:"selected_offer,omitempty"`
+	ResolvedRoute     *ResolvedRoute     `json:"resolved_route,omitempty"`
 	LNDReceiveAddress string             `json:"lnd_receive_address,omitempty"`
 	CexWithdrawal     *CexWithdrawalMeta `json:"cex_withdrawal,omitempty"`
 	Execution         map[string]any     `json:"execution,omitempty"`
@@ -20,6 +21,48 @@ type DexOfferMeta struct {
 	// stuck cycle. The db package only carries the bytes — it does not import tradeflow.
 	TradeflowOrder json.RawMessage `json:"tradeflow_order,omitempty"`
 }
+
+// ResolvedRoute is the immutable execution route selected by Unified API and
+// persisted with the transaction for relay and recovery. It contains no DEX
+// routing matrix: consumers use Settlement exactly as supplied.
+type ResolvedRoute struct {
+	ConfigVersion        int64   `json:"config_version"`
+	TradeMode            string  `json:"trade_mode"`
+	TargetDirection      string  `json:"target_direction"`
+	MarketSide           string  `json:"market_side"`
+	Provider             string  `json:"provider"`
+	HedgeVenue           string  `json:"hedge_venue,omitempty"`
+	HedgeSide            string  `json:"hedge_side,omitempty"`
+	HedgeNotional        float64 `json:"hedge_notional_btc,omitempty"`
+	Leverage             float64 `json:"leverage,omitempty"`
+	Settlement           string  `json:"settlement"`
+	NeedsHub             bool    `json:"needs_hub"`
+	NeedsLightning       bool    `json:"needs_lightning"`
+	FiatCurrency         string  `json:"fiat_currency"`
+	FiatAmount           float64 `json:"fiat_amount"`
+	BTCAmount            float64 `json:"btc_amount"`
+	RequiredCapital      float64 `json:"required_capital"`
+	RequiredBTCLiquidity float64 `json:"required_btc_liquidity"`
+	SecurityDepositBTC   float64 `json:"security_deposit_btc"`
+}
+
+func (r ResolvedRoute) ValidForExecution() bool {
+	if r.ConfigVersion <= 0 || r.Provider == "" || r.BTCAmount <= 0 || r.RequiredCapital <= 0 {
+		return false
+	}
+	switch r.Settlement {
+	case "onchain_direct", "onchain_hub", "onchain_swap":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r ResolvedRoute) UsesHub() bool {
+	return r.Settlement == "onchain_hub" || r.Settlement == "onchain_swap"
+}
+func (r ResolvedRoute) UsesLightning() bool { return r.Settlement == "onchain_swap" }
+func (r ResolvedRoute) IsDirect() bool      { return r.Settlement == "onchain_direct" }
 
 // CexWithdrawalMeta tracks the CEX→LND withdrawal leg for confirmation polling.
 type CexWithdrawalMeta struct {

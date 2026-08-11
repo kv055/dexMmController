@@ -349,6 +349,17 @@ paths:
           description: Successful response
         default:
           description: Error response
+  '/api/transactions/dex-pending-liquidity':
+    get:
+      operationId: getApiTransactionsDexPendingLiquidity
+      tags: ['transactions']
+      summary: 'GET /api/transactions/dex-pending-liquidity'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
   '/api/transactions/{id}':
     get:
       operationId: getApiTransactionsId

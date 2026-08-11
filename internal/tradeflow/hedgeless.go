@@ -13,7 +13,6 @@ import (
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
 	"dexMmController/internal/pretrade"
-	"dexMmController/internal/txroute"
 )
 
 const (
@@ -113,7 +112,7 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 		RequiredCapital:      order.RequiredCapital,
 		RequiredBTCLiquidity: order.RequiredBTCLiquidity,
 		PaymentMethod:        order.PaymentMethod, PaymentMethods: order.PaymentMethods,
-		Dex: order.Dex, MarketSide: string(txroute.NormalizeSide(order.MarketSide)),
+		Dex: order.Dex, MarketSide: normalizeMarketSide(order.MarketSide), Settlement: order.ResolvedRouteSettlement(),
 		TradeMode: order.TradeMode,
 	}
 	report, err := tf.svc.PreTradeCheck(ctx, preTrade)
@@ -123,7 +122,7 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 	// Even Bisq needs the whitelisted LND address for the replacement CEX
 	// withdrawal. Its DEX funding destination is the Bisq wallet, but the new
 	// spot BTC must still return to our LND pool.
-	if passed, failed := preTradePassed(report, txroute.Hub); !passed {
+	if passed, failed := preTradePassed(report, order.ResolvedRouteSettlement()); !passed {
 		return nil, fmt.Errorf("tradeflow: pre-trade checks failed: %s", strings.Join(failed, "; "))
 	}
 	if strings.TrimSpace(report.LNDWithdrawAddress) == "" {
