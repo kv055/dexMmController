@@ -31,9 +31,11 @@ import (
 	"dexMmController/internal/healthcheck"
 	"dexMmController/internal/hedgestream"
 	"dexMmController/internal/lndhealth"
+	"dexMmController/internal/lsp"
 	mmmetrics "dexMmController/internal/metrics"
 	// "dexMmController/internal/premiumoffers" // Disabled: premium-offer watcher is not currently in use.
 	"dexMmController/internal/pretrade"
+	"dexMmController/internal/swap"
 	"dexMmController/internal/tradeflow"
 	lnd "dexMmController/internal/wallethub"
 
@@ -43,6 +45,7 @@ import (
 	"commons/mmcapabilities"
 	"commons/telegram"
 	"commons/tracing"
+	boltzlib "github.com/BoltzExchange/boltz-client/v2/pkg/boltz"
 
 	"gorm.io/gorm"
 )
@@ -77,6 +80,7 @@ func main() {
 	bisqGRPCHost := envOr("BISQ_GRPC_HOST", "localhost:9998")
 	bisqAPIPassword := envOr("BISQ_API_PASSWORD", "")
 	robosatsURL := envOr("ROBOSATS_URL", "")
+	boltzURL := strings.TrimRight(envOr("BOLTZ_URL", ""), "/")
 	bisq2RESTHost := envOr("BISQ2_REST_HOST", "")
 	bisq2APIPassword := envOr("BISQ2_API_PASSWORD", "")
 	telegramCfg := telegram.LoadConfig("DEXMM")
@@ -153,6 +157,8 @@ func main() {
 
 	repo := db.NewTransactionRepository(database)
 	transactionalLiquiditySettingsRepo := db.NewTransactionalLiquiditySettingsRepository(database)
+	lspChannelConfigRepo := db.NewLSPChannelConfigRepository(database)
+	submarineSwapRepo := db.NewSubmarineSwapRepository(database)
 	mmmetrics.RegisterTradeStats(metricsReg.Registry, repo)
 
 	lndAccount, err := repo.EnsureAccount(ctx, db.LNDAccountProvider)
@@ -369,6 +375,11 @@ func main() {
 		repo,
 	)
 	preTradeChecker.SetCommunicationGateway(telegramStore)
+	var boltzAPI *boltzlib.Api
+	if boltzURL != "" {
+		boltzAPI = &boltzlib.Api{URL: boltzURL, Client: http.Client{Timeout: 10 * time.Second}}
+		preTradeChecker.SetSwapQuoteSource(swap.BoltzQuoteSource{API: boltzAPI})
+	}
 	preTradeChecker.SetFiatControllerChecker(cexaccount.NewHTTPFiatControllerChecker(
 		fiatControllerURL,
 		fiatControllerHeartbeatSecret,
@@ -448,7 +459,9 @@ func main() {
 		}).
 		WithTelegramRelay(chatRelay).
 		WithTelegramSettings(telegramSettingsRepo, telegramStore, anomalyNotifier).
-		WithTransactionalLiquiditySettings(transactionalLiquiditySettingsRepo)
+		WithTransactionalLiquiditySettings(transactionalLiquiditySettingsRepo).
+		WithLSPChannelConfig(lspChannelConfigRepo).
+		WithSubmarineSwapHistory(submarineSwapRepo)
 
 	// lndInit creates (or restores) the LND wallet using the password stored in the
 	// database, persists the generated seed + primary address + channel backup, and
@@ -576,11 +589,83 @@ func main() {
 			}
 			return false, nil
 		}))
+		lspStatusSource := pretrade.LSPStatusSourceFunc(func(ctx context.Context) (lsp.Status, error) {
+			cfg, err := lspChannelConfigRepo.Get(ctx)
+			if err != nil {
+				return lsp.Inspect(lsp.Config{}, nil), err
+			}
+			channels, err := lndClient.ListChannels(ctx)
+			if err != nil {
+				return lsp.Status{}, err
+			}
+			return lsp.Inspect(cfg, channels), nil
+		})
+		preTradeChecker.SetLSPStatus(lspStatusSource)
 		preTradeChecker.SetLNDOnline(pretrade.LNDOnlineSourceFunc(func(ctx context.Context) error {
 			return lndClient.HealthCheck(ctx)
 		}))
 		cexAccountService.WithLND(lndClient)
 		dexRelayWorker.SetLND(dexrelay.LNDAdapter{Client: lndClient})
+
+		// The coordinator is embedded in mm-controller. It can reserve sufficient
+		// existing outbound balance even without Boltz configured, but it cannot
+		// initiate a swap until the URL and both operator fee ceilings are present.
+		walletRuntime := lndBoltzRuntime{client: lndClient}
+		coordinator := &swap.Coordinator{
+			Wallet: lndClient,
+			Store:  submarineSwapRepo,
+			Sealer: swap.CredentialSealer{},
+			FeeLimits: func(limitCtx context.Context) (int64, int64, error) {
+				cfg, cfgErr := lspChannelConfigRepo.Get(limitCtx)
+				if cfgErr != nil {
+					return 0, 0, cfgErr
+				}
+				if !cfg.Enabled || cfg.MaxSwapFeeSat <= 0 || cfg.MaxSwapFeePPM <= 0 {
+					return 0, 0, fmt.Errorf("submarine swaps require an enabled LSP channel and positive absolute and relative fee ceilings")
+				}
+				return cfg.MaxSwapFeeSat, cfg.MaxSwapFeePPM, nil
+			},
+			Revalidate: func(checkCtx context.Context, quote swap.Quote) error {
+				cfg, cfgErr := lspChannelConfigRepo.Get(checkCtx)
+				if cfgErr != nil {
+					return cfgErr
+				}
+				channels, channelsErr := lndClient.ListChannels(checkCtx)
+				if channelsErr != nil {
+					return channelsErr
+				}
+				status := lsp.Inspect(cfg, channels)
+				if !status.LSPHealthy {
+					return fmt.Errorf("registered LSP channel unavailable: %s", status.Reason)
+				}
+				if status.LSPInboundSat < quote.LightningOutputSat {
+					return fmt.Errorf("registered LSP inbound liquidity changed: available %d sats, required %d sats", status.LSPInboundSat, quote.LightningOutputSat)
+				}
+				if err := quote.Validate(time.Now(), cfg.MaxSwapFeeSat, cfg.MaxSwapFeePPM); err != nil {
+					return err
+				}
+				balanceBTC, balanceErr := walletRuntime.ConfirmedOnChainBTC(checkCtx)
+				if balanceErr != nil {
+					return balanceErr
+				}
+				if confirmedSat := int64(balanceBTC * 1e8); confirmedSat < quote.LockupAmountSat+quote.FundingTxFeeSat {
+					return fmt.Errorf("confirmed LND on-chain balance changed: available %d sats, required %d sats", confirmedSat, quote.LockupAmountSat+quote.FundingTxFeeSat)
+				}
+				return nil
+			},
+			SatPerVByte: 2,
+		}
+		if boltzAPI != nil {
+			refunder := swap.LibraryRefunder{API: boltzAPI, Recovery: submarineSwapRepo, Destination: walletRuntime, SatPerVByte: 2}
+			coordinator.Provider = swap.OfficialBoltzProvider{
+				Quotes:   swap.BoltzQuoteSource{API: boltzAPI},
+				Invoices: walletRuntime,
+				Refunder: refunder,
+			}
+		}
+		liquidityExecutor := tradeflow.SwapExecutor{Coordinator: coordinator, Balance: walletRuntime, Status: lspStatusSource}
+		tradeFlow.WithLiquidityExecutor(liquidityExecutor)
+		dexRelayWorker.SetLiquidityExecutor(liquidityExecutor)
 		if automatedTradeflowWorkers {
 			tradeFlow.WithHedgelessExecution(dexTaker, dexrelay.LNDAdapter{Client: lndClient})
 		}
@@ -591,6 +676,13 @@ func main() {
 		lndWorkersOnce.Do(func() {
 			lndHealthChecker.RunAndLog(ctx)
 			go lndHealthChecker.RunPeriodic(ctx, accountHealthInterval)
+			if boltzAPI != nil {
+				go func() {
+					if recoverErr := coordinator.Recover(ctx); recoverErr != nil && ctx.Err() == nil {
+						log.Printf("Boltz funded-swap recovery: %v", recoverErr)
+					}
+				}()
+			}
 		})
 
 		if primaryAddress != "" {

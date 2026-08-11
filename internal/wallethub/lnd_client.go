@@ -614,6 +614,15 @@ type PayInvoiceResponse struct {
 	PaymentPreimage string `json:"payment_preimage"`
 }
 
+// DecodedInvoice is LND's decoded BOLT11 payment request.
+type DecodedInvoice struct {
+	Destination string `json:"destination"`
+	PaymentHash string `json:"payment_hash"`
+	NumSatoshis string `json:"num_satoshis"`
+	Timestamp   string `json:"timestamp"`
+	Expiry      string `json:"expiry"`
+}
+
 // ChannelBalanceResponse represents a channel balance response.
 type ChannelBalanceResponse struct {
 	// LocalBalance is the local balance value for the channel balance response.
@@ -668,6 +677,19 @@ func (c *Client) PayInvoice(
 	}
 	if resp.PaymentError != "" {
 		return nil, fmt.Errorf("payment failed: %s", resp.PaymentError)
+	}
+	return &resp, nil
+}
+
+// DecodeInvoice asks LND to decode a BOLT11 without paying it.
+func (c *Client) DecodeInvoice(ctx context.Context, paymentRequest string) (*DecodedInvoice, error) {
+	paymentRequest = strings.TrimSpace(paymentRequest)
+	if paymentRequest == "" {
+		return nil, fmt.Errorf("payment request is required")
+	}
+	var resp DecodedInvoice
+	if err := c.get(ctx, "/v1/payreq/"+url.PathEscape(paymentRequest), &resp); err != nil {
+		return nil, err
 	}
 	return &resp, nil
 }

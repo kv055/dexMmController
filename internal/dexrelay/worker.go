@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
+	lnd "dexMmController/internal/wallethub"
 )
 
 // Worker advances bid-side tradeflow part 2: confirm the CEX withdrawal arrived, take
@@ -26,13 +28,21 @@ import (
 //   - Swap (robosats): the CEX withdraws to our LND hub; we watch the hub, then pay the
 //     offer's hold invoice over Lightning.
 type Worker struct {
-	repo     txStore
-	cex      *cexaccount.Service
-	btc      *bitcoin.NetworkDataFetcher
-	taker    offerTaker
-	resolver paymentResolver
-	lnd      dexaccount.LNDRelay
-	satPerVb int64
+	repo      txStore
+	cex       *cexaccount.Service
+	btc       *bitcoin.NetworkDataFetcher
+	taker     offerTaker
+	resolver  paymentResolver
+	lnd       dexaccount.LNDRelay
+	liquidity relayLiquidity
+	satPerVb  int64
+}
+type invoiceDecoder interface {
+	DecodeInvoice(context.Context, string) (*lnd.DecodedInvoice, error)
+}
+type relayLiquidity interface {
+	PrepareOutbound(context.Context, string, uint, int64, int64) error
+	Release(context.Context, string) error
 }
 
 // txStore is the transaction-row access the worker needs (satisfied by
@@ -86,6 +96,10 @@ func NewWorker(
 func (w *Worker) SetLND(client dexaccount.LNDRelay) {
 	w.lnd = client
 }
+
+// SetLiquidityExecutor wires the trade-scoped outbound reservation and optional
+// submarine swap used after a CEX withdrawal arrives and before an offer is taken.
+func (w *Worker) SetLiquidityExecutor(executor relayLiquidity) { w.liquidity = executor }
 
 // RunPeriodic polls initiated and arrived buy transactions on interval until ctx is cancelled.
 func (w *Worker) RunPeriodic(ctx context.Context, interval time.Duration) {
@@ -256,13 +270,25 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		tx.DexOfferID = offerID
 	}
 
+	paymentSat, routingFeeSat := relayLightningBudget(tx, meta)
+	if meta.ResolvedRoute.UsesLightning() {
+		if w.liquidity == nil {
+			return fmt.Errorf("Lightning liquidity preparation is not configured")
+		}
+		reservationID := fmt.Sprintf("relay-trade-%d", tx.ID)
+		if err := w.liquidity.PrepareOutbound(ctx, reservationID, tx.ID, paymentSat, routingFeeSat); err != nil {
+			return fmt.Errorf("prepare RoboSats outbound liquidity: %w", err)
+		}
+		defer func() { _ = w.liquidity.Release(context.WithoutCancel(ctx), reservationID) }()
+	}
+
 	// Take the offer (idempotent: only when no execution recorded yet).
 	if meta.Execution == nil {
 		takeResult, takeErr := w.taker.Take(ctx, dexaccount.OfferInput{
 			Exchange:   exchange,
 			OfferID:    offerID,
 			FiatAmount: tx.FiatAmount,
-			BTCAmount:  tx.CexBitcoinAmount,
+			BTCAmount:  float64(paymentSat) / 1e8,
 		})
 		if takeErr != nil {
 			return fmt.Errorf("take offer: %w", takeErr)
@@ -291,7 +317,7 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	w.populateCounterpartyPayment(ctx, tx, meta, exchange)
 
 	relayDetails := db.CexToDexRelayDetails{
-		AmountSat:   dexaccount.BTCToSats(tx.CexBitcoinAmount),
+		AmountSat:   paymentSat,
 		SatPerVbyte: w.satPerVb,
 		SentAt:      time.Now().UTC(),
 	}
@@ -339,11 +365,28 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		relayDetails.PaymentMethod = "onchain"
 		tx.DestinationAddress = depositAddr
 	case invoice != "":
-		paymentHash, payErr := w.lnd.PayInvoice(ctx, invoice, 0)
+		decoder, ok := w.lnd.(invoiceDecoder)
+		if !ok {
+			tx.Status = db.StatusDexTakenFundingNeedsReview
+			_ = w.repo.UpdateTransaction(tx)
+			return fmt.Errorf("LND invoice decoder is not configured")
+		}
+		decoded, decodeErr := decoder.DecodeInvoice(ctx, invoice)
+		if decodeErr != nil {
+			tx.Status = db.StatusDexTakenFundingNeedsReview
+			_ = w.repo.UpdateTransaction(tx)
+			return fmt.Errorf("decode RoboSats invoice: %w", decodeErr)
+		}
+		if validationErr := validateInvoice(invoice, decoded, relayDetails.AmountSat, time.Now()); validationErr != nil {
+			tx.Status = db.StatusDexTakenFundingNeedsReview
+			_ = w.repo.UpdateTransaction(tx)
+			return validationErr
+		}
+		_, payErr := w.lnd.PayInvoice(ctx, invoice, routingFeeSat)
 		if payErr != nil {
 			return fmt.Errorf("LND pay invoice: %w", payErr)
 		}
-		relayDetails.PaymentHash = paymentHash
+		relayDetails.PaymentHash = decoded.PaymentHash
 		relayDetails.Invoice = invoice
 		relayDetails.PaymentMethod = "lightning"
 	default:
@@ -351,6 +394,60 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	}
 
 	return w.finishRelay(tx, meta, relayDetails)
+}
+
+func relayLightningBudget(tx *db.Transaction, meta db.DexOfferMeta) (paymentSat, routingFeeSat int64) {
+	routingFeeSat = 100
+	amountBTC := tx.CexBitcoinAmount
+	if meta.ResolvedRoute != nil && meta.ResolvedRoute.RequiredBTCLiquidity > 0 {
+		amountBTC = meta.ResolvedRoute.RequiredBTCLiquidity
+	}
+	if len(meta.TradeflowOrder) > 0 {
+		var snapshot struct {
+			RequiredBTCLiquidity   float64
+			RoutingFeeAllowanceSat int64
+		}
+		if json.Unmarshal(meta.TradeflowOrder, &snapshot) == nil {
+			if snapshot.RequiredBTCLiquidity > 0 {
+				amountBTC = snapshot.RequiredBTCLiquidity
+			}
+			if snapshot.RoutingFeeAllowanceSat > 0 {
+				routingFeeSat = snapshot.RoutingFeeAllowanceSat
+			}
+		}
+	}
+	return dexaccount.BTCToSats(amountBTC), routingFeeSat
+}
+
+func validateInvoice(invoice string, decoded *lnd.DecodedInvoice, prepared int64, now time.Time) error {
+	if decoded == nil {
+		return fmt.Errorf("invoice decode returned no data")
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(invoice)), "lnbc") {
+		return fmt.Errorf("invoice network is not Bitcoin mainnet")
+	}
+	amount, err := strconv.ParseInt(decoded.NumSatoshis, 10, 64)
+	if err != nil || amount <= 0 {
+		return fmt.Errorf("invoice amount is invalid")
+	}
+	if amount > prepared {
+		return fmt.Errorf("invoice amount %d sats exceeds prepared balance %d sats", amount, prepared)
+	}
+	ts, err := strconv.ParseInt(decoded.Timestamp, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invoice timestamp is invalid")
+	}
+	expiry, err := strconv.ParseInt(decoded.Expiry, 10, 64)
+	if err != nil || expiry <= 0 {
+		return fmt.Errorf("invoice expiry is invalid")
+	}
+	if !time.Unix(ts, 0).Add(time.Duration(expiry) * time.Second).After(now) {
+		return fmt.Errorf("invoice is expired")
+	}
+	if strings.TrimSpace(decoded.Destination) == "" || strings.TrimSpace(decoded.PaymentHash) == "" {
+		return fmt.Errorf("invoice destination or payment hash is missing")
+	}
+	return nil
 }
 
 // populateCounterpartyPayment fetches a structured venue's counterparty fiat details once and

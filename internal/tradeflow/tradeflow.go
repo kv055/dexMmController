@@ -82,6 +82,13 @@ type Order struct {
 	// New HTTP executions require it; the small legacy fallback exists only for
 	// in-process callers and old persisted transactions during rollout.
 	ResolvedRoute *ResolvedRoute
+	// RoutingFeeAllowanceSat is reserved and passed to LND for Lightning DEX
+	// payments. Zero is normalized to the conservative default.
+	RoutingFeeAllowanceSat int64
+	// CEXWithdrawalFeeBTC and SwapSafetyHeadroomBTC are explicit gross-up
+	// inputs used by hedgefull RoboSats preparation.
+	CEXWithdrawalFeeBTC   float64
+	SwapSafetyHeadroomBTC float64
 }
 
 type ResolvedRoute = db.ResolvedRoute
@@ -165,8 +172,17 @@ type hedgelessWallet interface {
 	PayInvoice(ctx context.Context, paymentRequest string, feeLimitSat int64) (string, error)
 }
 
+type invoiceDecoder interface {
+	DecodeInvoice(context.Context, string) (*lnd.DecodedInvoice, error)
+}
+
 type chainConfirmationSource interface {
 	TransactionConfirmations(ctx context.Context, txid string) (int, error)
+}
+
+type liquidityExecutor interface {
+	EnsureOutbound(context.Context, string, uint, *pretrade.Report) error
+	Release(context.Context, string) error
 }
 
 type capabilityStore interface {
@@ -182,6 +198,14 @@ type TradeFlow struct {
 	hedgelessWallet hedgelessWallet
 	chainSource     chainConfirmationSource
 	capabilities    capabilityStore
+	liquidity       liquidityExecutor
+}
+
+// WithLiquidityExecutor wires trade-triggered submarine swaps. It is invoked
+// only when the read-only pre-trade report identifies an outbound shortfall.
+func (tf *TradeFlow) WithLiquidityExecutor(executor liquidityExecutor) *TradeFlow {
+	tf.liquidity = executor
+	return tf
 }
 
 // WithCapabilities installs the central fail-closed provider policy gate.
@@ -299,17 +323,18 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	}
 
 	preTrade := pretrade.Params{
-		Provider:             order.Provider,
-		FiatCurrency:         order.FiatCurrency,
-		RequiredCapital:      order.RequiredCapital,
-		RequiredBTCLiquidity: order.RequiredBTCLiquidity,
-		PaymentMethod:        order.PaymentMethod,
-		PaymentMethods:       order.PaymentMethods,
-		Dex:                  order.Dex,
-		MarketSide:           marketSide,
-		Settlement:           order.ResolvedRouteSettlement(),
-		TradeMode:            order.TradeMode,
-		HedgeVenue:           order.HedgeVenue,
+		Provider:               order.Provider,
+		FiatCurrency:           order.FiatCurrency,
+		RequiredCapital:        order.RequiredCapital,
+		RequiredBTCLiquidity:   order.RequiredBTCLiquidity,
+		PaymentMethod:          order.PaymentMethod,
+		PaymentMethods:         order.PaymentMethods,
+		Dex:                    order.Dex,
+		MarketSide:             marketSide,
+		Settlement:             order.ResolvedRouteSettlement(),
+		TradeMode:              order.TradeMode,
+		HedgeVenue:             order.HedgeVenue,
+		RoutingFeeAllowanceSat: routingFeeLimit(order),
 	}
 
 	// Step 1: pre-trade checks (read-only; result logged for observability).
@@ -352,15 +377,24 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 		slog.Info("tradeflow: transaction row created", "transaction_id", txID, "status", "CexTradeflowStarted")
 	}
 
-	// Step 2: spot market buy.
+	// Step 2: spot market buy. A swap route buys the DEX amount plus the same
+	// service/miner/withdrawal/headroom allowances priced during preparation.
+	spotAmountBTC := order.BTCAmount
+	if order.ResolvedRoute.UsesLightning() && order.RequiredBTCLiquidity > spotAmountBTC {
+		spotAmountBTC = order.RequiredBTCLiquidity
+	}
+	if report.SwapRequired {
+		swapOverhead := float64(report.ExpectedLockupSat+report.EstimatedFundingFeeSat-report.SwapShortfallSat) / 1e8
+		spotAmountBTC += swapOverhead + order.CEXWithdrawalFeeBTC + order.SwapSafetyHeadroomBTC
+	}
 	spotStart := time.Now()
-	spot, err := tf.svc.MarketBuyBTC(ctx, order.BTCAmount, preTrade)
+	spot, err := tf.svc.MarketBuyBTC(ctx, spotAmountBTC, preTrade)
 	metrics.OrderDuration.WithLabelValues(order.Provider, "spot").Observe(time.Since(spotStart).Seconds())
 	metrics.OrdersPlaced.WithLabelValues(order.Provider, "spot", metrics.Result(err)).Inc()
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: spot buy failed: %w", err)
 	}
-	filledBTC := order.BTCAmount
+	filledBTC := spotAmountBTC
 	if spot.Execution != nil {
 		filledBTC = spot.Execution.FilledBTC
 	}
@@ -609,6 +643,9 @@ func validate(o Order) error {
 	}
 	if o.RequiredCapital <= 0 {
 		return fmt.Errorf("tradeflow: required_capital must be greater than zero")
+	}
+	if o.RoutingFeeAllowanceSat < 0 || o.CEXWithdrawalFeeBTC < 0 || o.SwapSafetyHeadroomBTC < 0 {
+		return fmt.Errorf("tradeflow: swap fee allowances and safety headroom cannot be negative")
 	}
 	mode := cexaccount.NormalizeTradeMode(o.TradeMode)
 	if o.ResolvedRoute != nil && o.ResolvedRoute.UsesLightning() && o.RequiredBTCLiquidity <= 0 {

@@ -3,10 +3,13 @@ package dexrelay
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"testing"
+	"time"
 
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
+	lnd "dexMmController/internal/wallethub"
 )
 
 // fakeStore is a no-op txStore for the relay routing tests.
@@ -17,13 +20,32 @@ func (fakeStore) GetTransactionsByStatuses([]db.TransactionStatus, string) ([]db
 }
 func (fakeStore) UpdateTransaction(*db.Transaction) error { return nil }
 
+type fakeLiquidity struct{ events *[]string }
+
+func (f fakeLiquidity) PrepareOutbound(context.Context, string, uint, int64, int64) error {
+	if f.events != nil {
+		*f.events = append(*f.events, "prepare")
+	}
+	return nil
+}
+func (f fakeLiquidity) Release(context.Context, string) error {
+	if f.events != nil {
+		*f.events = append(*f.events, "release")
+	}
+	return nil
+}
+
 // fakeTaker returns a fixed deposit/invoice from Take and ResolveDeposit.
 type fakeTaker struct {
 	deposit string
 	invoice string
+	events  *[]string
 }
 
 func (f fakeTaker) Take(_ context.Context, in dexaccount.OfferInput) (*dexaccount.TakeResult, error) {
+	if f.events != nil {
+		*f.events = append(*f.events, "take")
+	}
 	return &dexaccount.TakeResult{
 		Execution:      map[string]any{"offer_id": in.OfferID, "exchange": in.Exchange, "trade_id": "t1"},
 		DepositAddress: f.deposit,
@@ -40,6 +62,8 @@ type fakeLND struct {
 	sendCalls    int
 	payCalls     int
 	lastSendAddr string
+	events       *[]string
+	decodedSat   string
 }
 
 func (f *fakeLND) SendOnChain(_ context.Context, addr string, _, _ int64) (string, error) {
@@ -49,7 +73,17 @@ func (f *fakeLND) SendOnChain(_ context.Context, addr string, _, _ int64) (strin
 }
 func (f *fakeLND) PayInvoice(context.Context, string, int64) (string, error) {
 	f.payCalls++
+	if f.events != nil {
+		*f.events = append(*f.events, "pay")
+	}
 	return "payment-hash", nil
+}
+func (f *fakeLND) DecodeInvoice(context.Context, string) (*lnd.DecodedInvoice, error) {
+	amount := f.decodedSat
+	if amount == "" {
+		amount = "1000000"
+	}
+	return &lnd.DecodedInvoice{Destination: "03dest", PaymentHash: "hash", NumSatoshis: amount, Timestamp: strconv.FormatInt(time.Now().Unix(), 10), Expiry: "3600"}, nil
 }
 func (f *fakeLND) ConfirmedBalanceForAddress(context.Context, string) (int64, error) { return 0, nil }
 
@@ -61,7 +95,7 @@ func metaFor(exchange string) json.RawMessage {
 	} else if exchange == "robosats" {
 		settlement = "onchain_swap"
 	}
-	raw, _ := db.MarshalDexOfferCreation(db.DexOfferMeta{SelectedOffer: sel, ResolvedRoute: &db.ResolvedRoute{ConfigVersion: 1, Provider: "binance", BTCAmount: 0.01, RequiredCapital: 1, Settlement: settlement}})
+	raw, _ := db.MarshalDexOfferCreation(db.DexOfferMeta{SelectedOffer: sel, ResolvedRoute: &db.ResolvedRoute{ConfigVersion: 1, Provider: "binance", BTCAmount: 0.01, RequiredBTCLiquidity: 0.01, RequiredCapital: 1, Settlement: settlement}})
 	return raw
 }
 
@@ -114,10 +148,11 @@ func TestRelayToDEX_RoutesByMethod(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			lnd := &fakeLND{}
 			w := &Worker{
-				repo:     fakeStore{},
-				taker:    c.taker,
-				lnd:      lnd,
-				satPerVb: 2,
+				repo:      fakeStore{},
+				taker:     c.taker,
+				lnd:       lnd,
+				satPerVb:  2,
+				liquidity: fakeLiquidity{},
 			}
 			tx := &db.Transaction{
 				ID:                 1,
@@ -156,5 +191,39 @@ func TestRelayToDEX_RoutesByMethod(t *testing.T) {
 				t.Errorf("relay payment_method = %q, want %q", relay.PaymentMethod, c.wantMethod)
 			}
 		})
+	}
+}
+
+func TestRelayToDEXPreparesBeforeTakeAndBlocksOversizedInvoice(t *testing.T) {
+	events := []string{}
+	lndClient := &fakeLND{events: &events, decodedSat: "1000001"}
+	w := &Worker{
+		repo:      fakeStore{},
+		taker:     fakeTaker{invoice: "lnbc1test", events: &events},
+		lnd:       lndClient,
+		liquidity: fakeLiquidity{events: &events},
+		satPerVb:  2,
+	}
+	tx := &db.Transaction{
+		ID:               9,
+		Status:           db.StatusCexCryptoWithdrawalArrived,
+		Dex:              db.DexRoboSats,
+		CexBitcoinAmount: 0.0101,
+		DexOfferCreation: metaFor("robosats"),
+	}
+	if err := w.relayToDEX(context.Background(), tx); err == nil {
+		t.Fatal("expected oversized invoice to require review")
+	}
+	if tx.Status != db.StatusDexTakenFundingNeedsReview || lndClient.payCalls != 0 {
+		t.Fatalf("status=%s payCalls=%d", tx.Status, lndClient.payCalls)
+	}
+	want := []string{"prepare", "take", "release"}
+	if len(events) != len(want) {
+		t.Fatalf("events=%v want=%v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("events=%v want=%v", events, want)
+		}
 	}
 }

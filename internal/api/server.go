@@ -71,6 +71,8 @@ type Server struct {
 	// rebuilt client whenever the operator saves new Telegram config via the UI.
 	telegramSettingsRepo               telegramSettingsBackend
 	transactionalLiquiditySettingsRepo transactionalLiquiditySettingsBackend
+	lspChannelConfig                   lspChannelConfigBackend
+	submarineSwapHistory               submarineSwapHistory
 	telegramStore                      *telegram.Store
 	telegramExtraSetters               []telegramClientSetter
 	telegramPairingMu                  sync.Mutex
@@ -248,6 +250,12 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/service-versions", s.handleServiceVersions)
 	mux.HandleFunc("POST /api/lnd/wallet/init", s.handleLNDWalletInit)
 	mux.HandleFunc("POST /api/lnd/addresses", s.handleLNDCreateAddress)
+	mux.HandleFunc("GET /api/lnd/channel-presets", s.handleLNDChannelPresets)
+	mux.HandleFunc("GET /api/lnd/lsp-channel", s.handleLSPChannelConfig)
+	mux.HandleFunc("PUT /api/lnd/lsp-channel", s.handleLSPChannelConfig)
+	mux.HandleFunc("GET /api/lnd/lsp-channel/status", s.handleLSPChannelStatus)
+	mux.HandleFunc("GET /api/lnd/lsp-channel/candidates", s.handleLSPChannelCandidates)
+	mux.HandleFunc("GET /api/lnd/submarine-swaps", s.handleSubmarineSwapHistory)
 	mux.HandleFunc("POST /api/lnd/channels/open", s.handleLNDOpenChannel)
 	mux.HandleFunc("POST /api/lnd/channels/close", s.handleLNDCloseChannel)
 	mux.HandleFunc("GET /api/cex/deposit-addresses", s.handleCexDepositAddresses)

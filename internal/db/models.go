@@ -168,6 +168,9 @@ const (
 	// StatusHedgelessFundingNeedsReview parks an ambiguous DEX/LND funding
 	// outcome while continuing to hold the singleton pool reservation.
 	StatusHedgelessFundingNeedsReview TransactionStatus = "HedgelessFundingNeedsReview"
+	// StatusDexTakenFundingNeedsReview means the DEX offer is already taken but
+	// the actual invoice failed validation or exceeds prepared liquidity.
+	StatusDexTakenFundingNeedsReview TransactionStatus = "DexTakenFundingNeedsReview"
 	// StatusCexTradeSuccessful is the status cex trade successful value.
 	StatusCexTradeSuccessful TransactionStatus = "CexTradeSucessfull"
 	// StatusCexCryptoWithdrawalInitiated is the status cex crypto withdrawal initiated value.

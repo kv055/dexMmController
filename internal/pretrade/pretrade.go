@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const (
@@ -30,6 +31,9 @@ type Params struct {
 	TradeMode            string
 	HedgeVenue           string
 	RequiredBTCLiquidity float64
+	// RoutingFeeAllowanceSat is reserved in addition to the expected invoice
+	// amount so a zero-fee Lightning payment cannot slip through pre-trade.
+	RoutingFeeAllowanceSat int64
 }
 
 // CheckResult is the outcome of one named check.
@@ -42,10 +46,21 @@ type CheckResult struct {
 
 // Report is the complete result of a policy evaluation.
 type Report struct {
-	OK                    bool          `json:"ok"`
-	Checks                []CheckResult `json:"checks"`
-	LNDWithdrawAddress    string        `json:"lnd_withdraw_address,omitempty"`
-	ResolvedPaymentMethod string        `json:"resolved_payment_method,omitempty"`
+	OK                     bool          `json:"ok"`
+	Checks                 []CheckResult `json:"checks"`
+	LNDWithdrawAddress     string        `json:"lnd_withdraw_address,omitempty"`
+	ResolvedPaymentMethod  string        `json:"resolved_payment_method,omitempty"`
+	LSPHealthy             bool          `json:"lsp_healthy"`
+	UsableInboundSat       int64         `json:"usable_inbound_sat"`
+	UsableOutboundSat      int64         `json:"usable_outbound_sat"`
+	SwapRequired           bool          `json:"swap_required"`
+	RequiredLightningSat   int64         `json:"required_lightning_sat"`
+	SwapShortfallSat       int64         `json:"swap_shortfall_sat"`
+	ExpectedLockupSat      int64         `json:"expected_lockup_sat"`
+	EstimatedFundingFeeSat int64         `json:"estimated_funding_fee_sat"`
+	QuoteExpiresAt         time.Time     `json:"quote_expires_at,omitempty"`
+	ConfirmedOnchainSat    int64         `json:"confirmed_onchain_sat"`
+	BlockingReason         string        `json:"blocking_reason,omitempty"`
 }
 
 // Checker is the dependency used by execution flows. Run returns all checks

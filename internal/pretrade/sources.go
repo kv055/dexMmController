@@ -3,7 +3,28 @@ package pretrade
 import (
 	"context"
 	"fmt"
+
+	"dexMmController/internal/lsp"
+	"dexMmController/internal/swap"
 )
+
+type SwapQuoteSource interface {
+	Quote(context.Context, int64) (swap.Quote, error)
+}
+type SwapQuoteSourceFunc func(context.Context, int64) (swap.Quote, error)
+
+func (f SwapQuoteSourceFunc) Quote(ctx context.Context, sat int64) (swap.Quote, error) {
+	return f(ctx, sat)
+}
+
+// LSPStatusSource reports the health of the specific operator-selected LSP
+// channel and conservative node-wide usable balances.
+type LSPStatusSource interface {
+	Status(context.Context) (lsp.Status, error)
+}
+type LSPStatusSourceFunc func(context.Context) (lsp.Status, error)
+
+func (f LSPStatusSourceFunc) Status(ctx context.Context) (lsp.Status, error) { return f(ctx) }
 
 // FiatControllerChecker verifies every notification channel selected on the
 // account linked to the resolved canonical payment method.

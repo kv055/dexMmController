@@ -54,8 +54,8 @@ func (f *fakeLNDWalletClient) ConnectPeer(context.Context, string, string) error
 	return nil
 }
 
-func (f *fakeLNDWalletClient) OpenChannel(context.Context, string, int64, int64, int64, bool) (*lnd.OpenChannelResponse, error) {
-	return &lnd.OpenChannelResponse{FundingTxid: "abc123"}, nil
+func (f *fakeLNDWalletClient) OpenChannel(context.Context, string, int64, int64, int64, int64, bool) (*lnd.OpenChannelResponse, error) {
+	return &lnd.OpenChannelResponse{FundingTxid: "abc123", OutputIndex: 0}, nil
 }
 
 func (f *fakeLNDWalletClient) CloseChannel(context.Context, string, bool, int64) (*lnd.CloseChannelResponse, error) {
@@ -83,13 +83,13 @@ func TestHandleLNDWalletStatusReturnsChannels(t *testing.T) {
 			SyncedToGraph:     true,
 		},
 		channels: []lnd.Channel{{
-			RemotePubkey: "03remote",
-			Capacity:     "100000",
-			LocalBalance: "90000",
+			RemotePubkey:  "03remote",
+			Capacity:      "100000",
+			LocalBalance:  "90000",
 			RemoteBalance: "10000",
-			Active:       true,
-			Private:      false,
-			ChannelPoint: "abc:0",
+			Active:        true,
+			Private:       false,
+			ChannelPoint:  "abc:0",
 		}},
 		peers: []lnd.Peer{{
 			PubKey:  "03remote",
@@ -134,6 +134,26 @@ func TestHandleLNDOpenChannelSuccess(t *testing.T) {
 	s.handleLNDOpenChannel(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestHandleLNDChannelPresets(t *testing.T) {
+	s := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "/api/lnd/channel-presets", nil)
+	rec := httptest.NewRecorder()
+	s.handleLNDChannelPresets(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"kraken"`) {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleLNDOpenChannelPresetEnforcesMinimum(t *testing.T) {
+	s := (&Server{}).WithLNDWallet(&fakeLNDWalletClient{})
+	req := httptest.NewRequest(http.MethodPost, "/api/lnd/channels/open", strings.NewReader(`{"preset_id":"kraken","local_funding_amount_sat":100000}`))
+	rec := httptest.NewRecorder()
+	s.handleLNDOpenChannel(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "requires at least") {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

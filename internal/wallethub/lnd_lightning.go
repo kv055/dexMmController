@@ -17,6 +17,9 @@ type OpenChannelRequest struct {
 	PushSat int64 `json:"push_sat"`
 	// SatPerVbyte is the sat per vbyte value for the open channel request.
 	SatPerVbyte int64 `json:"sat_per_vbyte"`
+	// TargetConf is the desired number of blocks for the funding transaction.
+	// LND uses it when no explicit SatPerVbyte is supplied.
+	TargetConf int64 `json:"target_conf"`
 	// Private reports whether the open channel request condition is true.
 	Private bool `json:"private"`
 }
@@ -25,6 +28,8 @@ type OpenChannelRequest struct {
 type OpenChannelResponse struct {
 	// FundingTxid is the funding txid value for the open channel response.
 	FundingTxid string `json:"funding_txid_str"`
+	// OutputIndex identifies the funding output in the transaction.
+	OutputIndex uint32 `json:"output_index"`
 }
 
 // CloseChannelResponse represents a close channel response.
@@ -49,12 +54,26 @@ type Channel struct {
 	RemoteBalance string `json:"remote_balance"`
 	// CommitFee is the fee value reported for the channel.
 	CommitFee string `json:"commit_fee"`
+	// LocalChanReserveSat is locked by LND and must not be counted as spendable.
+	LocalChanReserveSat string `json:"local_chan_reserve_sat"`
+	// RemoteChanReserveSat is unavailable to receive until the peer's channel
+	// reserve is satisfied, so it is excluded from usable inbound liquidity.
+	RemoteChanReserveSat string `json:"remote_chan_reserve_sat"`
+	// NumPendingHTLCs and PendingHTLCs describe amounts already committed to
+	// in-flight payments.  They are excluded from usable liquidity.
+	NumPendingHTLCs uint32        `json:"num_pending_htlcs"`
+	PendingHTLCs    []PendingHTLC `json:"pending_htlcs"`
 	// Private reports whether the channel condition is true.
 	Private bool `json:"private"`
 	// TotalSatoshisSent is the total satoshis sent value for the channel.
 	TotalSatoshisSent string `json:"total_satoshis_sent"`
 	// TotalSatoshisReceived is the total satoshis received value for the channel.
 	TotalSatoshisReceived string `json:"total_satoshis_received"`
+}
+
+// PendingHTLC is an amount committed to an in-flight channel payment.
+type PendingHTLC struct {
+	Amount string `json:"amount"`
 }
 
 // ListChannelsResponse represents a list channels response.
@@ -215,7 +234,7 @@ func (c *Client) ConnectPeer(ctx context.Context, pubkey, host string) error {
 func (c *Client) OpenChannel(
 	ctx context.Context,
 	nodePubkey string,
-	localFundingAmount, pushSat, satPerVbyte int64,
+	localFundingAmount, pushSat, satPerVbyte, targetConf int64,
 	private bool,
 ) (*OpenChannelResponse, error) {
 	req := OpenChannelRequest{
@@ -223,6 +242,7 @@ func (c *Client) OpenChannel(
 		LocalFundingAmount: localFundingAmount,
 		PushSat:            pushSat,
 		SatPerVbyte:        satPerVbyte,
+		TargetConf:         targetConf,
 		Private:            private,
 	}
 	var resp OpenChannelResponse

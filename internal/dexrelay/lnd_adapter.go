@@ -19,19 +19,21 @@ func (a LNDAdapter) SendOnChain(ctx context.Context, toAddress string, amountSat
 	return a.Client.SendOnChain(ctx, toAddress, amountSat, satPerVbyte)
 }
 
-// PayInvoice pays a BOLT11 invoice via LND and returns the payment preimage as receipt id.
+// PayInvoice pays a BOLT11 invoice without returning the secret preimage. Callers
+// persist the decoded payment hash as the non-secret receipt identifier.
 func (a LNDAdapter) PayInvoice(ctx context.Context, paymentRequest string, feeLimitSat int64) (string, error) {
 	if a.Client == nil {
 		return "", nil
 	}
-	resp, err := a.Client.PayInvoice(ctx, paymentRequest, feeLimitSat)
+	_, err := a.Client.PayInvoice(ctx, paymentRequest, feeLimitSat)
 	if err != nil {
 		return "", err
 	}
-	if resp != nil {
-		return resp.PaymentPreimage, nil
-	}
 	return "", nil
+}
+
+func (a LNDAdapter) DecodeInvoice(ctx context.Context, paymentRequest string) (*lnd.DecodedInvoice, error) {
+	return a.Client.DecodeInvoice(ctx, paymentRequest)
 }
 
 // ConfirmedBalanceForAddress returns the confirmed satoshi balance at a hub address.

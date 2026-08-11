@@ -26,28 +26,31 @@ type DexOfferMeta struct {
 // persisted with the transaction for relay and recovery. It contains no DEX
 // routing matrix: consumers use Settlement exactly as supplied.
 type ResolvedRoute struct {
-	ConfigVersion        int64   `json:"config_version"`
-	TradeMode            string  `json:"trade_mode"`
-	TargetDirection      string  `json:"target_direction"`
-	MarketSide           string  `json:"market_side"`
-	Provider             string  `json:"provider"`
-	HedgeVenue           string  `json:"hedge_venue,omitempty"`
-	HedgeSide            string  `json:"hedge_side,omitempty"`
-	HedgeNotional        float64 `json:"hedge_notional_btc,omitempty"`
-	Leverage             float64 `json:"leverage,omitempty"`
-	Settlement           string  `json:"settlement"`
-	NeedsHub             bool    `json:"needs_hub"`
-	NeedsLightning       bool    `json:"needs_lightning"`
-	FiatCurrency         string  `json:"fiat_currency"`
-	FiatAmount           float64 `json:"fiat_amount"`
-	BTCAmount            float64 `json:"btc_amount"`
-	RequiredCapital      float64 `json:"required_capital"`
-	RequiredBTCLiquidity float64 `json:"required_btc_liquidity"`
-	SecurityDepositBTC   float64 `json:"security_deposit_btc"`
+	ConfigVersion          int64   `json:"config_version"`
+	TradeMode              string  `json:"trade_mode"`
+	TargetDirection        string  `json:"target_direction"`
+	MarketSide             string  `json:"market_side"`
+	Provider               string  `json:"provider"`
+	HedgeVenue             string  `json:"hedge_venue,omitempty"`
+	HedgeSide              string  `json:"hedge_side,omitempty"`
+	HedgeNotional          float64 `json:"hedge_notional_btc,omitempty"`
+	Leverage               float64 `json:"leverage,omitempty"`
+	Settlement             string  `json:"settlement"`
+	NeedsHub               bool    `json:"needs_hub"`
+	NeedsLightning         bool    `json:"needs_lightning"`
+	FiatCurrency           string  `json:"fiat_currency"`
+	FiatAmount             float64 `json:"fiat_amount"`
+	BTCAmount              float64 `json:"btc_amount"`
+	RequiredCapital        float64 `json:"required_capital"`
+	RequiredBTCLiquidity   float64 `json:"required_btc_liquidity"`
+	SecurityDepositBTC     float64 `json:"security_deposit_btc"`
+	RoutingFeeAllowanceSat int64   `json:"routing_fee_allowance_sat"`
+	CEXWithdrawalFeeBTC    float64 `json:"cex_withdrawal_fee_btc"`
+	SwapSafetyHeadroomBTC  float64 `json:"swap_safety_headroom_btc"`
 }
 
 func (r ResolvedRoute) ValidForExecution() bool {
-	if r.ConfigVersion <= 0 || r.Provider == "" || r.BTCAmount <= 0 || r.RequiredCapital <= 0 {
+	if r.ConfigVersion <= 0 || r.Provider == "" || r.BTCAmount <= 0 || r.RequiredCapital <= 0 || r.RoutingFeeAllowanceSat < 0 || r.CEXWithdrawalFeeBTC < 0 || r.SwapSafetyHeadroomBTC < 0 {
 		return false
 	}
 	switch r.Settlement {

@@ -28,26 +28,29 @@ type poolRefillReconciler interface {
 
 // tradeflowRequest is the JSON body for POST /api/cex/tradeflow.
 type tradeflowRequest struct {
-	Provider             string                   `json:"provider"`
-	MarketSide           string                   `json:"market_side"`
-	BTCAmount            float64                  `json:"btc_amount"`
-	FiatCurrency         string                   `json:"fiat_currency"`
-	RequiredCapital      float64                  `json:"required_capital"`
-	RequiredBTCLiquidity float64                  `json:"required_btc_liquidity"`
-	SecurityDepositBTC   float64                  `json:"security_deposit_btc"`
-	HedgeVenue           string                   `json:"hedge_venue"`
-	HedgeSide            string                   `json:"hedge_side"`
-	HedgeNotionalBTC     float64                  `json:"hedge_notional_btc"`
-	Leverage             float64                  `json:"leverage"`
-	OfferID              string                   `json:"offer_id"`
-	Dex                  string                   `json:"dex"`
-	FiatAmount           float64                  `json:"fiat_amount"`
-	TransactionID        uint                     `json:"transaction_id,omitempty"`
-	SelectedOffer        json.RawMessage          `json:"selected_offer,omitempty"`
-	PaymentMethod        string                   `json:"payment_method"`
-	PaymentMethods       []string                 `json:"payment_methods"`
-	TradeMode            string                   `json:"trade_mode"`
-	ResolvedRoute        *tradeflow.ResolvedRoute `json:"resolved_route"`
+	Provider               string                   `json:"provider"`
+	MarketSide             string                   `json:"market_side"`
+	BTCAmount              float64                  `json:"btc_amount"`
+	FiatCurrency           string                   `json:"fiat_currency"`
+	RequiredCapital        float64                  `json:"required_capital"`
+	RequiredBTCLiquidity   float64                  `json:"required_btc_liquidity"`
+	SecurityDepositBTC     float64                  `json:"security_deposit_btc"`
+	HedgeVenue             string                   `json:"hedge_venue"`
+	HedgeSide              string                   `json:"hedge_side"`
+	HedgeNotionalBTC       float64                  `json:"hedge_notional_btc"`
+	Leverage               float64                  `json:"leverage"`
+	OfferID                string                   `json:"offer_id"`
+	Dex                    string                   `json:"dex"`
+	FiatAmount             float64                  `json:"fiat_amount"`
+	TransactionID          uint                     `json:"transaction_id,omitempty"`
+	SelectedOffer          json.RawMessage          `json:"selected_offer,omitempty"`
+	PaymentMethod          string                   `json:"payment_method"`
+	PaymentMethods         []string                 `json:"payment_methods"`
+	TradeMode              string                   `json:"trade_mode"`
+	ResolvedRoute          *tradeflow.ResolvedRoute `json:"resolved_route"`
+	RoutingFeeAllowanceSat int64                    `json:"routing_fee_allowance_sat"`
+	CEXWithdrawalFeeBTC    float64                  `json:"cex_withdrawal_fee_btc"`
+	SwapSafetyHeadroomBTC  float64                  `json:"swap_safety_headroom_btc"`
 }
 
 func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +122,9 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 	req.HedgeSide = req.ResolvedRoute.HedgeSide
 	req.HedgeNotionalBTC = req.ResolvedRoute.HedgeNotional
 	req.Leverage = req.ResolvedRoute.Leverage
+	req.RoutingFeeAllowanceSat = req.ResolvedRoute.RoutingFeeAllowanceSat
+	req.CEXWithdrawalFeeBTC = req.ResolvedRoute.CEXWithdrawalFeeBTC
+	req.SwapSafetyHeadroomBTC = req.ResolvedRoute.SwapSafetyHeadroomBTC
 	if req.ResolvedRoute.NeedsLightning && req.RequiredBTCLiquidity <= 0 {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero for Swap_main2lightning routes"))
 		return
@@ -161,26 +167,29 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.tradeFlow.Run(r.Context(), tradeflow.Order{
-		Provider:             provider,
-		MarketSide:           marketSide,
-		BTCAmount:            req.BTCAmount,
-		FiatCurrency:         req.FiatCurrency,
-		RequiredCapital:      req.RequiredCapital,
-		RequiredBTCLiquidity: req.RequiredBTCLiquidity,
-		SecurityDepositBTC:   req.SecurityDepositBTC,
-		HedgeVenue:           req.HedgeVenue,
-		HedgeSide:            req.HedgeSide,
-		HedgeNotionalBTC:     req.HedgeNotionalBTC,
-		Leverage:             req.Leverage,
-		OfferID:              strings.TrimSpace(req.OfferID),
-		Dex:                  strings.TrimSpace(req.Dex),
-		FiatAmount:           req.FiatAmount,
-		TransactionID:        req.TransactionID,
-		SelectedOffer:        req.SelectedOffer,
-		PaymentMethod:        strings.TrimSpace(req.PaymentMethod),
-		PaymentMethods:       req.PaymentMethods,
-		TradeMode:            tradeMode,
-		ResolvedRoute:        req.ResolvedRoute,
+		Provider:               provider,
+		MarketSide:             marketSide,
+		BTCAmount:              req.BTCAmount,
+		FiatCurrency:           req.FiatCurrency,
+		RequiredCapital:        req.RequiredCapital,
+		RequiredBTCLiquidity:   req.RequiredBTCLiquidity,
+		SecurityDepositBTC:     req.SecurityDepositBTC,
+		HedgeVenue:             req.HedgeVenue,
+		HedgeSide:              req.HedgeSide,
+		HedgeNotionalBTC:       req.HedgeNotionalBTC,
+		Leverage:               req.Leverage,
+		OfferID:                strings.TrimSpace(req.OfferID),
+		Dex:                    strings.TrimSpace(req.Dex),
+		FiatAmount:             req.FiatAmount,
+		TransactionID:          req.TransactionID,
+		SelectedOffer:          req.SelectedOffer,
+		PaymentMethod:          strings.TrimSpace(req.PaymentMethod),
+		PaymentMethods:         req.PaymentMethods,
+		TradeMode:              tradeMode,
+		ResolvedRoute:          req.ResolvedRoute,
+		RoutingFeeAllowanceSat: req.RoutingFeeAllowanceSat,
+		CEXWithdrawalFeeBTC:    req.CEXWithdrawalFeeBTC,
+		SwapSafetyHeadroomBTC:  req.SwapSafetyHeadroomBTC,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -243,17 +252,18 @@ func (s *Server) handlePoolRefillReconcile(w http.ResponseWriter, r *http.Reques
 
 // preTradeCheckRequest is the JSON body for POST /api/cex/pre-trade-check.
 type preTradeCheckRequest struct {
-	Provider             string   `json:"provider"`
-	FiatCurrency         string   `json:"fiat_currency"`
-	RequiredCapital      float64  `json:"required_capital"`
-	PaymentMethod        string   `json:"payment_method"`
-	PaymentMethods       []string `json:"payment_methods"`
-	Dex                  string   `json:"dex"`
-	MarketSide           string   `json:"market_side"`
-	Settlement           string   `json:"settlement"`
-	TradeMode            string   `json:"trade_mode"`
-	HedgeVenue           string   `json:"hedge_venue"`
-	RequiredBTCLiquidity float64  `json:"required_btc_liquidity"`
+	Provider               string   `json:"provider"`
+	FiatCurrency           string   `json:"fiat_currency"`
+	RequiredCapital        float64  `json:"required_capital"`
+	PaymentMethod          string   `json:"payment_method"`
+	PaymentMethods         []string `json:"payment_methods"`
+	Dex                    string   `json:"dex"`
+	MarketSide             string   `json:"market_side"`
+	Settlement             string   `json:"settlement"`
+	TradeMode              string   `json:"trade_mode"`
+	HedgeVenue             string   `json:"hedge_venue"`
+	RequiredBTCLiquidity   float64  `json:"required_btc_liquidity"`
+	RoutingFeeAllowanceSat int64    `json:"routing_fee_allowance_sat"`
 }
 
 // handleCexPreTradeCheck runs pre-trade checks (read-only) and reports the
@@ -299,23 +309,27 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero for Swap_main2lightning routes"))
 		return
 	}
+	if req.Settlement == "onchain_swap" && req.RoutingFeeAllowanceSat <= 0 {
+		req.RoutingFeeAllowanceSat = 100
+	}
 	if err := s.requireCEXCapabilities(r.Context(), canonical, tradeMode, req.HedgeVenue); err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
 
 	report, err := s.cexAccount.PreTradeCheck(r.Context(), pretrade.Params{
-		Provider:             provider,
-		FiatCurrency:         req.FiatCurrency,
-		RequiredCapital:      req.RequiredCapital,
-		PaymentMethod:        strings.TrimSpace(req.PaymentMethod),
-		PaymentMethods:       req.PaymentMethods,
-		Dex:                  dex,
-		MarketSide:           marketSide,
-		Settlement:           req.Settlement,
-		TradeMode:            tradeMode,
-		HedgeVenue:           strings.TrimSpace(req.HedgeVenue),
-		RequiredBTCLiquidity: req.RequiredBTCLiquidity,
+		Provider:               provider,
+		FiatCurrency:           req.FiatCurrency,
+		RequiredCapital:        req.RequiredCapital,
+		PaymentMethod:          strings.TrimSpace(req.PaymentMethod),
+		PaymentMethods:         req.PaymentMethods,
+		Dex:                    dex,
+		MarketSide:             marketSide,
+		Settlement:             req.Settlement,
+		TradeMode:              tradeMode,
+		HedgeVenue:             strings.TrimSpace(req.HedgeVenue),
+		RequiredBTCLiquidity:   req.RequiredBTCLiquidity,
+		RoutingFeeAllowanceSat: req.RoutingFeeAllowanceSat,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)

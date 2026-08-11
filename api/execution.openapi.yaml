@@ -203,6 +203,9 @@ components:
         market_side:
           type: string
           enum: [bid, ask]
+        settlement:
+          type: string
+          enum: [onchain_direct, onchain_hub, onchain_swap]
         trade_mode:
           $ref: '#/components/schemas/TradeMode'
         hedge_venue:
@@ -213,6 +216,9 @@ components:
           description: >
             Position BTC plus security deposit. Required for hedgeless on-chain
             liquidity-pool checks and for Swap_main2lightning Lightning liquidity.
+        routing_fee_allowance_sat:
+          type: integer
+          minimum: 1
     PreTradeCheckResult:
       type: object
       additionalProperties: false
@@ -241,6 +247,55 @@ components:
           type: string
         resolved_payment_method:
           type: string
+        lsp_healthy:
+          type: boolean
+        usable_inbound_sat:
+          type: integer
+        usable_outbound_sat:
+          type: integer
+        swap_required:
+          type: boolean
+        required_lightning_sat:
+          type: integer
+        swap_shortfall_sat:
+          type: integer
+        expected_lockup_sat:
+          type: integer
+        estimated_funding_fee_sat:
+          type: integer
+        quote_expires_at:
+          type: string
+          format: date-time
+        confirmed_onchain_sat:
+          type: integer
+        blocking_reason:
+          type: string
+    ResolvedRoute:
+      type: object
+      additionalProperties: false
+      required: [config_version, trade_mode, target_direction, market_side, provider, settlement, fiat_currency, fiat_amount, btc_amount, required_capital, required_btc_liquidity]
+      properties:
+        config_version: {type: integer}
+        trade_mode: {$ref: '#/components/schemas/TradeMode'}
+        target_direction: {type: string}
+        market_side: {type: string, enum: [bid, ask]}
+        provider: {type: string}
+        hedge_venue: {type: string}
+        hedge_side: {type: string}
+        hedge_notional_btc: {type: number}
+        leverage: {type: number}
+        settlement: {type: string, enum: [onchain_direct, onchain_hub, onchain_swap]}
+        needs_hub: {type: boolean}
+        needs_lightning: {type: boolean}
+        fiat_currency: {type: string}
+        fiat_amount: {type: number}
+        btc_amount: {type: number}
+        required_capital: {type: number}
+        required_btc_liquidity: {type: number}
+        security_deposit_btc: {type: number}
+        routing_fee_allowance_sat: {type: integer, minimum: 1}
+        cex_withdrawal_fee_btc: {type: number, minimum: 0}
+        swap_safety_headroom_btc: {type: number, minimum: 0}
     CexTradeflowRequest:
       type: object
       additionalProperties: false
@@ -304,6 +359,17 @@ components:
             type: string
         trade_mode:
           $ref: '#/components/schemas/TradeMode'
+        resolved_route:
+          $ref: '#/components/schemas/ResolvedRoute'
+        routing_fee_allowance_sat:
+          type: integer
+          minimum: 1
+        cex_withdrawal_fee_btc:
+          type: number
+          minimum: 0
+        swap_safety_headroom_btc:
+          type: number
+          minimum: 0
     CexTradeflowResult:
       type: object
       additionalProperties: false

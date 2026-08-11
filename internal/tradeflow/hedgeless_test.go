@@ -9,6 +9,7 @@ import (
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
 	"dexMmController/internal/pretrade"
+	lnd "dexMmController/internal/wallethub"
 )
 
 type hedgelessFakeService struct {
@@ -55,6 +56,9 @@ func (w *fakeHedgelessWallet) SendOnChain(context.Context, string, int64, int64)
 func (w *fakeHedgelessWallet) PayInvoice(context.Context, string, int64) (string, error) {
 	w.payCalls++
 	return "payment-hash", nil
+}
+func (w *fakeHedgelessWallet) DecodeInvoice(context.Context, string) (*lnd.DecodedInvoice, error) {
+	return &lnd.DecodedInvoice{Destination: "03destination", PaymentHash: "hash", NumSatoshis: "2000000", Timestamp: "1786460000", Expiry: "86400"}, nil
 }
 
 type fakeBisqResolver struct{ balanceCalls int }

@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"commons/mmcapabilities"
 	"commons/paymentmethods"
@@ -33,6 +34,8 @@ type BidChecker struct {
 	btcBalance        BTCBalanceSource
 	lightningBalance  LightningBalanceSource
 	lightningChannels LightningChannelSource
+	lspStatus         LSPStatusSource
+	swapQuotes        SwapQuoteSource
 	lndOnline         LNDOnlineSource
 }
 
@@ -97,6 +100,19 @@ func (c *BidChecker) SetLightningBalance(src LightningBalanceSource) {
 func (c *BidChecker) SetLightningChannels(src LightningChannelSource) {
 	c.walletMu.Lock()
 	c.lightningChannels = src
+	c.walletMu.Unlock()
+}
+
+// SetLSPStatus injects the selected manual-channel status source. This source
+// is intentionally read-only and does not expose channel lifecycle actions.
+func (c *BidChecker) SetLSPStatus(src LSPStatusSource) {
+	c.walletMu.Lock()
+	c.lspStatus = src
+	c.walletMu.Unlock()
+}
+func (c *BidChecker) SetSwapQuoteSource(src SwapQuoteSource) {
+	c.walletMu.Lock()
+	c.swapQuotes = src
 	c.walletMu.Unlock()
 }
 
@@ -183,13 +199,30 @@ func (c *BidChecker) Run(ctx context.Context, p Params) Report {
 		}})
 	}
 	if hasLightning {
-		label := "LND outbound liquidity"
-		if marketSide == "ask" {
-			label = "LND inbound liquidity"
+		c.walletMu.RLock()
+		hasLSPStatus := c.lspStatus != nil
+		c.walletMu.RUnlock()
+		if hasLSPStatus {
+			appendResult(&report, namedCheck{"lsp_channel", "Registered LSP channel", func() error {
+				return c.checkLSPAndLiquidity(ctx, marketSide, p, &report)
+			}})
+			// The configured LSP policy supplies conservative node-wide amounts;
+			// do not reintroduce aggregate ChannelBalance here.
+			appendResult(&report, namedCheck{"lightning_liquidity", "Node Lightning liquidity", func() error {
+				if report.BlockingReason != "" {
+					return fmt.Errorf("%s", report.BlockingReason)
+				}
+				return nil
+			}})
+		} else {
+			// Transitional compatibility for callers which have not yet wired the
+			// manual LSP configuration source. Production main always wires it.
+			label := "LND outbound liquidity"
+			if marketSide == "ask" {
+				label = "LND inbound liquidity"
+			}
+			appendResult(&report, namedCheck{"lightning_liquidity", label, func() error { return c.checkLightningLiquidity(ctx, marketSide, p.RequiredBTCLiquidity) }})
 		}
-		appendResult(&report, namedCheck{"lightning_liquidity", label, func() error {
-			return c.checkLightningLiquidity(ctx, marketSide, p.RequiredBTCLiquidity)
-		}})
 	}
 
 	// --- Exchange ---
@@ -255,6 +288,85 @@ func (c *BidChecker) Run(ctx context.Context, p Params) Report {
 	report.Checks = append(report.Checks, notificationRes)
 
 	return report
+}
+
+func (c *BidChecker) checkLSPAndLiquidity(ctx context.Context, side string, p Params, report *Report) error {
+	c.walletMu.RLock()
+	source := c.lspStatus
+	c.walletMu.RUnlock()
+	if source == nil {
+		report.BlockingReason = "registered LSP channel status is not available"
+		return fmt.Errorf("pre-trade check failed: %s", report.BlockingReason)
+	}
+	status, err := source.Status(ctx)
+	if err != nil {
+		return fmt.Errorf("reading registered LSP channel: %w", err)
+	}
+	report.LSPHealthy = status.LSPHealthy
+	report.UsableInboundSat = status.UsableInboundSat
+	report.UsableOutboundSat = status.UsableOutboundSat
+	required := int64(p.RequiredBTCLiquidity*1e8+.5) + p.RoutingFeeAllowanceSat
+	if required <= 0 {
+		return fmt.Errorf("pre-trade check failed: required Lightning amount is missing or zero")
+	}
+	report.RequiredLightningSat = required
+	if !status.LSPHealthy {
+		report.BlockingReason = status.Reason
+		return fmt.Errorf("pre-trade check failed: %s", status.Reason)
+	}
+	if side == "ask" {
+		if status.UsableInboundSat < required {
+			report.BlockingReason = fmt.Sprintf("insufficient node-wide usable inbound liquidity: available %d sats, required %d sats", status.UsableInboundSat, required)
+			return fmt.Errorf("pre-trade check failed: %s", report.BlockingReason)
+		}
+		return nil
+	}
+	if status.UsableOutboundSat >= required {
+		return nil
+	}
+	shortfall := required - status.UsableOutboundSat
+	report.SwapRequired = true
+	report.SwapShortfallSat = shortfall
+	if status.LSPInboundSat < shortfall {
+		report.BlockingReason = fmt.Sprintf("insufficient registered LSP inbound liquidity for submarine swap: available %d sats, required %d sats", status.LSPInboundSat, shortfall)
+		return fmt.Errorf("pre-trade check failed: %s", report.BlockingReason)
+	}
+	c.walletMu.RLock()
+	quotes := c.swapQuotes
+	c.walletMu.RUnlock()
+	if quotes == nil {
+		report.BlockingReason = "Boltz quote source is not configured"
+		return fmt.Errorf("pre-trade check failed: %s", report.BlockingReason)
+	}
+	quote, quoteErr := quotes.Quote(ctx, shortfall)
+	if quoteErr != nil {
+		report.BlockingReason = quoteErr.Error()
+		return fmt.Errorf("pre-trade check failed: obtain Boltz quote: %w", quoteErr)
+	}
+	if quoteErr = quote.Validate(time.Now(), status.MaxSwapFeeSat, status.MaxSwapFeePPM); quoteErr != nil {
+		report.BlockingReason = quoteErr.Error()
+		return fmt.Errorf("pre-trade check failed: %w", quoteErr)
+	}
+	report.ExpectedLockupSat = quote.LockupAmountSat
+	report.EstimatedFundingFeeSat = quote.FundingTxFeeSat
+	report.QuoteExpiresAt = quote.ExpiresAt
+	c.walletMu.RLock()
+	onchainSource := c.btcBalance
+	c.walletMu.RUnlock()
+	if onchainSource == nil {
+		report.BlockingReason = "confirmed LND on-chain balance is not available"
+		return fmt.Errorf("pre-trade check failed: %s", report.BlockingReason)
+	}
+	onchainBTC, balanceErr := onchainSource.ConfirmedOnChainBTC(ctx)
+	if balanceErr != nil {
+		return fmt.Errorf("read confirmed LND on-chain balance: %w", balanceErr)
+	}
+	report.ConfirmedOnchainSat = int64(onchainBTC * 1e8)
+	if report.ConfirmedOnchainSat < quote.LockupAmountSat+quote.FundingTxFeeSat {
+		report.BlockingReason = fmt.Sprintf("insufficient confirmed LND on-chain balance: available %d sats, expected lockup and funding fee %d sats", report.ConfirmedOnchainSat, quote.LockupAmountSat+quote.FundingTxFeeSat)
+		return fmt.Errorf("pre-trade check failed: %s", report.BlockingReason)
+	}
+	return nil
 }
 
 // RunAll runs every check and returns an aggregated error listing all failures,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
 	"dexMmController/internal/pretrade"
+	lnd "dexMmController/internal/wallethub"
 )
 
 const (
@@ -37,6 +39,7 @@ const (
 	bisqFundingPollTimeout    = 10 * time.Minute
 	refillRecoveryGrace       = 3 * time.Minute
 	maxRefillAttempts         = 2
+	defaultRoutingFeeLimitSat = int64(100)
 )
 
 type hedgelessCEX interface {
@@ -113,7 +116,8 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 		RequiredBTCLiquidity: order.RequiredBTCLiquidity,
 		PaymentMethod:        order.PaymentMethod, PaymentMethods: order.PaymentMethods,
 		Dex: order.Dex, MarketSide: normalizeMarketSide(order.MarketSide), Settlement: order.ResolvedRouteSettlement(),
-		TradeMode: order.TradeMode,
+		TradeMode:              order.TradeMode,
+		RoutingFeeAllowanceSat: routingFeeLimit(order),
 	}
 	report, err := tf.svc.PreTradeCheck(ctx, preTrade)
 	if err != nil {
@@ -148,6 +152,18 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 	if err != nil {
 		return nil, fmt.Errorf("tradeflow: reserve hedgeless liquidity pool: %w", err)
 	}
+	if report.SwapRequired {
+		reservationID := fmt.Sprintf("trade-%d", txID)
+		if tf.liquidity == nil {
+			_ = markDexTakenFundingNeedsReview(tf.store, txID)
+			return nil, fmt.Errorf("tradeflow: submarine swap is required but execution is not configured")
+		}
+		if err := tf.liquidity.EnsureOutbound(ctx, reservationID, txID, report); err != nil {
+			_ = markHedgelessNeedsReview(tf.store, txID, false)
+			return nil, fmt.Errorf("tradeflow: prepare RoboSats outbound liquidity: %w", err)
+		}
+		defer func() { _ = tf.liquidity.Release(context.WithoutCancel(ctx), reservationID) }()
+	}
 
 	var spot *cexaccount.SpotOrderResult
 	var withdrawal *WithdrawalResult
@@ -167,7 +183,11 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 		// A just-submitted spend may not be reflected by every LND balance RPC yet.
 		// Never buy less than the BTC committed to this trade, even if the observed
 		// target-current deficit temporarily appears smaller.
-		deficit := math.Max(poolTarget-current, order.RequiredBTCLiquidity)
+		minimumDeficit := order.RequiredBTCLiquidity
+		if report.SwapRequired && report.ExpectedLockupSat > report.SwapShortfallSat {
+			minimumDeficit += float64(report.ExpectedLockupSat+report.EstimatedFundingFeeSat-report.SwapShortfallSat) / 1e8
+		}
+		deficit := math.Max(poolTarget-current, minimumDeficit) + order.CEXWithdrawalFeeBTC
 		spot, withdrawal, err = tf.startRefill(ctx, txID, order, preTrade, report.LNDWithdrawAddress, deficit, 1)
 		return err
 	}
@@ -268,17 +288,74 @@ func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Orde
 		return funding, taken.Execution, nil
 	}
 	if invoice != "" {
-		hash, err := tf.hedgelessWallet.PayInvoice(ctx, invoice, 0)
+		decoder, ok := tf.hedgelessWallet.(invoiceDecoder)
+		if !ok {
+			_ = markDexTakenFundingNeedsReview(tf.store, txID)
+			return nil, nil, fmt.Errorf("RoboSats invoice decoder is not configured")
+		}
+		decoded, decodeErr := decoder.DecodeInvoice(ctx, invoice)
+		if decodeErr != nil {
+			_ = markDexTakenFundingNeedsReview(tf.store, txID)
+			return nil, nil, fmt.Errorf("decode RoboSats invoice: %w", decodeErr)
+		}
+		if err := validateRoboSatsInvoice(invoice, decoded, amountSat, time.Now()); err != nil {
+			_ = markDexTakenFundingNeedsReview(tf.store, txID)
+			return nil, nil, err
+		}
+		_, err := tf.hedgelessWallet.PayInvoice(ctx, invoice, routingFeeLimit(order))
 		if err != nil {
 			return nil, nil, err
 		}
-		funding := &DEXFundingResult{Exchange: exchange, Method: "lightning", AmountBTC: order.RequiredBTCLiquidity, PaymentHash: hash, Status: "funded"}
+		funding := &DEXFundingResult{Exchange: exchange, Method: "lightning", AmountBTC: order.RequiredBTCLiquidity, PaymentHash: decoded.PaymentHash, Status: "funded"}
 		if err := onPoolSpent(funding); err != nil {
 			return nil, nil, fmt.Errorf("start pool refill after Lightning funding: %w", err)
 		}
 		return funding, taken.Execution, nil
 	}
 	return nil, nil, fmt.Errorf("%s returned no funding destination", exchange)
+}
+
+func routingFeeLimit(order Order) int64 {
+	if order.RoutingFeeAllowanceSat > 0 {
+		return order.RoutingFeeAllowanceSat
+	}
+	return defaultRoutingFeeLimitSat
+}
+
+func validateRoboSatsInvoice(invoice string, decoded *lnd.DecodedInvoice, preparedSat int64, now time.Time) error {
+	if decoded == nil {
+		return fmt.Errorf("RoboSats invoice decode returned no data")
+	}
+	lower := strings.ToLower(strings.TrimSpace(invoice))
+	if !strings.HasPrefix(lower, "lnbc") {
+		return fmt.Errorf("RoboSats invoice network is not Bitcoin mainnet")
+	}
+	amount, err := strconv.ParseInt(strings.TrimSpace(decoded.NumSatoshis), 10, 64)
+	if err != nil || amount <= 0 {
+		return fmt.Errorf("RoboSats invoice has invalid amount")
+	}
+	if amount > preparedSat {
+		return fmt.Errorf("RoboSats invoice amount %d sats exceeds prepared balance %d sats", amount, preparedSat)
+	}
+	ts, err := strconv.ParseInt(strings.TrimSpace(decoded.Timestamp), 10, 64)
+	if err != nil {
+		return fmt.Errorf("RoboSats invoice timestamp is invalid")
+	}
+	expiry, err := strconv.ParseInt(strings.TrimSpace(decoded.Expiry), 10, 64)
+	if err != nil || expiry <= 0 {
+		return fmt.Errorf("RoboSats invoice expiry is invalid")
+	}
+	if !time.Unix(ts, 0).Add(time.Duration(expiry) * time.Second).After(now) {
+		return fmt.Errorf("RoboSats invoice is expired")
+	}
+	if strings.TrimSpace(decoded.Destination) == "" || strings.TrimSpace(decoded.PaymentHash) == "" {
+		return fmt.Errorf("RoboSats invoice destination or payment hash is missing")
+	}
+	return nil
+}
+
+func markDexTakenFundingNeedsReview(store transactionStore, id uint) error {
+	return mutateRow(store, id, func(tx *db.Transaction) { tx.Status = db.StatusDexTakenFundingNeedsReview })
 }
 
 func waitForBisqFunding(ctx context.Context, resolver directBalanceResolver, exchange, address string, wantBTC float64) error {

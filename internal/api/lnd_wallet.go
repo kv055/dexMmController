@@ -27,7 +27,7 @@ type lndWalletClient interface {
 	OpenChannel(
 		ctx context.Context,
 		nodePubkey string,
-		localFundingAmount, pushSat, satPerVbyte int64,
+		localFundingAmount, pushSat, satPerVbyte, targetConf int64,
 		private bool,
 	) (*lnd.OpenChannelResponse, error)
 	CloseChannel(
@@ -108,16 +108,21 @@ type createLNDAddressResponse struct {
 }
 
 type openLNDChannelRequest struct {
-	NodePubkey            string `json:"node_pubkey"`
-	PeerHost              string `json:"peer_host"`
-	LocalFundingAmountSat int64  `json:"local_funding_amount_sat"`
-	PushSat               int64  `json:"push_sat"`
-	SatPerVbyte           int64  `json:"sat_per_vbyte"`
-	Private               bool   `json:"private"`
+	PresetID               string `json:"preset_id"`
+	NodePubkey             string `json:"node_pubkey"`
+	PeerHost               string `json:"peer_host"`
+	LocalFundingAmountSat  int64  `json:"local_funding_amount_sat"`
+	PushSat                int64  `json:"push_sat"`
+	SatPerVbyte            int64  `json:"sat_per_vbyte"`
+	TargetConf             int64  `json:"target_conf"`
+	Private                bool   `json:"private"`
+	AllowAdditionalChannel bool   `json:"allow_additional_channel"`
 }
 
 type openLNDChannelResponse struct {
-	FundingTxid string `json:"funding_txid"`
+	FundingTxid  string `json:"funding_txid"`
+	ChannelPoint string `json:"channel_point"`
+	Status       string `json:"status"`
 }
 
 type closeLNDChannelRequest struct {
@@ -225,7 +230,30 @@ func (s *Server) handleLNDOpenChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	presetID := strings.TrimSpace(req.PresetID)
 	nodePubkey := strings.TrimSpace(req.NodePubkey)
+	peerHost := strings.TrimSpace(req.PeerHost)
+	if presetID != "" {
+		preset, ok := enabledChannelPreset(presetID)
+		if !ok {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("unknown or disabled channel preset %q", presetID))
+			return
+		}
+		if nodePubkey != "" || peerHost != "" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("preset_id cannot be combined with manual node details"))
+			return
+		}
+		nodePubkey = preset.NodePubkey
+		peerHost = preset.PeerHost
+		if req.LocalFundingAmountSat < preset.MinFundingAmountSat {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("%s requires at least %d sats", preset.Name, preset.MinFundingAmountSat))
+			return
+		}
+		if preset.MaxFundingAmountSat > 0 && req.LocalFundingAmountSat > preset.MaxFundingAmountSat {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("%s accepts at most %d sats", preset.Name, preset.MaxFundingAmountSat))
+			return
+		}
+	}
 	if nodePubkey == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("node_pubkey is required"))
 		return
@@ -234,16 +262,42 @@ func (s *Server) handleLNDOpenChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("local_funding_amount_sat must be positive"))
 		return
 	}
-	if req.SatPerVbyte <= 0 {
-		req.SatPerVbyte = 2
+	if req.PushSat < 0 || req.PushSat >= req.LocalFundingAmountSat {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("push_sat must be non-negative and smaller than local_funding_amount_sat"))
+		return
+	}
+	if req.SatPerVbyte < 0 || req.TargetConf < 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("fee settings must be positive"))
+		return
+	}
+	if req.SatPerVbyte == 0 && req.TargetConf == 0 {
+		req.TargetConf = 3
 	}
 
-	peerHost := strings.TrimSpace(req.PeerHost)
-	if peerHost != "" {
+	channels, err := client.ListChannels(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Errorf("list channels: %w", err))
+		return
+	}
+	pending, err := client.ListPendingChannels(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Errorf("list pending channels: %w", err))
+		return
+	}
+	if hasChannelWithPeer(channels, pending, nodePubkey) && !req.AllowAdditionalChannel {
+		writeError(w, http.StatusConflict, fmt.Errorf("an open or pending channel already exists for this node; confirm opening an additional channel"))
+		return
+	}
+
+	peerRetained := false
+	if peerHost != "" && !isConnectedPeer(r.Context(), client, nodePubkey) {
 		if err := client.ConnectPeer(r.Context(), nodePubkey, peerHost); err != nil {
-			writeError(w, http.StatusBadGateway, fmt.Errorf("connect peer: %w", err))
-			return
+			if !isConnectedPeer(r.Context(), client, nodePubkey) {
+				writeError(w, http.StatusBadGateway, fmt.Errorf("connect peer: %w", err))
+				return
+			}
 		}
+		peerRetained = true
 	}
 
 	resp, err := client.OpenChannel(
@@ -252,14 +306,67 @@ func (s *Server) handleLNDOpenChannel(w http.ResponseWriter, r *http.Request) {
 		req.LocalFundingAmountSat,
 		req.PushSat,
 		req.SatPerVbyte,
+		req.TargetConf,
 		req.Private,
 	)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Errorf("open channel: %w", err))
+		if peerRetained {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("open channel: %w (peer connection was kept for a retry)", err))
+		} else {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("open channel: %w", err))
+		}
 		return
 	}
 
-	writeJSON(w, http.StatusOK, openLNDChannelResponse{FundingTxid: resp.FundingTxid})
+	channelPoint := ""
+	if resp.FundingTxid != "" {
+		channelPoint = fmt.Sprintf("%s:%d", resp.FundingTxid, resp.OutputIndex)
+	}
+	writeJSON(w, http.StatusOK, openLNDChannelResponse{
+		FundingTxid:  resp.FundingTxid,
+		ChannelPoint: channelPoint,
+		Status:       "pending",
+	})
+}
+
+func isConnectedPeer(ctx context.Context, client lndWalletClient, pubkey string) bool {
+	peers, err := client.ListPeers(ctx)
+	if err != nil {
+		return false
+	}
+	for _, peer := range peers {
+		if strings.EqualFold(strings.TrimSpace(peer.PubKey), pubkey) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasChannelWithPeer(channels []lnd.Channel, pending *lnd.PendingChannelsResponse, pubkey string) bool {
+	for _, channel := range channels {
+		if strings.EqualFold(strings.TrimSpace(channel.RemotePubkey), pubkey) {
+			return true
+		}
+	}
+	if pending == nil {
+		return false
+	}
+	for _, entry := range pending.PendingOpenChannels {
+		if strings.EqualFold(strings.TrimSpace(entry.Channel.RemoteNodePub), pubkey) {
+			return true
+		}
+	}
+	for _, entry := range pending.PendingClosingChannels {
+		if strings.EqualFold(strings.TrimSpace(entry.Channel.RemoteNodePub), pubkey) {
+			return true
+		}
+	}
+	for _, entry := range pending.PendingForceClosingChannels {
+		if strings.EqualFold(strings.TrimSpace(entry.Channel.RemoteNodePub), pubkey) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleLNDCloseChannel(w http.ResponseWriter, r *http.Request) {

@@ -186,6 +186,17 @@ paths:
           description: Successful response
         default:
           description: Error response
+  '/api/lnd/channel-presets':
+    get:
+      operationId: getApiLndChannelPresets
+      tags: ['lnd']
+      summary: 'GET /api/lnd/channel-presets'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
   '/api/lnd/channels/close':
     post:
       operationId: postApiLndChannelsClose
@@ -202,6 +213,60 @@ paths:
       operationId: postApiLndChannelsOpen
       tags: ['lnd']
       summary: 'POST /api/lnd/channels/open'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
+  '/api/lnd/lsp-channel':
+    get:
+      operationId: getApiLndLspChannel
+      tags: ['lnd']
+      summary: 'GET /api/lnd/lsp-channel'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
+    put:
+      operationId: putApiLndLspChannel
+      tags: ['lnd']
+      summary: 'PUT /api/lnd/lsp-channel'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
+  '/api/lnd/lsp-channel/candidates':
+    get:
+      operationId: getApiLndLspChannelCandidates
+      tags: ['lnd']
+      summary: 'GET /api/lnd/lsp-channel/candidates'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
+  '/api/lnd/lsp-channel/status':
+    get:
+      operationId: getApiLndLspChannelStatus
+      tags: ['lnd']
+      summary: 'GET /api/lnd/lsp-channel/status'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
+  '/api/lnd/submarine-swaps':
+    get:
+      operationId: getApiLndSubmarineSwaps
+      tags: ['lnd']
+      summary: 'GET /api/lnd/submarine-swaps'
       x-contract-status: route-catalog
       responses:
         '200':
