@@ -2,6 +2,7 @@ package tradeflow
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -58,7 +59,7 @@ func (w *fakeHedgelessWallet) PayInvoice(context.Context, string, int64) (string
 	return "payment-hash", nil
 }
 func (w *fakeHedgelessWallet) DecodeInvoice(context.Context, string) (*lnd.DecodedInvoice, error) {
-	return &lnd.DecodedInvoice{Destination: "03destination", PaymentHash: "hash", NumSatoshis: "2000000", Timestamp: "1786460000", Expiry: "86400"}, nil
+	return &lnd.DecodedInvoice{Destination: "03destination", PaymentHash: "hash", NumSatoshis: "2000000", Timestamp: strconv.FormatInt(time.Now().Unix(), 10), Expiry: "86400"}, nil
 }
 
 type fakeBisqResolver struct{ balanceCalls int }
