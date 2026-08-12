@@ -302,7 +302,7 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 	marketSide := normalizeMarketSide(req.MarketSide)
 	dex := strings.TrimSpace(req.Dex)
 	if strings.TrimSpace(req.Settlement) == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route settlement is required"))
+		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route from unified API is required"))
 		return
 	}
 	if req.Settlement == "onchain_swap" && req.RequiredBTCLiquidity <= 0 {

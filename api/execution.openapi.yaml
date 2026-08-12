@@ -181,7 +181,7 @@ components:
     CexPreTradeCheckRequest:
       type: object
       additionalProperties: false
-      required: [provider, fiat_currency, required_capital]
+      required: [provider, fiat_currency, required_capital, settlement]
       properties:
         provider:
           type: string

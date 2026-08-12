@@ -10,6 +10,7 @@ import (
 
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
+	"dexMmController/internal/pretrade"
 	"dexMmController/internal/tradeflow"
 )
 
@@ -28,6 +29,69 @@ func (f *fakeTradeFlowRunner) ReconcilePoolRefill(_ context.Context, _ uint) (*d
 func (f *fakeTradeFlowRunner) Run(_ context.Context, order tradeflow.Order) (*tradeflow.Result, error) {
 	f.gotOrder = order
 	return f.result, f.err
+}
+
+type fakePreTradeChecker struct {
+	params pretrade.Params
+}
+
+func (f *fakePreTradeChecker) Run(_ context.Context, params pretrade.Params) pretrade.Report {
+	f.params = params
+	return pretrade.Report{OK: true}
+}
+
+func (f *fakePreTradeChecker) RunAll(_ context.Context, _ pretrade.Params) error { return nil }
+
+func TestHandleCexPreTradeCheckRequiresUnifiedAPIRouteSnapshot(t *testing.T) {
+	checker := &fakePreTradeChecker{}
+	s := (&Server{}).WithCexAccount(cexaccount.NewService(nil, cexaccount.Config{}).WithPreTradeChecker(checker))
+	req := httptest.NewRequest(http.MethodPost, "/api/cex/pre-trade-check", bytes.NewBufferString(`{"provider":"binance","fiat_currency":"EUR","required_capital":100}`))
+	rec := httptest.NewRecorder()
+
+	s.handleCexPreTradeCheck(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["error"] != "resolved_route from unified API is required" {
+		t.Fatalf("error = %q", body["error"])
+	}
+}
+
+func TestHandleCexPreTradeCheckAcceptsUnifiedAPISettlements(t *testing.T) {
+	for _, settlement := range []string{"onchain_direct", "onchain_hub", "onchain_swap"} {
+		t.Run(settlement, func(t *testing.T) {
+			checker := &fakePreTradeChecker{}
+			s := (&Server{}).WithCexAccount(cexaccount.NewService(nil, cexaccount.Config{}).WithPreTradeChecker(checker))
+			payload := map[string]any{
+				"provider": "binance", "fiat_currency": "EUR", "required_capital": 100,
+				"settlement": settlement,
+			}
+			if settlement == "onchain_swap" {
+				payload["required_btc_liquidity"] = 0.01
+				payload["routing_fee_allowance_sat"] = 50
+			}
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/cex/pre-trade-check", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+
+			s.handleCexPreTradeCheck(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			if checker.params.Settlement != settlement {
+				t.Fatalf("settlement = %q, want %q", checker.params.Settlement, settlement)
+			}
+		})
+	}
 }
 
 func TestHandleCexTradeflowRequiresProvider(t *testing.T) {
