@@ -144,13 +144,21 @@ type ChatRequest struct {
 	ExpectedCurrency string
 	// PaymentMethod is the canonical catalog name selected for this trade. Used to
 	// pick the custom chat template from payment_method_chat_templates.
-	PaymentMethod string
+	PaymentMethod  string
+	TradeDirection string // bid or ask; buy/sell are accepted for legacy callers.
 }
 
 const paymentRequestMarker = tradechat.PaymentRequestMarker
 
 func paymentRequestMessage(template, amount, currency string) string {
 	return tradechat.RenderPaymentRequest(template, amount, currency)
+}
+
+func (p *PaymentResolver) paymentRequestVariables(ctx context.Context, paymentMethodName string) (map[string]string, error) {
+	if p.repo == nil {
+		return nil, nil
+	}
+	return p.repo.GetChatTemplateVariables(ctx, paymentMethodName)
 }
 
 type chatPaymentEnvelope struct {
@@ -184,12 +192,27 @@ func (p *PaymentResolver) CaptureChatPayment(ctx context.Context, req ChatReques
 	}
 	var template string
 	if p.templates != nil {
-		template, err = p.templates.GetChatTemplate(ctx, req.Exchange, req.PaymentMethod)
+		if directional, ok := p.templates.(interface {
+			GetChatTemplateForDirection(context.Context, string, string, string) (string, error)
+		}); ok {
+			template, err = directional.GetChatTemplateForDirection(ctx, req.Exchange, req.PaymentMethod, req.TradeDirection)
+		} else {
+			template, err = p.templates.GetChatTemplate(ctx, req.Exchange, req.PaymentMethod)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("dexaccount: load chat template: %w", err)
 		}
 	}
+	variables, err := p.paymentRequestVariables(ctx, req.PaymentMethod)
+	if err != nil {
+		return nil, fmt.Errorf("dexaccount: load payment template variables: %w", err)
+	}
+	template = renderPaymentRequest(template, req.ExpectedAmount, req.ExpectedCurrency, variables)
 	return captureFromChat(ctx, chat, req, template)
+}
+
+func renderPaymentRequest(template, amount, currency string, variables map[string]string) string {
+	return tradechat.RenderPaymentRequestWithVariables(template, amount, currency, variables)
 }
 
 // TradeChatFor resolves the venue chat transport (used by dexnotify relay registration).

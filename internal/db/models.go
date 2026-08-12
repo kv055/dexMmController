@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -44,6 +45,10 @@ type BankAccount struct {
 	ID uint `gorm:"primaryKey" json:"id"`
 	// AccountID is the parent account.
 	AccountID uint `json:"account_id"`
+	// OwnerName is the encrypted legal account-holder name.
+	OwnerName string `gorm:"column:owner_name" json:"-"`
+	// Currency is the fiat currency of this bank account.
+	Currency string `json:"currency"`
 	// Scheme identifies the payment scheme (e.g. iban_bic).
 	Scheme string `json:"scheme"`
 	// DetailsEncrypted holds encrypted scheme-specific fields (iban, bic, …).
@@ -296,6 +301,15 @@ type Transaction struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	// DeletedAt records the relevant time for the transaction.
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// ChatTradeDirection maps the legacy transaction buy/sell direction to the
+// bid/ask direction used by payment chat templates.
+func (t *Transaction) ChatTradeDirection() string {
+	if strings.EqualFold(strings.TrimSpace(t.Direction), "sell") {
+		return "ask"
+	}
+	return "bid"
 }
 
 // TableName specifies the table name for this model

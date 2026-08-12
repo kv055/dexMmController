@@ -286,6 +286,7 @@ func (h *HealthChecker) captureChatPayment(ctx context.Context, tx *db.Transacti
 		ExpectedAmount:   strconv.FormatFloat(tx.FiatAmount, 'f', 2, 64),
 		ExpectedCurrency: tx.FiatCurrency,
 		PaymentMethod:    tx.PaymentMethod,
+		TradeDirection:   tx.ChatTradeDirection(),
 	})
 	if err != nil {
 		return fmt.Errorf("captureChatPayment: %w", err)

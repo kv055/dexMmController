@@ -34,6 +34,14 @@ type TemplateStore interface {
 	GetChatTemplate(ctx context.Context, exchange, paymentMethodName string) (string, error)
 }
 
+type directionalTemplateStore interface {
+	GetChatTemplateForDirection(ctx context.Context, exchange, paymentMethodName, direction string) (string, error)
+}
+
+type templateVariableStore interface {
+	GetChatTemplateVariables(ctx context.Context, paymentMethodName string) (map[string]string, error)
+}
+
 // RelayRegistrar registers a venue chat with the shared Telegram relay.
 type RelayRegistrar interface {
 	Register(exchange, orderID string, chat telegram.TradeChat, knownOutbound ...string)
@@ -100,10 +108,23 @@ func (c *Client) AfterFunded(ctx context.Context, tx *db.Transaction) error {
 		if c.templates == nil {
 			return errors.New("tradechat: template store is required for payment-request venue")
 		}
-		template, err := c.templates.GetChatTemplate(ctx, exchange, tx.PaymentMethod)
+		var template string
+		if directional, ok := c.templates.(directionalTemplateStore); ok {
+			template, err = directional.GetChatTemplateForDirection(ctx, exchange, tx.PaymentMethod, tx.ChatTradeDirection())
+		} else {
+			template, err = c.templates.GetChatTemplate(ctx, exchange, tx.PaymentMethod)
+		}
 		if err != nil {
 			return fmt.Errorf("tradechat: load chat template: %w", err)
 		}
+		variables := map[string]string(nil)
+		if variableStore, ok := c.templates.(templateVariableStore); ok {
+			variables, err = variableStore.GetChatTemplateVariables(ctx, tx.PaymentMethod)
+			if err != nil {
+				return fmt.Errorf("tradechat: load chat template variables: %w", err)
+			}
+		}
+		template = RenderPaymentRequestWithVariables(template, strconv.FormatFloat(tx.FiatAmount, 'f', 2, 64), tx.FiatCurrency, variables)
 		result, err := EnsurePaymentRequest(ctx, chat, PaymentRequest{
 			OrderID:          orderID,
 			ExpectedAmount:   strconv.FormatFloat(tx.FiatAmount, 'f', 2, 64),
@@ -158,6 +179,12 @@ I will release the Bitcoin only after I receive exactly {{amount}} {{currency}} 
 
 // RenderPaymentRequest renders a custom or default request and adds its marker.
 func RenderPaymentRequest(template, amount, currency string) string {
+	return RenderPaymentRequestWithVariables(template, amount, currency, nil)
+}
+
+// RenderPaymentRequestWithVariables expands the built-in amount/currency values and
+// optional payment-account values. Unknown placeholders are intentionally preserved.
+func RenderPaymentRequestWithVariables(template, amount, currency string, variables map[string]string) string {
 	if strings.TrimSpace(template) == "" {
 		template = defaultPaymentRequestTemplate
 	}
@@ -168,6 +195,9 @@ func RenderPaymentRequest(template, amount, currency string) string {
 	}
 	out := strings.ReplaceAll(template, "{{amount}}", amount)
 	out = strings.ReplaceAll(out, "{{currency}}", currency)
+	for name, value := range variables {
+		out = strings.ReplaceAll(out, "{{"+name+"}}", value)
+	}
 	out = strings.ReplaceAll(out, "  ", " ")
 	if !strings.Contains(out, PaymentRequestMarker) {
 		out = strings.TrimSpace(out) + "\n\n" + PaymentRequestMarker

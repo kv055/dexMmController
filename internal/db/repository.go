@@ -43,8 +43,15 @@ func (r *TransactionRepository) GetPaymentMethodByName(ctx context.Context, name
 // and canonical payment method name. Returns ("", nil) when no template is
 // configured so the caller can fall back to the default template.
 func (r *TransactionRepository) GetChatTemplate(ctx context.Context, exchange, paymentMethodName string) (string, error) {
+	return r.GetChatTemplateForDirection(ctx, exchange, paymentMethodName, "bid")
+}
+
+// GetChatTemplateForDirection returns the active chat request template for an
+// exchange, payment method, and bid/ask offer direction.
+func (r *TransactionRepository) GetChatTemplateForDirection(ctx context.Context, exchange, paymentMethodName, direction string) (string, error) {
 	exchange = strings.TrimSpace(exchange)
 	paymentMethodName = strings.TrimSpace(paymentMethodName)
+	direction = normalizeChatTradeDirection(direction)
 	if exchange == "" || paymentMethodName == "" {
 		return "", nil
 	}
@@ -55,12 +62,75 @@ func (r *TransactionRepository) GetChatTemplate(ctx context.Context, exchange, p
 		JOIN payment_methods pm ON pm.id = t.payment_method_id
 		WHERE t.exchange = ?
 		  AND pm.name = ?
+		  AND t.trade_direction = ?
 		  AND t.is_active
 		LIMIT 1
-	`, exchange, paymentMethodName).Scan(&template).Error; err != nil {
+	`, exchange, paymentMethodName, direction).Scan(&template).Error; err != nil {
 		return "", fmt.Errorf("load chat template for %s/%s: %w", exchange, paymentMethodName, err)
 	}
 	return template, nil
+}
+
+func normalizeChatTradeDirection(direction string) string {
+	switch strings.ToLower(strings.TrimSpace(direction)) {
+	case "ask", "sell":
+		return "ask"
+	default:
+		return "bid"
+	}
+}
+
+// GetChatTemplateVariables resolves the optional account values used by chat
+// templates. Bank details are decrypted here and returned as compact,
+// deterministic JSON; the encrypted database value is never exposed.
+func (r *TransactionRepository) GetChatTemplateVariables(ctx context.Context, paymentMethodName string) (map[string]string, error) {
+	variables := map[string]string{"email": "", "phone": "", "payment_tag": "", "currency": "", "owner_name": "", "details_encrypted": ""}
+	method, err := r.GetPaymentMethodByName(ctx, paymentMethodName)
+	if err != nil || method == nil || method.AccountID == nil {
+		return variables, err
+	}
+	account, err := r.GetAccountByID(ctx, *method.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		return variables, nil
+	}
+	variables["email"] = account.Email
+	variables["phone"] = account.Phone
+	variables["payment_tag"] = account.PaymentTag
+	if method.Category != "Bank" {
+		return variables, nil
+	}
+	bank, err := r.GetBankAccountForAccount(ctx, *method.AccountID)
+	if err != nil || bank == nil {
+		return variables, err
+	}
+	variables["currency"] = bank.Currency
+	if strings.TrimSpace(bank.OwnerName) != "" {
+		ownerName, err := credentialcrypto.Decrypt(bank.OwnerName)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt bank account owner name: %w", err)
+		}
+		variables["owner_name"] = ownerName
+	}
+	if strings.TrimSpace(bank.DetailsEncrypted) == "" {
+		return variables, nil
+	}
+	plain, err := credentialcrypto.Decrypt(bank.DetailsEncrypted)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt bank details: %w", err)
+	}
+	var details any
+	if err := json.Unmarshal([]byte(plain), &details); err != nil {
+		return nil, fmt.Errorf("parse bank details: %w", err)
+	}
+	encoded, err := json.Marshal(details)
+	if err != nil {
+		return nil, fmt.Errorf("marshal bank details: %w", err)
+	}
+	variables["details_encrypted"] = string(encoded)
+	return variables, nil
 }
 
 // PickPaymentMethod returns the linked+active payment method with the highest
