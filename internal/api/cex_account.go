@@ -74,6 +74,14 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 			req.ResolvedRoute = selected.Metadata.ResolvedRoute
 		}
 	}
+	if req.ResolvedRoute == nil || !req.ResolvedRoute.ValidAuthoritativeSnapshot() {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route from unified API is required"))
+		return
+	}
+	if err := validateLegacyTradeflowFields(req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	if req.ResolvedRoute != nil {
 		if strings.TrimSpace(req.Provider) == "" {
 			req.Provider = req.ResolvedRoute.Provider
@@ -101,10 +109,6 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	marketSide := normalizeMarketSide(req.MarketSide)
-	if req.ResolvedRoute == nil || !req.ResolvedRoute.ValidForExecution() {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route from unified API is required"))
-		return
-	}
 	if !strings.EqualFold(req.ResolvedRoute.Provider, provider) ||
 		!strings.EqualFold(req.ResolvedRoute.MarketSide, marketSide) ||
 		!strings.EqualFold(req.ResolvedRoute.TradeMode, tradeMode) {
@@ -201,6 +205,63 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func validateLegacyTradeflowFields(req tradeflowRequest) error {
+	r := req.ResolvedRoute
+	if r == nil {
+		return fmt.Errorf("resolved_route from unified API is required")
+	}
+	mismatch := func(name string) error { return fmt.Errorf("legacy field %s does not match resolved_route", name) }
+	if req.Provider != "" && !strings.EqualFold(req.Provider, r.Provider) {
+		return mismatch("provider")
+	}
+	if req.MarketSide != "" && normalizeMarketSide(req.MarketSide) != r.MarketSide {
+		return mismatch("market_side")
+	}
+	if req.BTCAmount != 0 && req.BTCAmount != r.BTCAmount {
+		return mismatch("btc_amount")
+	}
+	if req.FiatCurrency != "" && !strings.EqualFold(req.FiatCurrency, r.FiatCurrency) {
+		return mismatch("fiat_currency")
+	}
+	if req.FiatAmount != 0 && req.FiatAmount != r.FiatAmount {
+		return mismatch("fiat_amount")
+	}
+	if req.RequiredCapital != 0 && req.RequiredCapital != r.RequiredCapital {
+		return mismatch("required_capital")
+	}
+	if req.RequiredBTCLiquidity != 0 && req.RequiredBTCLiquidity != r.RequiredBTCLiquidity {
+		return mismatch("required_btc_liquidity")
+	}
+	if req.SecurityDepositBTC != 0 && req.SecurityDepositBTC != r.SecurityDepositBTC {
+		return mismatch("security_deposit_btc")
+	}
+	if req.HedgeVenue != "" && req.HedgeVenue != r.HedgeVenue {
+		return mismatch("hedge_venue")
+	}
+	if req.HedgeSide != "" && req.HedgeSide != r.HedgeSide {
+		return mismatch("hedge_side")
+	}
+	if req.HedgeNotionalBTC != 0 && req.HedgeNotionalBTC != r.HedgeNotional {
+		return mismatch("hedge_notional_btc")
+	}
+	if req.Leverage != 0 && req.Leverage != r.Leverage {
+		return mismatch("leverage")
+	}
+	if req.TradeMode != "" && req.TradeMode != r.TradeMode {
+		return mismatch("trade_mode")
+	}
+	if req.RoutingFeeAllowanceSat != 0 && req.RoutingFeeAllowanceSat != r.RoutingFeeAllowanceSat {
+		return mismatch("routing_fee_allowance_sat")
+	}
+	if req.CEXWithdrawalFeeBTC != 0 && req.CEXWithdrawalFeeBTC != r.CEXWithdrawalFeeBTC {
+		return mismatch("cex_withdrawal_fee_btc")
+	}
+	if req.SwapSafetyHeadroomBTC != 0 && req.SwapSafetyHeadroomBTC != r.SwapSafetyHeadroomBTC {
+		return mismatch("swap_safety_headroom_btc")
+	}
+	return nil
+}
+
 func (s *Server) requireCEXCapabilities(ctx context.Context, provider, tradeMode, hedgeVenue string) error {
 	if s.capabilities == nil {
 		// Production wiring always installs the store. Keeping it optional makes
@@ -252,18 +313,19 @@ func (s *Server) handlePoolRefillReconcile(w http.ResponseWriter, r *http.Reques
 
 // preTradeCheckRequest is the JSON body for POST /api/cex/pre-trade-check.
 type preTradeCheckRequest struct {
-	Provider               string   `json:"provider"`
-	FiatCurrency           string   `json:"fiat_currency"`
-	RequiredCapital        float64  `json:"required_capital"`
-	PaymentMethod          string   `json:"payment_method"`
-	PaymentMethods         []string `json:"payment_methods"`
-	Dex                    string   `json:"dex"`
-	MarketSide             string   `json:"market_side"`
-	Settlement             string   `json:"settlement"`
-	TradeMode              string   `json:"trade_mode"`
-	HedgeVenue             string   `json:"hedge_venue"`
-	RequiredBTCLiquidity   float64  `json:"required_btc_liquidity"`
-	RoutingFeeAllowanceSat int64    `json:"routing_fee_allowance_sat"`
+	Provider               string                   `json:"provider"`
+	FiatCurrency           string                   `json:"fiat_currency"`
+	RequiredCapital        float64                  `json:"required_capital"`
+	PaymentMethod          string                   `json:"payment_method"`
+	PaymentMethods         []string                 `json:"payment_methods"`
+	Dex                    string                   `json:"dex"`
+	MarketSide             string                   `json:"market_side"`
+	Settlement             string                   `json:"settlement"`
+	TradeMode              string                   `json:"trade_mode"`
+	HedgeVenue             string                   `json:"hedge_venue"`
+	RequiredBTCLiquidity   float64                  `json:"required_btc_liquidity"`
+	RoutingFeeAllowanceSat int64                    `json:"routing_fee_allowance_sat"`
+	ResolvedRoute          *tradeflow.ResolvedRoute `json:"resolved_route"`
 }
 
 // handleCexPreTradeCheck runs pre-trade checks (read-only) and reports the
@@ -280,7 +342,16 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
 	}
-	provider := strings.TrimSpace(req.Provider)
+	if req.ResolvedRoute == nil || !req.ResolvedRoute.ValidAuthoritativeSnapshot() {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route from unified API is required"))
+		return
+	}
+	if err := validateLegacyPreTradeFields(req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	route := req.ResolvedRoute
+	provider := strings.TrimSpace(route.Provider)
 	if provider == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("provider is required"))
 		return
@@ -290,52 +361,81 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
 		return
 	}
-	if req.RequiredCapital <= 0 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("required_capital must be greater than zero"))
-		return
-	}
-	tradeMode, err := pretrade.ParseTradeMode(req.TradeMode)
+	tradeMode, err := pretrade.ParseTradeMode(route.TradeMode)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	marketSide := normalizeMarketSide(req.MarketSide)
+	marketSide := normalizeMarketSide(route.MarketSide)
 	dex := strings.TrimSpace(req.Dex)
-	if strings.TrimSpace(req.Settlement) == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route from unified API is required"))
-		return
-	}
-	if req.Settlement == "onchain_swap" && req.RequiredBTCLiquidity <= 0 {
+	if route.Settlement == "onchain_swap" && route.RequiredBTCLiquidity <= 0 {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero for Swap_main2lightning routes"))
 		return
 	}
-	if req.Settlement == "onchain_swap" && req.RoutingFeeAllowanceSat <= 0 {
-		req.RoutingFeeAllowanceSat = 100
+	if route.Settlement == "onchain_swap" && route.RoutingFeeAllowanceSat <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("routing_fee_allowance_sat must be greater than zero for Swap_main2lightning routes"))
+		return
 	}
-	if err := s.requireCEXCapabilities(r.Context(), canonical, tradeMode, req.HedgeVenue); err != nil {
+	if err := s.requireCEXCapabilities(r.Context(), canonical, tradeMode, route.HedgeVenue); err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
 
 	report, err := s.cexAccount.PreTradeCheck(r.Context(), pretrade.Params{
 		Provider:               provider,
-		FiatCurrency:           req.FiatCurrency,
-		RequiredCapital:        req.RequiredCapital,
+		FiatCurrency:           route.FiatCurrency,
+		RequiredCapital:        route.RequiredCapital,
 		PaymentMethod:          strings.TrimSpace(req.PaymentMethod),
 		PaymentMethods:         req.PaymentMethods,
 		Dex:                    dex,
 		MarketSide:             marketSide,
-		Settlement:             req.Settlement,
+		Settlement:             route.Settlement,
 		TradeMode:              tradeMode,
-		HedgeVenue:             strings.TrimSpace(req.HedgeVenue),
-		RequiredBTCLiquidity:   req.RequiredBTCLiquidity,
-		RoutingFeeAllowanceSat: req.RoutingFeeAllowanceSat,
+		HedgeVenue:             strings.TrimSpace(route.HedgeVenue),
+		RequiredBTCLiquidity:   route.RequiredBTCLiquidity,
+		RoutingFeeAllowanceSat: route.RoutingFeeAllowanceSat,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+func validateLegacyPreTradeFields(req preTradeCheckRequest) error {
+	r := req.ResolvedRoute
+	if r == nil {
+		return fmt.Errorf("resolved_route from unified API is required")
+	}
+	mismatch := func(name string) error { return fmt.Errorf("legacy field %s does not match resolved_route", name) }
+	if req.Provider != "" && !strings.EqualFold(req.Provider, r.Provider) {
+		return mismatch("provider")
+	}
+	if req.FiatCurrency != "" && !strings.EqualFold(req.FiatCurrency, r.FiatCurrency) {
+		return mismatch("fiat_currency")
+	}
+	if req.RequiredCapital != 0 && req.RequiredCapital != r.RequiredCapital {
+		return mismatch("required_capital")
+	}
+	if req.MarketSide != "" && normalizeMarketSide(req.MarketSide) != r.MarketSide {
+		return mismatch("market_side")
+	}
+	if req.Settlement != "" && req.Settlement != r.Settlement {
+		return mismatch("settlement")
+	}
+	if req.TradeMode != "" && req.TradeMode != r.TradeMode {
+		return mismatch("trade_mode")
+	}
+	if req.HedgeVenue != "" && req.HedgeVenue != r.HedgeVenue {
+		return mismatch("hedge_venue")
+	}
+	if req.RequiredBTCLiquidity != 0 && req.RequiredBTCLiquidity != r.RequiredBTCLiquidity {
+		return mismatch("required_btc_liquidity")
+	}
+	if req.RoutingFeeAllowanceSat != 0 && req.RoutingFeeAllowanceSat != r.RoutingFeeAllowanceSat {
+		return mismatch("routing_fee_allowance_sat")
+	}
+	return nil
 }
 
 func normalizeMarketSide(raw string) string {

@@ -42,6 +42,31 @@ func (f *fakePreTradeChecker) Run(_ context.Context, params pretrade.Params) pre
 
 func (f *fakePreTradeChecker) RunAll(_ context.Context, _ pretrade.Params) error { return nil }
 
+func authoritativeTestRoute(mode, settlement string) *tradeflow.ResolvedRoute {
+	route := &tradeflow.ResolvedRoute{
+		ConfigVersion: 1, SnapshotRevision: 2, ResolvedAt: "2026-08-13T12:00:00Z",
+		TradeMode: mode, TargetDirection: "bid", MarketSide: "bid", Provider: "binance",
+		Settlement: settlement, NeedsHub: settlement != "onchain_direct", NeedsLightning: settlement == "onchain_swap",
+		FiatCurrency: "EUR", FiatAmount: 500, BTCAmount: 0.01, RequiredCapital: 1000,
+		CostInputs: db.RouteCostInputs{ReferencePrice: 50000, FeeTier: "economic"},
+	}
+	if mode == cexaccount.TradeModeHedgefullSingleCollateral {
+		route.HedgeVenue = "binance_futures"
+		route.HedgeSide = "short"
+		route.HedgeNotional = 0.01
+		route.Leverage = 10
+	} else {
+		route.RequiredCapital = 500
+		route.RequiredBTCLiquidity = 0.0115
+		route.SecurityDepositBTC = 0.0015
+	}
+	if settlement == "onchain_swap" {
+		route.RequiredBTCLiquidity = 0.01
+		route.RoutingFeeAllowanceSat = 50
+	}
+	return route
+}
+
 func TestHandleCexPreTradeCheckRequiresUnifiedAPIRouteSnapshot(t *testing.T) {
 	checker := &fakePreTradeChecker{}
 	s := (&Server{}).WithCexAccount(cexaccount.NewService(nil, cexaccount.Config{}).WithPreTradeChecker(checker))
@@ -67,13 +92,9 @@ func TestHandleCexPreTradeCheckAcceptsUnifiedAPISettlements(t *testing.T) {
 		t.Run(settlement, func(t *testing.T) {
 			checker := &fakePreTradeChecker{}
 			s := (&Server{}).WithCexAccount(cexaccount.NewService(nil, cexaccount.Config{}).WithPreTradeChecker(checker))
+			route := authoritativeTestRoute(cexaccount.TradeModeHedgefullSingleCollateral, settlement)
 			payload := map[string]any{
-				"provider": "binance", "fiat_currency": "EUR", "required_capital": 100,
-				"settlement": settlement,
-			}
-			if settlement == "onchain_swap" {
-				payload["required_btc_liquidity"] = 0.01
-				payload["routing_fee_allowance_sat"] = 50
+				"resolved_route": route,
 			}
 			body, err := json.Marshal(payload)
 			if err != nil {
@@ -137,7 +158,7 @@ func TestHandleCexTradeflowSuccess(t *testing.T) {
 		HedgeSide:        "short",
 		HedgeNotionalBTC: 0.01,
 		Leverage:         10,
-		ResolvedRoute:    &tradeflow.ResolvedRoute{ConfigVersion: 1, TradeMode: cexaccount.TradeModeHedgefullSingleCollateral, MarketSide: "bid", Provider: "binance", HedgeVenue: "binance_futures", HedgeSide: "short", HedgeNotional: 0.01, Leverage: 10, Settlement: "onchain_hub", BTCAmount: 0.01, FiatCurrency: "EUR", FiatAmount: 500, RequiredCapital: 1000},
+		ResolvedRoute:    authoritativeTestRoute(cexaccount.TradeModeHedgefullSingleCollateral, "onchain_hub"),
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/cex/tradeflow", bytes.NewReader(payload))
 	rec := httptest.NewRecorder()
@@ -181,7 +202,7 @@ func TestHandleCexTradeflowAcceptsHedgelessWithoutHedgeFields(t *testing.T) {
 		Provider: "binance", MarketSide: "bid", BTCAmount: 0.01, FiatCurrency: "EUR",
 		RequiredCapital: 500, RequiredBTCLiquidity: 0.0115, SecurityDepositBTC: 0.0015,
 		OfferID: "offer-1", Dex: "hodlhodl", TradeMode: cexaccount.TradeModeHedgelessDoubleCollateral,
-		ResolvedRoute: &tradeflow.ResolvedRoute{ConfigVersion: 1, TradeMode: cexaccount.TradeModeHedgelessDoubleCollateral, MarketSide: "bid", Provider: "binance", Settlement: "onchain_hub", NeedsHub: true, BTCAmount: 0.01, FiatCurrency: "EUR", FiatAmount: 500, RequiredCapital: 500, RequiredBTCLiquidity: 0.0115, SecurityDepositBTC: 0.0015},
+		ResolvedRoute: authoritativeTestRoute(cexaccount.TradeModeHedgelessDoubleCollateral, "onchain_hub"),
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/cex/tradeflow", bytes.NewReader(payload))
 	rec := httptest.NewRecorder()
