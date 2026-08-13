@@ -10,6 +10,11 @@ type WalletAddress struct {
 	Label string `gorm:"uniqueIndex;not null" json:"label"`
 	// Address is the wallet or peer address used by the wallet address.
 	Address string `gorm:"uniqueIndex;not null" json:"address"`
+	// Provider records the CEX associated with this address when it was stored
+	// as a withdrawal-whitelist destination.
+	Provider string `json:"provider,omitempty"`
+	// Category identifies the operational purpose of the stored address.
+	Category string `json:"category,omitempty"`
 	// CreatedAt records the relevant time for the wallet address.
 	CreatedAt time.Time `json:"created_at"`
 	// UpdatedAt records the relevant time for the wallet address.

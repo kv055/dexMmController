@@ -86,10 +86,13 @@ type AssetBalance struct {
 	USDValue  float64 `json:"usd_value,omitempty"`
 }
 
-// BalancesResponse groups BTC and fiat balances.
+// BalancesResponse groups the legacy BTC/fiat views and the complete spot-wallet
+// inventory. Assets keeps every non-zero asset returned by the exchange so
+// callers that need an account inventory do not have to infer it from Fiat.
 type BalancesResponse struct {
 	Bitcoin *AssetBalance  `json:"bitcoin,omitempty"`
 	Fiat    []AssetBalance `json:"fiat"`
+	Assets  []AssetBalance `json:"assets"`
 	Source  string         `json:"source"`
 }
 
@@ -1131,6 +1134,13 @@ func (s *Service) spotAPIKey(ctx context.Context, rawProvider string) (string, d
 		PermFetchDepositAddress, PermSpotTrading, PermReadBalances, PermWithdraw)
 }
 
+// spotAPIKeyFor chooses the active key whose latest permission result matches
+// the operation being performed. This lets complementary keys collectively
+// make a provider eligible without assuming one key grants every capability.
+func (s *Service) spotAPIKeyFor(ctx context.Context, rawProvider string, permission string) (string, db.APIKey, error) {
+	return s.activeKeyPreferringPermissions(ctx, rawProvider, true, permission)
+}
+
 func (s *Service) activeKeyPreferringPermissions(ctx context.Context, rawProvider string, skipKrakenFuturesOnly bool, preferred ...string) (string, db.APIKey, error) {
 	provider, err := CanonicalProvider(rawProvider)
 	if err != nil {
@@ -1236,6 +1246,7 @@ func (s *Service) firstActiveKeyWithPassphrase(ctx context.Context, rawProvider 
 func balancesFromBinance(balances []binance.SpotBalance) *BalancesResponse {
 	resp := &BalancesResponse{
 		Fiat:   []AssetBalance{},
+		Assets: []AssetBalance{},
 		Source: "binance",
 	}
 	for _, row := range balances {
@@ -1257,6 +1268,7 @@ func balancesFromBinance(balances []binance.SpotBalance) *BalancesResponse {
 			Available: available,
 			Total:     total,
 		}
+		resp.Assets = append(resp.Assets, entry)
 		if isBitcoinAsset(asset) {
 			copy := entry
 			resp.Bitcoin = &copy
@@ -1272,6 +1284,7 @@ func balancesFromBinance(balances []binance.SpotBalance) *BalancesResponse {
 func balancesFromCoinbase(accounts []coinbase.Account) *BalancesResponse {
 	resp := &BalancesResponse{
 		Fiat:   []AssetBalance{},
+		Assets: []AssetBalance{},
 		Source: "coinbase",
 	}
 	for _, account := range accounts {
@@ -1297,6 +1310,9 @@ func balancesFromCoinbase(accounts []coinbase.Account) *BalancesResponse {
 			Asset:     asset,
 			Available: available,
 			Total:     total,
+		}
+		if total > 0 {
+			resp.Assets = append(resp.Assets, entry)
 		}
 		if isBitcoinAsset(asset) {
 			copy := entry
@@ -1326,6 +1342,7 @@ func balancesFromKraken(balances kraken.Balance) *BalancesResponse {
 			Available: amount,
 			Total:     amount,
 		}
+		resp.Assets = append(resp.Assets, entry)
 		if isBitcoinAsset(normalized) {
 			if resp.Bitcoin == nil || entry.Total > resp.Bitcoin.Total {
 				copy := entry

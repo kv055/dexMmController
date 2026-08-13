@@ -80,11 +80,12 @@ type lndPendingChannelSummary struct {
 }
 
 type lndWalletAddressEntry struct {
-	Address    string `json:"address"`
-	Kind       string `json:"kind"`
-	Label      string `json:"label,omitempty"`
-	BalanceSat int64  `json:"balance_sat"`
-	IsInternal bool   `json:"is_internal,omitempty"`
+	Address       string   `json:"address"`
+	Kind          string   `json:"kind"`
+	Label         string   `json:"label,omitempty"`
+	BalanceSat    int64    `json:"balance_sat"`
+	IsInternal    bool     `json:"is_internal,omitempty"`
+	WhitelistedBy []string `json:"whitelisted_by,omitempty"`
 }
 
 type lndWalletStatusResponse struct {
@@ -652,6 +653,7 @@ func buildLNDWalletStatus(
 	}
 
 	labelByAddress := map[string]string{}
+	whitelistedByAddress := map[string][]string{}
 	if repo != nil {
 		stored, err := repo.ListWalletAddresses()
 		if err != nil {
@@ -659,6 +661,9 @@ func buildLNDWalletStatus(
 		}
 		for _, item := range stored {
 			labelByAddress[item.Address] = item.Label
+			if provider := strings.TrimSpace(item.Provider); provider != "" {
+				whitelistedByAddress[item.Address] = append(whitelistedByAddress[item.Address], provider)
+			}
 		}
 	}
 
@@ -672,11 +677,12 @@ func buildLNDWalletStatus(
 	for _, addr := range onChain {
 		seenOnChain[addr.Address] = struct{}{}
 		resp.Addresses = append(resp.Addresses, lndWalletAddressEntry{
-			Address:    addr.Address,
-			Kind:       "onchain",
-			Label:      labelByAddress[addr.Address],
-			BalanceSat: parseSatString(addr.Balance),
-			IsInternal: addr.IsInternal,
+			Address:       addr.Address,
+			Kind:          "onchain",
+			Label:         labelByAddress[addr.Address],
+			BalanceSat:    parseSatString(addr.Balance),
+			IsInternal:    addr.IsInternal,
+			WhitelistedBy: whitelistedByAddress[addr.Address],
 		})
 	}
 	for address, label := range labelByAddress {
@@ -684,9 +690,10 @@ func buildLNDWalletStatus(
 			continue
 		}
 		resp.Addresses = append(resp.Addresses, lndWalletAddressEntry{
-			Address: address,
-			Kind:    "onchain",
-			Label:   label,
+			Address:       address,
+			Kind:          "onchain",
+			Label:         label,
+			WhitelistedBy: whitelistedByAddress[address],
 		})
 	}
 
