@@ -165,31 +165,37 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
+	lightningSource, err := s.lightningLiquiditySource(r.Context(), req.ResolvedRoute.Settlement)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
 
 	result, err := s.tradeFlow.Run(r.Context(), tradeflow.Order{
-		Provider:               provider,
-		MarketSide:             marketSide,
-		BTCAmount:              req.BTCAmount,
-		FiatCurrency:           req.FiatCurrency,
-		RequiredCapital:        req.RequiredCapital,
-		RequiredBTCLiquidity:   req.RequiredBTCLiquidity,
-		SecurityDepositBTC:     req.SecurityDepositBTC,
-		HedgeVenue:             req.HedgeVenue,
-		HedgeSide:              req.HedgeSide,
-		HedgeNotionalBTC:       req.HedgeNotionalBTC,
-		Leverage:               req.Leverage,
-		OfferID:                strings.TrimSpace(req.OfferID),
-		Dex:                    strings.TrimSpace(req.Dex),
-		FiatAmount:             req.FiatAmount,
-		TransactionID:          req.TransactionID,
-		SelectedOffer:          req.SelectedOffer,
-		PaymentMethod:          strings.TrimSpace(req.PaymentMethod),
-		PaymentMethods:         req.PaymentMethods,
-		TradeMode:              tradeMode,
-		ResolvedRoute:          req.ResolvedRoute,
-		RoutingFeeAllowanceSat: req.RoutingFeeAllowanceSat,
-		CEXWithdrawalFeeBTC:    req.CEXWithdrawalFeeBTC,
-		SwapSafetyHeadroomBTC:  req.SwapSafetyHeadroomBTC,
+		Provider:                 provider,
+		MarketSide:               marketSide,
+		BTCAmount:                req.BTCAmount,
+		FiatCurrency:             req.FiatCurrency,
+		RequiredCapital:          req.RequiredCapital,
+		RequiredBTCLiquidity:     req.RequiredBTCLiquidity,
+		SecurityDepositBTC:       req.SecurityDepositBTC,
+		HedgeVenue:               req.HedgeVenue,
+		HedgeSide:                req.HedgeSide,
+		HedgeNotionalBTC:         req.HedgeNotionalBTC,
+		Leverage:                 req.Leverage,
+		OfferID:                  strings.TrimSpace(req.OfferID),
+		Dex:                      strings.TrimSpace(req.Dex),
+		FiatAmount:               req.FiatAmount,
+		TransactionID:            req.TransactionID,
+		SelectedOffer:            req.SelectedOffer,
+		PaymentMethod:            strings.TrimSpace(req.PaymentMethod),
+		PaymentMethods:           req.PaymentMethods,
+		TradeMode:                tradeMode,
+		ResolvedRoute:            req.ResolvedRoute,
+		RoutingFeeAllowanceSat:   req.RoutingFeeAllowanceSat,
+		CEXWithdrawalFeeBTC:      req.CEXWithdrawalFeeBTC,
+		SwapSafetyHeadroomBTC:    req.SwapSafetyHeadroomBTC,
+		LightningLiquiditySource: lightningSource,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -316,8 +322,14 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusConflict, err)
 		return
 	}
+	lightningSource, err := s.lightningLiquiditySource(r.Context(), route.Settlement)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
 
 	report, err := s.cexAccount.PreTradeCheck(r.Context(), pretrade.Params{
+<<<<<<< main
 		Provider:               provider,
 		FiatCurrency:           req.FiatCurrency,
 		RequiredCapital:        req.RequiredCapital,
@@ -330,6 +342,21 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		HedgeVenue:             strings.TrimSpace(req.HedgeVenue),
 		RequiredBTCLiquidity:   req.RequiredBTCLiquidity,
 		RoutingFeeAllowanceSat: req.RoutingFeeAllowanceSat,
+=======
+		Provider:                 provider,
+		FiatCurrency:             route.FiatCurrency,
+		RequiredCapital:          route.RequiredCapital,
+		PaymentMethod:            strings.TrimSpace(req.PaymentMethod),
+		PaymentMethods:           req.PaymentMethods,
+		Dex:                      dex,
+		MarketSide:               marketSide,
+		Settlement:               route.Settlement,
+		TradeMode:                tradeMode,
+		HedgeVenue:               strings.TrimSpace(route.HedgeVenue),
+		RequiredBTCLiquidity:     route.RequiredBTCLiquidity,
+		RoutingFeeAllowanceSat:   route.RoutingFeeAllowanceSat,
+		LightningLiquiditySource: lightningSource,
+>>>>>>> local
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -338,6 +365,71 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, report)
 }
 
+<<<<<<< main
+=======
+// lightningLiquiditySource reads the operator's selected liquidity source only
+// for routes that require a Lightning payment. Non-Lightning routes deliberately
+// do not consult channel configuration and therefore cannot be blocked by it.
+func (s *Server) lightningLiquiditySource(ctx context.Context, settlement string) (string, error) {
+	if settlement != "onchain_swap" {
+		return "", nil
+	}
+	if s.transactionalLiquiditySettingsRepo == nil {
+		// Production wiring always provides this repository. The fallback preserves
+		// the historical own-channel behavior for isolated callers.
+		return pretrade.LightningLiquidityOwnChannels, nil
+	}
+	settings, err := s.transactionalLiquiditySettingsRepo.Get(ctx)
+	if err != nil {
+		return "", fmt.Errorf("load lightning liquidity source: %w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(settings.LightningLiquiditySource)) {
+	case db.TransactionalLiquidityLSPChannel:
+		return pretrade.LightningLiquidityLSPChannel, nil
+	case db.TransactionalLiquidityOwnChannels, "":
+		return pretrade.LightningLiquidityOwnChannels, nil
+	default:
+		return "", fmt.Errorf("unsupported lightning liquidity source %q", settings.LightningLiquiditySource)
+	}
+}
+
+func validateLegacyPreTradeFields(req preTradeCheckRequest) error {
+	r := req.ResolvedRoute
+	if r == nil {
+		return fmt.Errorf("resolved_route from unified API is required")
+	}
+	mismatch := func(name string) error { return fmt.Errorf("legacy field %s does not match resolved_route", name) }
+	if req.Provider != "" && !strings.EqualFold(req.Provider, r.Provider) {
+		return mismatch("provider")
+	}
+	if req.FiatCurrency != "" && !strings.EqualFold(req.FiatCurrency, r.FiatCurrency) {
+		return mismatch("fiat_currency")
+	}
+	if req.RequiredCapital != 0 && req.RequiredCapital != r.RequiredCapital {
+		return mismatch("required_capital")
+	}
+	if req.MarketSide != "" && normalizeMarketSide(req.MarketSide) != r.MarketSide {
+		return mismatch("market_side")
+	}
+	if req.Settlement != "" && req.Settlement != r.Settlement {
+		return mismatch("settlement")
+	}
+	if req.TradeMode != "" && req.TradeMode != r.TradeMode {
+		return mismatch("trade_mode")
+	}
+	if req.HedgeVenue != "" && req.HedgeVenue != r.HedgeVenue {
+		return mismatch("hedge_venue")
+	}
+	if req.RequiredBTCLiquidity != 0 && req.RequiredBTCLiquidity != r.RequiredBTCLiquidity {
+		return mismatch("required_btc_liquidity")
+	}
+	if req.RoutingFeeAllowanceSat != 0 && req.RoutingFeeAllowanceSat != r.RoutingFeeAllowanceSat {
+		return mismatch("routing_fee_allowance_sat")
+	}
+	return nil
+}
+
+>>>>>>> local
 func normalizeMarketSide(raw string) string {
 	if strings.EqualFold(strings.TrimSpace(raw), "ask") {
 		return "ask"

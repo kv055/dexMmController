@@ -182,6 +182,12 @@ func (c *BidChecker) Run(ctx context.Context, p Params) Report {
 	}
 
 	report := Report{OK: true, Checks: make([]CheckResult, 0, 12)}
+	if hasLightning {
+		report.LightningLiquiditySource = LightningLiquidityOwnChannels
+		if strings.EqualFold(strings.TrimSpace(p.LightningLiquiditySource), LightningLiquidityLSPChannel) {
+			report.LightningLiquiditySource = LightningLiquidityLSPChannel
+		}
+	}
 
 	// --- Capital ---
 	capitalLabel := "Exchange capital"
@@ -199,27 +205,14 @@ func (c *BidChecker) Run(ctx context.Context, p Params) Report {
 		}})
 	}
 	if hasLightning {
-		c.walletMu.RLock()
-		hasLSPStatus := c.lspStatus != nil
-		c.walletMu.RUnlock()
-		if hasLSPStatus {
+		if strings.EqualFold(strings.TrimSpace(p.LightningLiquiditySource), LightningLiquidityLSPChannel) {
 			appendResult(&report, namedCheck{"lsp_channel", "Registered LSP channel", func() error {
 				return c.checkLSPAndLiquidity(ctx, marketSide, p, &report)
 			}})
-			// The configured LSP policy supplies conservative node-wide amounts;
-			// do not reintroduce aggregate ChannelBalance here.
-			appendResult(&report, namedCheck{"lightning_liquidity", "Node Lightning liquidity", func() error {
-				if report.BlockingReason != "" {
-					return fmt.Errorf("%s", report.BlockingReason)
-				}
-				return nil
-			}})
 		} else {
-			// Transitional compatibility for callers which have not yet wired the
-			// manual LSP configuration source. Production main always wires it.
-			label := "LND outbound liquidity"
+			label := "Self-funded Lightning outbound liquidity"
 			if marketSide == "ask" {
-				label = "LND inbound liquidity"
+				label = "Self-funded Lightning inbound liquidity"
 			}
 			appendResult(&report, namedCheck{"lightning_liquidity", label, func() error { return c.checkLightningLiquidity(ctx, marketSide, p.RequiredBTCLiquidity) }})
 		}
@@ -522,18 +515,18 @@ func (c *BidChecker) checkLightningLiquidity(ctx context.Context, side string, r
 	c.walletMu.RUnlock()
 
 	if channels == nil {
-		return fmt.Errorf("pre-trade check failed: LND channel status is not available")
+		return fmt.Errorf("pre-trade check failed: self-funded Lightning channel status is not available")
 	}
 	active, err := channels.HasActiveChannel(ctx)
 	if err != nil {
 		return fmt.Errorf("reading LND open channels: %w", err)
 	}
 	if !active {
-		return fmt.Errorf("pre-trade check failed: no active Lightning channel is open")
+		return fmt.Errorf("pre-trade check failed: no active self-funded Lightning channel is open")
 	}
 
 	if lightning == nil {
-		return fmt.Errorf("pre-trade check failed: LND Lightning balance is not available")
+		return fmt.Errorf("pre-trade check failed: self-funded Lightning balance is not available")
 	}
 
 	var available float64

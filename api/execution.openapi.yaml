@@ -253,6 +253,10 @@ components:
           type: integer
         usable_outbound_sat:
           type: integer
+        lightning_liquidity_source:
+          type: string
+          enum: [own_channels, lsp_channel]
+          description: Channel policy evaluated for this Lightning route; omitted when the route does not need Lightning.
         swap_required:
           type: boolean
         required_lightning_sat:

@@ -116,8 +116,9 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 		RequiredBTCLiquidity: order.RequiredBTCLiquidity,
 		PaymentMethod:        order.PaymentMethod, PaymentMethods: order.PaymentMethods,
 		Dex: order.Dex, MarketSide: normalizeMarketSide(order.MarketSide), Settlement: order.ResolvedRouteSettlement(),
-		TradeMode:              order.TradeMode,
-		RoutingFeeAllowanceSat: routingFeeLimit(order),
+		TradeMode:                order.TradeMode,
+		RoutingFeeAllowanceSat:   routingFeeLimit(order),
+		LightningLiquiditySource: order.LightningLiquiditySource,
 	}
 	report, err := tf.svc.PreTradeCheck(ctx, preTrade)
 	if err != nil {

@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"dexMmController/internal/lsp"
+	"dexMmController/internal/pretrade"
 )
 
 // fakePaymentSetup is an in-memory payment_methods catalog plus the rows the
@@ -825,7 +828,7 @@ func TestLightningLiquidityBidOutboundInsufficient(t *testing.T) {
 	if chk.Passed || !strings.Contains(chk.Message, "outbound Lightning") {
 		t.Fatalf("lightning_liquidity check = %+v", chk)
 	}
-	if chk.Label != "LND outbound liquidity" {
+	if chk.Label != "Self-funded Lightning outbound liquidity" {
 		t.Fatalf("label = %q", chk.Label)
 	}
 }
@@ -903,7 +906,7 @@ func TestLightningLiquidityAskInboundInsufficient(t *testing.T) {
 	if chk.Passed || !strings.Contains(chk.Message, "inbound Lightning") {
 		t.Fatalf("lightning_liquidity check = %+v", chk)
 	}
-	if chk.Label != "LND inbound liquidity" {
+	if chk.Label != "Self-funded Lightning inbound liquidity" {
 		t.Fatalf("label = %q", chk.Label)
 	}
 }
@@ -922,7 +925,7 @@ func TestLightningLiquidityRequiresActiveChannel(t *testing.T) {
 		Dex: "robosats", Settlement: "onchain_swap", RequiredBTCLiquidity: 0.02,
 	})
 	chk := paymentCheckNamed(t, report, "lightning_liquidity")
-	if chk.Passed || !strings.Contains(chk.Message, "no active Lightning channel") {
+	if chk.Passed || !strings.Contains(chk.Message, "no active self-funded Lightning channel") {
 		t.Fatalf("lightning_liquidity check = %+v", chk)
 	}
 }
@@ -964,9 +967,59 @@ func TestLightningLiquiditySkippedForNonSwap(t *testing.T) {
 		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
 		Dex: "bisq2",
 	})
+	if report.LightningLiquiditySource != "" {
+		t.Fatalf("non-Swap route reported Lightning source %q", report.LightningLiquiditySource)
+	}
 	for _, chk := range report.Checks {
 		if chk.Name == "lightning_liquidity" {
 			t.Fatal("lightning_liquidity must not run for non-Swap routes")
+		}
+	}
+}
+
+func TestLightningLiquidityUsesSelectedSource(t *testing.T) {
+	c := newTestChecker(
+		func() (float64, error) { return 1000, nil },
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPerms,
+		func() ([]string, error) { return []string{"bc1qwalletaddr"}, nil },
+		okPaymentSetup(),
+	)
+	withLightningSources(c, 0.05, 0, true)
+	c.SetLSPStatus(pretrade.LSPStatusSourceFunc(func(context.Context) (lsp.Status, error) {
+		return lsp.Status{LSPHealthy: false, Reason: "LSP channel is disabled"}, nil
+	}))
+	params := PreTradeParams{
+		Provider: "kraken", FiatCurrency: "EUR", RequiredCapital: 500, PaymentMethod: "Revolut",
+		Dex: "robosats", Settlement: "onchain_swap", RequiredBTCLiquidity: 0.02,
+	}
+
+	params.LightningLiquiditySource = pretrade.LightningLiquidityOwnChannels
+	own := c.Run(context.Background(), params)
+	if own.LightningLiquiditySource != pretrade.LightningLiquidityOwnChannels {
+		t.Fatalf("reported source = %q, want own_channels", own.LightningLiquiditySource)
+	}
+	if !paymentCheckNamed(t, own, "lightning_liquidity").Passed {
+		t.Fatalf("own-channel check = %+v", paymentCheckNamed(t, own, "lightning_liquidity"))
+	}
+	for _, check := range own.Checks {
+		if check.Name == "lsp_channel" {
+			t.Fatalf("own-channel route must not run LSP check: %+v", check)
+		}
+	}
+
+	params.LightningLiquiditySource = pretrade.LightningLiquidityLSPChannel
+	lspReport := c.Run(context.Background(), params)
+	if lspReport.LightningLiquiditySource != pretrade.LightningLiquidityLSPChannel {
+		t.Fatalf("reported source = %q, want lsp_channel", lspReport.LightningLiquiditySource)
+	}
+	check := paymentCheckNamed(t, lspReport, "lsp_channel")
+	if check.Passed || !strings.Contains(check.Message, "LSP channel is disabled") {
+		t.Fatalf("LSP check = %+v", check)
+	}
+	for _, check := range lspReport.Checks {
+		if check.Name == "lightning_liquidity" {
+			t.Fatalf("LSP route must not run own-channel check: %+v", check)
 		}
 	}
 }

@@ -85,6 +85,9 @@ type Order struct {
 	// RoutingFeeAllowanceSat is reserved and passed to LND for Lightning DEX
 	// payments. Zero is normalized to the conservative default.
 	RoutingFeeAllowanceSat int64
+	// LightningLiquiditySource is the transactional setting snapshotted by the
+	// API immediately before execution.
+	LightningLiquiditySource string
 	// CEXWithdrawalFeeBTC and SwapSafetyHeadroomBTC are explicit gross-up
 	// inputs used by hedgefull RoboSats preparation.
 	CEXWithdrawalFeeBTC   float64
@@ -323,18 +326,19 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	}
 
 	preTrade := pretrade.Params{
-		Provider:               order.Provider,
-		FiatCurrency:           order.FiatCurrency,
-		RequiredCapital:        order.RequiredCapital,
-		RequiredBTCLiquidity:   order.RequiredBTCLiquidity,
-		PaymentMethod:          order.PaymentMethod,
-		PaymentMethods:         order.PaymentMethods,
-		Dex:                    order.Dex,
-		MarketSide:             marketSide,
-		Settlement:             order.ResolvedRouteSettlement(),
-		TradeMode:              order.TradeMode,
-		HedgeVenue:             order.HedgeVenue,
-		RoutingFeeAllowanceSat: routingFeeLimit(order),
+		Provider:                 order.Provider,
+		FiatCurrency:             order.FiatCurrency,
+		RequiredCapital:          order.RequiredCapital,
+		RequiredBTCLiquidity:     order.RequiredBTCLiquidity,
+		PaymentMethod:            order.PaymentMethod,
+		PaymentMethods:           order.PaymentMethods,
+		Dex:                      order.Dex,
+		MarketSide:               marketSide,
+		Settlement:               order.ResolvedRouteSettlement(),
+		TradeMode:                order.TradeMode,
+		HedgeVenue:               order.HedgeVenue,
+		RoutingFeeAllowanceSat:   routingFeeLimit(order),
+		LightningLiquiditySource: order.LightningLiquiditySource,
 	}
 
 	// Step 1: pre-trade checks (read-only; result logged for observability).

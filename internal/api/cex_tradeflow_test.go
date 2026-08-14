@@ -94,6 +94,32 @@ func TestHandleCexPreTradeCheckAcceptsUnifiedAPISettlements(t *testing.T) {
 	}
 }
 
+func TestHandleCexPreTradeCheckUsesConfiguredLightningSource(t *testing.T) {
+	checker := &fakePreTradeChecker{}
+	repo := &fakeTransactionalLiquiditySettingsRepo{row: db.TransactionalLiquiditySettings{
+		LightningLiquiditySource: db.TransactionalLiquidityLSPChannel,
+	}}
+	s := (&Server{}).
+		WithCexAccount(cexaccount.NewService(nil, cexaccount.Config{}).WithPreTradeChecker(checker)).
+		WithTransactionalLiquiditySettings(repo)
+	route := authoritativeTestRoute(cexaccount.TradeModeHedgefullSingleCollateral, "onchain_swap")
+	body, err := json.Marshal(map[string]any{"resolved_route": route})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/cex/pre-trade-check", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	s.handleCexPreTradeCheck(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if checker.params.LightningLiquiditySource != pretrade.LightningLiquidityLSPChannel {
+		t.Fatalf("lightning source = %q", checker.params.LightningLiquiditySource)
+	}
+}
+
 func TestHandleCexTradeflowRequiresProvider(t *testing.T) {
 	runner := &fakeTradeFlowRunner{}
 	s := (&Server{}).WithTradeFlow(runner)
