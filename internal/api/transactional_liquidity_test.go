@@ -32,9 +32,12 @@ func TestTransactionalLiquiditySettingsPutForwardsTargetDirection(t *testing.T) 
 	req := httptest.NewRequest(http.MethodPut, "/api/transactional-liquidity", strings.NewReader(`{
 		"fiat_currency":"EUR",
 		"amount_source":"custom",
-		"custom_amount":500,
+		"amount_fiat":500,
 		"trade_mode":"hedgefull_single_collateral",
-		"target_direction":"ask"
+		"target_direction":"ask",
+		"lightning_liquidity_source":"lsp_channel",
+		"fee_tier":"economic",
+		"coupled_hedge":true
 	}`))
 	recorder := httptest.NewRecorder()
 
@@ -45,5 +48,11 @@ func TestTransactionalLiquiditySettingsPutForwardsTargetDirection(t *testing.T) 
 	}
 	if repo.update.TargetDirection != db.TransactionalLiquidityTargetAsk {
 		t.Fatalf("target direction = %q, want %q", repo.update.TargetDirection, db.TransactionalLiquidityTargetAsk)
+	}
+	if repo.update.LightningLiquiditySource != db.TransactionalLiquidityLSPChannel {
+		t.Fatalf("lightning liquidity source = %q, want %q", repo.update.LightningLiquiditySource, db.TransactionalLiquidityLSPChannel)
+	}
+	if repo.update.AmountFiat == nil || *repo.update.AmountFiat != 500 || repo.update.FeeTier != db.TransactionalLiquidityFeeEconomic || !repo.update.CoupledHedge {
+		t.Fatalf("routing settings were not forwarded: %+v", repo.update)
 	}
 }

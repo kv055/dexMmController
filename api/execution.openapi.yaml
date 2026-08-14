@@ -181,7 +181,7 @@ components:
     CexPreTradeCheckRequest:
       type: object
       additionalProperties: false
-      required: [provider, fiat_currency, required_capital, settlement]
+      required: [resolved_route]
       properties:
         provider:
           type: string
@@ -218,7 +218,9 @@ components:
             liquidity-pool checks and for Swap_main2lightning Lightning liquidity.
         routing_fee_allowance_sat:
           type: integer
-          minimum: 1
+          minimum: 0
+        resolved_route:
+          $ref: '#/components/schemas/ResolvedRoute'
     PreTradeCheckResult:
       type: object
       additionalProperties: false
@@ -277,9 +279,11 @@ components:
     ResolvedRoute:
       type: object
       additionalProperties: false
-      required: [config_version, trade_mode, target_direction, market_side, provider, settlement, fiat_currency, fiat_amount, btc_amount, required_capital, required_btc_liquidity]
+      required: [config_version, snapshot_revision, resolved_at, trade_mode, target_direction, market_side, provider, settlement, needs_hub, needs_lightning, fiat_currency, fiat_amount, btc_amount, required_capital, required_btc_liquidity, security_deposit_btc, routing_fee_allowance_sat, cex_withdrawal_fee_btc, swap_safety_headroom_btc, total_cost_btc, total_cost_percent, net_premium_percent, cost_inputs]
       properties:
         config_version: {type: integer}
+        snapshot_revision: {type: integer}
+        resolved_at: {type: string, format: date-time}
         trade_mode: {$ref: '#/components/schemas/TradeMode'}
         target_direction: {type: string}
         market_side: {type: string, enum: [bid, ask]}
@@ -297,9 +301,31 @@ components:
         required_capital: {type: number}
         required_btc_liquidity: {type: number}
         security_deposit_btc: {type: number}
-        routing_fee_allowance_sat: {type: integer, minimum: 1}
+        routing_fee_allowance_sat: {type: integer, minimum: 0}
         cex_withdrawal_fee_btc: {type: number, minimum: 0}
         swap_safety_headroom_btc: {type: number, minimum: 0}
+        total_cost_btc: {type: number, minimum: 0}
+        total_cost_percent: {type: number, minimum: 0}
+        net_premium_percent: {type: number}
+        cost_inputs:
+          $ref: '#/components/schemas/RouteCostInputs'
+    RouteCostInputs:
+      type: object
+      additionalProperties: false
+      required: [reference_price, fee_tier, coupled_hedge, spot_taker_fee_btc, withdrawal_fee_btc, hedge_open_fee_btc, hedge_close_fee_btc, projected_funding_fee_btc, funding_cost_available, dex_fee_btc, miner_fee_btc, conversion_fee_btc]
+      properties:
+        reference_price: {type: number, exclusiveMinimum: 0}
+        fee_tier: {type: string, enum: [economic]}
+        coupled_hedge: {type: boolean}
+        spot_taker_fee_btc: {type: number, minimum: 0}
+        withdrawal_fee_btc: {type: number, minimum: 0}
+        hedge_open_fee_btc: {type: number, minimum: 0}
+        hedge_close_fee_btc: {type: number, minimum: 0}
+        projected_funding_fee_btc: {type: number, minimum: 0}
+        funding_cost_available: {type: boolean}
+        dex_fee_btc: {type: number, minimum: 0}
+        miner_fee_btc: {type: number, minimum: 0}
+        conversion_fee_btc: {type: number, minimum: 0}
     CexTradeflowRequest:
       type: object
       additionalProperties: false

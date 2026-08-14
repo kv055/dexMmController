@@ -15,10 +15,10 @@ import (
 
 // WithdrawalStatus is a normalized CEX withdrawal status snapshot.
 type WithdrawalStatus struct {
-	Provider      string `json:"provider"`
-	WithdrawalID  string `json:"withdrawal_id"`
-	CexStatus     string `json:"cex_status"`
-	CexStatusCode int    `json:"cex_status_code"`
+	Provider      string  `json:"provider"`
+	WithdrawalID  string  `json:"withdrawal_id"`
+	CexStatus     string  `json:"cex_status"`
+	CexStatusCode int     `json:"cex_status_code"`
 	TxHash        string  `json:"tx_hash,omitempty"`
 	Address       string  `json:"address,omitempty"`
 	AmountBTC     string  `json:"amount_btc,omitempty"`
@@ -42,7 +42,7 @@ func (s *Service) GetWithdrawalStatus(ctx context.Context, rawProvider, withdraw
 		return nil, fmt.Errorf("withdrawal_id is required")
 	}
 
-	provider, key, err := s.spotAPIKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKeyFor(ctx, rawProvider, PermWithdraw)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func (s *Service) GetWithdrawalStatus(ctx context.Context, rawProvider, withdraw
 // within the given lookback window. Records in a cancelled/rejected/failed state do
 // not count as sent (the funds never left), so a retry is allowed.
 func (s *Service) WithdrawalAlreadySent(ctx context.Context, rawProvider, clientRequestID string, amountBTC float64, address string, within time.Duration) (*WithdrawalStatus, error) {
-	provider, key, err := s.spotAPIKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKeyFor(ctx, rawProvider, PermWithdraw)
 	if err != nil {
 		return nil, err
 	}

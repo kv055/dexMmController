@@ -106,6 +106,26 @@ func TestKrakenSpotAndFuturesKeySelection(t *testing.T) {
 	}
 }
 
+func TestSpotOperationSelectsComplementaryPermissionKey(t *testing.T) {
+	tradePerms, _ := json.Marshal(map[string]string{PermSpotTrading: PermGranted, PermWithdraw: PermDenied})
+	withdrawPerms, _ := json.Marshal(map[string]string{PermSpotTrading: PermDenied, PermWithdraw: PermGranted})
+	service := NewService(credentialRepo{keysByProvider: map[string][]db.APIKey{
+		"Binance": {
+			{APIKey: "trade-key", APISecret: "trade-secret", Permissions: tradePerms},
+			{APIKey: "withdraw-key", APISecret: "withdraw-secret", Permissions: withdrawPerms},
+		},
+	}}, Config{})
+
+	_, tradeKey, err := service.spotAPIKeyFor(context.Background(), "Binance", PermSpotTrading)
+	if err != nil || tradeKey.APIKey != "trade-key" {
+		t.Fatalf("trade key = %q, err=%v", tradeKey.APIKey, err)
+	}
+	_, withdrawKey, err := service.spotAPIKeyFor(context.Background(), "Binance", PermWithdraw)
+	if err != nil || withdrawKey.APIKey != "withdraw-key" {
+		t.Fatalf("withdraw key = %q, err=%v", withdrawKey.APIKey, err)
+	}
+}
+
 func TestCanonicalProvider(t *testing.T) {
 	tests := map[string]string{
 		"kraken":    "Kraken",

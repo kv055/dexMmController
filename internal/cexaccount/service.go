@@ -191,7 +191,7 @@ type SpotTrade struct {
 
 // DepositAddresses returns BTC deposit addresses for the provider.
 func (s *Service) DepositAddresses(ctx context.Context, rawProvider string) ([]DepositAddress, error) {
-	provider, key, err := s.spotAPIKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKeyFor(ctx, rawProvider, PermFetchDepositAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +272,7 @@ func (s *Service) DepositAddresses(ctx context.Context, rawProvider string) ([]D
 
 // WithdrawalAddresses returns whitelisted BTC withdrawal addresses for the provider.
 func (s *Service) WithdrawalAddresses(ctx context.Context, rawProvider string) ([]WithdrawalAddress, error) {
-	provider, key, err := s.spotAPIKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKeyFor(ctx, rawProvider, PermWithdraw)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +352,7 @@ func (s *Service) WithdrawalAddresses(ctx context.Context, rawProvider string) (
 
 // Balances returns BTC and fiat balances for the provider.
 func (s *Service) Balances(ctx context.Context, rawProvider string) (*BalancesResponse, error) {
-	provider, key, err := s.spotAPIKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKeyFor(ctx, rawProvider, PermReadBalances)
 	if err != nil {
 		return nil, err
 	}
@@ -506,7 +506,7 @@ func (s *Service) marketBuyBTC(ctx context.Context, btcAmount float64, p PreTrad
 		}
 	}
 
-	provider, key, err := s.spotAPIKey(ctx, p.Provider)
+	provider, key, err := s.spotAPIKeyFor(ctx, p.Provider, PermSpotTrading)
 	if err != nil {
 		return nil, err
 	}
@@ -1329,6 +1329,7 @@ func balancesFromCoinbase(accounts []coinbase.Account) *BalancesResponse {
 func balancesFromKraken(balances kraken.Balance) *BalancesResponse {
 	resp := &BalancesResponse{
 		Fiat:   []AssetBalance{},
+		Assets: []AssetBalance{},
 		Source: "kraken",
 	}
 	for asset, amountRaw := range balances {
@@ -1475,7 +1476,7 @@ func (s *Service) WithdrawSpotToLND(ctx context.Context, rawProvider string, amo
 		return nil, fmt.Errorf("LND wallet not available")
 	}
 
-	provider, key, err := s.spotAPIKey(ctx, rawProvider)
+	provider, key, err := s.spotAPIKeyFor(ctx, rawProvider, PermWithdraw)
 	if err != nil {
 		return nil, err
 	}

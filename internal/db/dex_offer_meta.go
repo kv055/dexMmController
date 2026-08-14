@@ -26,27 +26,48 @@ type DexOfferMeta struct {
 // persisted with the transaction for relay and recovery. It contains no DEX
 // routing matrix: consumers use Settlement exactly as supplied.
 type ResolvedRoute struct {
-	ConfigVersion          int64   `json:"config_version"`
-	TradeMode              string  `json:"trade_mode"`
-	TargetDirection        string  `json:"target_direction"`
-	MarketSide             string  `json:"market_side"`
-	Provider               string  `json:"provider"`
-	HedgeVenue             string  `json:"hedge_venue,omitempty"`
-	HedgeSide              string  `json:"hedge_side,omitempty"`
-	HedgeNotional          float64 `json:"hedge_notional_btc,omitempty"`
-	Leverage               float64 `json:"leverage,omitempty"`
-	Settlement             string  `json:"settlement"`
-	NeedsHub               bool    `json:"needs_hub"`
-	NeedsLightning         bool    `json:"needs_lightning"`
-	FiatCurrency           string  `json:"fiat_currency"`
-	FiatAmount             float64 `json:"fiat_amount"`
-	BTCAmount              float64 `json:"btc_amount"`
-	RequiredCapital        float64 `json:"required_capital"`
-	RequiredBTCLiquidity   float64 `json:"required_btc_liquidity"`
-	SecurityDepositBTC     float64 `json:"security_deposit_btc"`
-	RoutingFeeAllowanceSat int64   `json:"routing_fee_allowance_sat"`
-	CEXWithdrawalFeeBTC    float64 `json:"cex_withdrawal_fee_btc"`
-	SwapSafetyHeadroomBTC  float64 `json:"swap_safety_headroom_btc"`
+	ConfigVersion          int64           `json:"config_version"`
+	SnapshotRevision       int64           `json:"snapshot_revision"`
+	ResolvedAt             string          `json:"resolved_at"`
+	TradeMode              string          `json:"trade_mode"`
+	TargetDirection        string          `json:"target_direction"`
+	MarketSide             string          `json:"market_side"`
+	Provider               string          `json:"provider"`
+	HedgeVenue             string          `json:"hedge_venue,omitempty"`
+	HedgeSide              string          `json:"hedge_side,omitempty"`
+	HedgeNotional          float64         `json:"hedge_notional_btc,omitempty"`
+	Leverage               float64         `json:"leverage,omitempty"`
+	Settlement             string          `json:"settlement"`
+	NeedsHub               bool            `json:"needs_hub"`
+	NeedsLightning         bool            `json:"needs_lightning"`
+	FiatCurrency           string          `json:"fiat_currency"`
+	FiatAmount             float64         `json:"fiat_amount"`
+	BTCAmount              float64         `json:"btc_amount"`
+	RequiredCapital        float64         `json:"required_capital"`
+	RequiredBTCLiquidity   float64         `json:"required_btc_liquidity"`
+	SecurityDepositBTC     float64         `json:"security_deposit_btc"`
+	RoutingFeeAllowanceSat int64           `json:"routing_fee_allowance_sat"`
+	CEXWithdrawalFeeBTC    float64         `json:"cex_withdrawal_fee_btc"`
+	SwapSafetyHeadroomBTC  float64         `json:"swap_safety_headroom_btc"`
+	TotalCostBTC           float64         `json:"total_cost_btc"`
+	TotalCostPercent       float64         `json:"total_cost_percent"`
+	NetPremiumPercent      float64         `json:"net_premium_percent"`
+	CostInputs             RouteCostInputs `json:"cost_inputs"`
+}
+
+type RouteCostInputs struct {
+	ReferencePrice         float64 `json:"reference_price"`
+	FeeTier                string  `json:"fee_tier"`
+	CoupledHedge           bool    `json:"coupled_hedge"`
+	SpotTakerFeeBTC        float64 `json:"spot_taker_fee_btc"`
+	WithdrawalFeeBTC       float64 `json:"withdrawal_fee_btc"`
+	HedgeOpenFeeBTC        float64 `json:"hedge_open_fee_btc"`
+	HedgeCloseFeeBTC       float64 `json:"hedge_close_fee_btc"`
+	ProjectedFundingFeeBTC float64 `json:"projected_funding_fee_btc"`
+	FundingCostAvailable   bool    `json:"funding_cost_available"`
+	DEXFeeBTC              float64 `json:"dex_fee_btc"`
+	MinerFeeBTC            float64 `json:"miner_fee_btc"`
+	ConversionFeeBTC       float64 `json:"conversion_fee_btc"`
 }
 
 func (r ResolvedRoute) ValidForExecution() bool {
@@ -59,6 +80,57 @@ func (r ResolvedRoute) ValidForExecution() bool {
 	default:
 		return false
 	}
+}
+
+// ValidAuthoritativeSnapshot applies the stricter contract required at public
+// pre-trade and execution boundaries. ValidForExecution intentionally remains
+// compatible with routes already persisted by older deployments so recovery
+// workers can finish in-flight transactions.
+func (r ResolvedRoute) ValidAuthoritativeSnapshot() bool {
+	if !r.ValidForExecution() || r.SnapshotRevision <= 0 {
+		return false
+	}
+	if _, err := time.Parse(time.RFC3339Nano, r.ResolvedAt); err != nil {
+		return false
+	}
+	r.TargetDirection = strings.ToLower(strings.TrimSpace(r.TargetDirection))
+	r.MarketSide = strings.ToLower(strings.TrimSpace(r.MarketSide))
+	if (r.MarketSide != "bid" && r.MarketSide != "ask") || r.TargetDirection != r.MarketSide {
+		return false
+	}
+	if strings.TrimSpace(r.FiatCurrency) == "" || r.FiatAmount <= 0 || r.RequiredBTCLiquidity < 0 || r.SecurityDepositBTC < 0 || r.TotalCostBTC < 0 || r.TotalCostPercent < 0 {
+		return false
+	}
+	cost := r.CostInputs
+	if cost.ReferencePrice <= 0 || cost.FeeTier != "economic" || cost.FundingCostAvailable || cost.ProjectedFundingFeeBTC != 0 ||
+		cost.SpotTakerFeeBTC < 0 || cost.WithdrawalFeeBTC < 0 || cost.HedgeOpenFeeBTC < 0 || cost.HedgeCloseFeeBTC < 0 ||
+		cost.DEXFeeBTC < 0 || cost.MinerFeeBTC < 0 || cost.ConversionFeeBTC < 0 {
+		return false
+	}
+	wantHub := r.Settlement == "onchain_hub" || r.Settlement == "onchain_swap"
+	wantLightning := r.Settlement == "onchain_swap"
+	if r.NeedsHub != wantHub || r.NeedsLightning != wantLightning {
+		return false
+	}
+	switch r.TradeMode {
+	case "hedgefull_single_collateral":
+		if strings.TrimSpace(r.HedgeVenue) == "" || r.HedgeNotional <= 0 || r.Leverage <= 0 {
+			return false
+		}
+		if (r.MarketSide == "bid" && r.HedgeSide != "short") || (r.MarketSide == "ask" && r.HedgeSide != "long") {
+			return false
+		}
+	case "hedgeless_double_collateral":
+		if r.MarketSide != "bid" || r.RequiredBTCLiquidity <= 0 || r.HedgeVenue != "" || r.HedgeSide != "" || r.HedgeNotional != 0 {
+			return false
+		}
+	default:
+		return false
+	}
+	if wantLightning && r.RequiredBTCLiquidity <= 0 {
+		return false
+	}
+	return true
 }
 
 func (r ResolvedRoute) UsesHub() bool {

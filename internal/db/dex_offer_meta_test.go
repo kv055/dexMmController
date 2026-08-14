@@ -71,8 +71,8 @@ func TestHasRelayCompleted(t *testing.T) {
 		t.Fatal("empty should not be complete")
 	}
 	raw, _ := json.Marshal(CexToDexRelayDetails{
-		TxID:    "abc123",
-		SentAt:  time.Now().UTC(),
+		TxID:   "abc123",
+		SentAt: time.Now().UTC(),
 	})
 	if !HasRelayCompleted(raw) {
 		t.Fatal("txid should count as relay complete")
@@ -85,5 +85,28 @@ func TestConfirmationsGate(t *testing.T) {
 	}
 	if WithdrawalConfirmationsMet(0) {
 		t.Fatal("0 conf should not pass")
+	}
+}
+
+func TestResolvedRouteAuthoritativeSnapshotValidation(t *testing.T) {
+	route := ResolvedRoute{
+		ConfigVersion: 1, SnapshotRevision: 3, ResolvedAt: "2026-08-13T12:00:00Z",
+		TradeMode: "hedgefull_single_collateral", TargetDirection: "bid", MarketSide: "bid",
+		Provider: "binance", HedgeVenue: "binance_futures", HedgeSide: "short",
+		HedgeNotional: 0.01, Leverage: 10, Settlement: "onchain_hub", NeedsHub: true,
+		FiatCurrency: "EUR", FiatAmount: 500, BTCAmount: 0.01, RequiredCapital: 1000,
+		CostInputs: RouteCostInputs{ReferencePrice: 50000, FeeTier: "economic"},
+	}
+	if !route.ValidAuthoritativeSnapshot() {
+		t.Fatal("complete authoritative route was rejected")
+	}
+	route.SnapshotRevision = 0
+	if route.ValidAuthoritativeSnapshot() {
+		t.Fatal("route without snapshot revision was accepted")
+	}
+	route.SnapshotRevision = 3
+	route.CostInputs.FundingCostAvailable = true
+	if route.ValidAuthoritativeSnapshot() {
+		t.Fatal("route with projected funding policy was accepted")
 	}
 }
