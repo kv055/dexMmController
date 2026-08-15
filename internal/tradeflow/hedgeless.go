@@ -436,7 +436,7 @@ func createHedgelessRow(store transactionStore, order Order, poolTarget float64,
 		return 0, err
 	}
 	tx := &db.Transaction{
-		Direction: "buy", FiatAmount: order.FiatAmount, FiatCurrency: strings.ToUpper(strings.TrimSpace(order.FiatCurrency)),
+		Direction: "bid", FiatAmount: order.FiatAmount, FiatCurrency: strings.ToUpper(strings.TrimSpace(order.FiatCurrency)),
 		PaymentMethod: order.PaymentMethod, Cex: db.CexExchangeFromProvider(order.Provider), Dex: db.DexPlatformFromSlug(order.Dex),
 		Status: db.StatusHedgelessTradeStarted, TradeMode: order.TradeMode, DexOfferID: order.OfferID,
 		DexOfferCreation: meta, HubAddress: lndAddress, BTCPoolTargetBTC: poolTarget,

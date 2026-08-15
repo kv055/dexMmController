@@ -198,7 +198,7 @@ type Transaction struct {
 	ID uint `gorm:"primaryKey" json:"id"`
 
 	// Direction is the direction value for the transaction.
-	Direction string `gorm:"index" json:"direction"` // "buy" or "sell"
+	Direction string `gorm:"index" json:"direction"` // "bid" or "ask"
 	// FiatAmount is a fiat-denominated fiat amount value.
 	FiatAmount float64 `json:"fiat_amount"`
 	// FiatCurrency is a fiat-denominated fiat currency value.
@@ -303,10 +303,9 @@ type Transaction struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
-// ChatTradeDirection maps the legacy transaction buy/sell direction to the
-// bid/ask direction used by payment chat templates.
+// ChatTradeDirection returns the canonical transaction direction used by chat templates.
 func (t *Transaction) ChatTradeDirection() string {
-	if strings.EqualFold(strings.TrimSpace(t.Direction), "sell") {
+	if strings.EqualFold(strings.TrimSpace(t.Direction), "ask") {
 		return "ask"
 	}
 	return "bid"

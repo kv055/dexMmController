@@ -73,7 +73,7 @@ func (r *TransactionRepository) GetChatTemplateForDirection(ctx context.Context,
 
 func normalizeChatTradeDirection(direction string) string {
 	switch strings.ToLower(strings.TrimSpace(direction)) {
-	case "ask", "sell":
+	case "ask":
 		return "ask"
 	default:
 		return "bid"

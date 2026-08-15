@@ -124,7 +124,7 @@ func (w *Worker) runOnce(ctx context.Context) {
 		db.StatusCexCryptoWithdrawalInitiated,
 		db.StatusCexCryptoWithdrawalArrived,
 	}
-	txs, err := w.repo.GetTransactionsByStatuses(statuses, "buy")
+	txs, err := w.repo.GetTransactionsByStatuses(statuses, "bid")
 	if err != nil {
 		log.Printf("dexrelay: list transactions: %v", err)
 		return
