@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"commons/paymentmethods"
 	"dexMmController/internal/lsp"
 	"dexMmController/internal/pretrade"
 )
@@ -15,22 +16,32 @@ import (
 // semantics.
 type fakePaymentSetup struct {
 	methods   map[string]*PaymentMethodSnapshot
+	aliases   map[string][]string // canonical name -> operator aliases
 	accounts  map[int64]*FiatAccountSnapshot
 	banks     map[int64]*BankAccountSnapshot
 	methodErr error
+}
+
+func (f *fakePaymentSetup) findMethod(name string) *PaymentMethodSnapshot {
+	for _, row := range f.methods {
+		if row != nil && paymentmethods.CatalogLabelMatches(row.Name, f.aliases[row.Name], name) {
+			return row
+		}
+	}
+	return nil
 }
 
 func (f *fakePaymentSetup) PaymentMethodByName(_ context.Context, name string) (*PaymentMethodSnapshot, error) {
 	if f.methodErr != nil {
 		return nil, f.methodErr
 	}
-	return f.methods[name], nil
+	return f.findMethod(name), nil
 }
 
 func (f *fakePaymentSetup) PickPaymentMethod(_ context.Context, names []string) (*PaymentMethodSnapshot, error) {
 	var best *PaymentMethodSnapshot
 	for _, n := range names {
-		row := f.methods[n]
+		row := f.findMethod(n)
 		if row == nil || !row.IsActive || !row.IsLinked {
 			continue
 		}
@@ -579,6 +590,37 @@ func TestPaymentSetupCatalogReadErrorIsOperatorFriendly(t *testing.T) {
 	}
 	if strings.Contains(chk.Message, "sql:") || strings.Contains(chk.Message, "alias_list") {
 		t.Fatalf("payment_setup message leaks database internals: %q", chk.Message)
+	}
+}
+
+func TestPaymentSetupResolvesExplicitAliasToParent(t *testing.T) {
+	setup := okPaymentSetup()
+	setup.aliases = map[string][]string{"SEPA": {"SEPA Instant"}}
+	report, chk := runPaymentCheck(t, setup, "SEPA Instant", nil)
+	if !chk.Passed {
+		t.Fatalf("payment_setup check = %+v", chk)
+	}
+	if report.ResolvedPaymentMethod != "SEPA" {
+		t.Errorf("ResolvedPaymentMethod: want SEPA, got %q", report.ResolvedPaymentMethod)
+	}
+}
+
+func TestPaymentSetupPicksLinkedParentViaAlias(t *testing.T) {
+	setup := okPaymentSetup()
+	setup.aliases = map[string][]string{"SEPA": {"SEPA Instant"}}
+	report, chk := runPaymentCheck(t, setup, "", []string{"SEPA Instant"})
+	if !chk.Passed {
+		t.Fatalf("payment_setup check = %+v", chk)
+	}
+	if report.ResolvedPaymentMethod != "SEPA" {
+		t.Errorf("ResolvedPaymentMethod: want SEPA, got %q", report.ResolvedPaymentMethod)
+	}
+}
+
+func TestPaymentSetupUnknownAliasStaysCatalogError(t *testing.T) {
+	_, chk := runPaymentCheck(t, okPaymentSetup(), "Frobnicate Instant", nil)
+	if chk.Passed || !strings.Contains(chk.Message, "not in the payment methods catalog") {
+		t.Fatalf("payment_setup check = %+v", chk)
 	}
 }
 

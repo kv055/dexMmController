@@ -641,11 +641,29 @@ func whitelistCredentialErrorMessage(provider string, err error) string {
 }
 
 // resolvePaymentMethod picks the single method to validate: the explicitly
-// requested one wins; otherwise the highest-priority linked+active catalog row
+// requested one wins (resolved through the catalog so aliases map to the
+// parent name); otherwise the highest-priority linked+active catalog row
 // among the offer's accepted methods.
 func (c *BidChecker) resolvePaymentMethod(ctx context.Context, paymentMethod string, paymentMethods []string) (string, error) {
 	if method := strings.TrimSpace(paymentMethod); method != "" {
-		return method, nil
+		if c.paymentSetup == nil {
+			return "", fmt.Errorf("payment setup checker not configured")
+		}
+		row, err := c.paymentSetup.PaymentMethodByName(ctx, method)
+		if err != nil {
+			log.Printf("pre-trade payment setup: load payment method %q: %v", method, err)
+			return "", fmt.Errorf(
+				"pre-trade check failed: %s payment configuration could not be read; retry, then check the mm-controller logs if the problem persists",
+				method,
+			)
+		}
+		if row == nil {
+			return "", fmt.Errorf(
+				"pre-trade check failed: %s is not in the payment methods catalog; run a snapshot or add it in the categorization panel",
+				method,
+			)
+		}
+		return row.Name, nil
 	}
 	names := make([]string, 0, len(paymentMethods))
 	for _, m := range paymentMethods {

@@ -9,9 +9,21 @@ import (
 	"time"
 
 	"commons/credentialcrypto"
+	"commons/paymentmethods"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// paymentMethodMatchesLabelSQL is the Postgres predicate for one bound catalog
+// label (canonical name or alias_list entry). Keep in sync with
+// paymentmethods.CatalogLabelMatches.
+const paymentMethodMatchesLabelSQL = `(
+	lower(trim(replace(name, '_', ' '))) = lower(trim(replace(?, '_', ' ')))
+	OR EXISTS (
+		SELECT 1 FROM unnest(alias_list) AS alias_name
+		WHERE lower(trim(replace(alias_name, '_', ' '))) = lower(trim(replace(?, '_', ' ')))
+	)
+)`
 
 // ErrWalletAddressNotFound is the err wallet address not found value.
 var ErrWalletAddressNotFound = errors.New("wallet address not found")
@@ -24,12 +36,16 @@ type TransactionRepository struct {
 	db *gorm.DB
 }
 
-// GetPaymentMethodByName retrieves a payment_methods catalog row by its
-// canonical name. Returns (nil, nil) when the method is not in the catalog.
+// GetPaymentMethodByName retrieves a payment_methods catalog row by canonical
+// name or operator alias. Returns (nil, nil) when the method is not in the catalog.
 func (r *TransactionRepository) GetPaymentMethodByName(ctx context.Context, name string) (*PaymentMethod, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, nil
+	}
 	var pm PaymentMethod
 	if err := r.db.WithContext(ctx).
-		Where("name = ?", strings.TrimSpace(name)).
+		Where(paymentMethodMatchesLabelSQL, name, name).
 		First(&pm).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -134,15 +150,29 @@ func (r *TransactionRepository) GetChatTemplateVariables(ctx context.Context, pa
 }
 
 // PickPaymentMethod returns the linked+active payment method with the highest
-// priority among names (name ASC breaks ties). Returns (nil, nil) when none
+// priority among names (name ASC breaks ties). A requested atom matches the
+// row's canonical name or any alias_list entry. Returns (nil, nil) when none
 // of the names is eligible.
 func (r *TransactionRepository) PickPaymentMethod(ctx context.Context, names []string) (*PaymentMethod, error) {
-	if len(names) == 0 {
+	wanted := make([]string, 0, len(names))
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name != "" {
+			wanted = append(wanted, name)
+		}
+	}
+	if len(wanted) == 0 {
 		return nil, nil
 	}
 	var pm PaymentMethod
 	if err := r.db.WithContext(ctx).
-		Where("name IN ? AND is_active AND is_linked", names).
+		Where(`is_active AND is_linked AND EXISTS (
+			SELECT 1 FROM unnest(?::text[]) AS wanted
+			WHERE lower(trim(replace(payment_methods.name, '_', ' '))) = lower(trim(replace(wanted, '_', ' ')))
+			   OR EXISTS (
+				SELECT 1 FROM unnest(alias_list) AS alias_name
+				WHERE lower(trim(replace(alias_name, '_', ' '))) = lower(trim(replace(wanted, '_', ' ')))
+			   )
+		)`, paymentmethods.TextArray(wanted)).
 		Order("priority DESC, name ASC").
 		First(&pm).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
