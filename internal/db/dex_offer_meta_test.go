@@ -110,3 +110,22 @@ func TestResolvedRouteAuthoritativeSnapshotValidation(t *testing.T) {
 		t.Fatal("route with projected funding policy was accepted")
 	}
 }
+
+func TestResolvedSwapRouteRequiresPositionAndSecurityDepositLiquidity(t *testing.T) {
+	route := ResolvedRoute{
+		ConfigVersion: 1, SnapshotRevision: 3, ResolvedAt: "2026-08-13T12:00:00Z",
+		TradeMode: "hedgefull_single_collateral", TargetDirection: "bid", MarketSide: "bid",
+		Provider: "kraken", HedgeVenue: "kraken_futures", HedgeSide: "short",
+		HedgeNotional: 0.01, Leverage: 5, Settlement: "onchain_swap", NeedsHub: true, NeedsLightning: true,
+		FiatCurrency: "EUR", FiatAmount: 500, BTCAmount: 0.01, RequiredCapital: 550,
+		RequiredBTCLiquidity: 0.0115, SecurityDepositBTC: 0.0015, RoutingFeeAllowanceSat: 100,
+		CostInputs: RouteCostInputs{ReferencePrice: 50000, FeeTier: "economic"},
+	}
+	if err := route.ValidateAuthoritativeSnapshot(); err != nil {
+		t.Fatalf("complete swap route was rejected: %v", err)
+	}
+	route.RequiredBTCLiquidity = 0.01
+	if err := route.ValidateAuthoritativeSnapshot(); err == nil || err.Error() != "required_btc_liquidity must cover btc_amount plus security_deposit_btc" {
+		t.Fatalf("underfunded swap validation error = %v", err)
+	}
+}

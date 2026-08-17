@@ -61,10 +61,64 @@ func authoritativeTestRoute(mode, settlement string) *tradeflow.ResolvedRoute {
 		route.SecurityDepositBTC = 0.0015
 	}
 	if settlement == "onchain_swap" {
-		route.RequiredBTCLiquidity = 0.01
+		route.RequiredBTCLiquidity = route.BTCAmount + route.SecurityDepositBTC
 		route.RoutingFeeAllowanceSat = 50
 	}
 	return route
+}
+
+func TestHandleCexPreTradeCheckReportsInvalidUnifiedAPIRouteSnapshot(t *testing.T) {
+	checker := &fakePreTradeChecker{}
+	s := (&Server{}).WithCexAccount(cexaccount.NewService(nil, cexaccount.Config{}).WithPreTradeChecker(checker))
+	route := authoritativeTestRoute(cexaccount.TradeModeHedgefullSingleCollateral, "onchain_swap")
+	route.RequiredBTCLiquidity = 0
+	body, err := json.Marshal(map[string]any{"resolved_route": route})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/cex/pre-trade-check", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	s.handleCexPreTradeCheck(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	var response map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	want := "invalid resolved_route from unified API: required_btc_liquidity must cover btc_amount plus security_deposit_btc"
+	if response["error"] != want {
+		t.Fatalf("error = %q, want %q", response["error"], want)
+	}
+}
+
+func TestHandleCexTradeflowReportsInvalidUnifiedAPIRouteSnapshot(t *testing.T) {
+	runner := &fakeTradeFlowRunner{}
+	s := (&Server{}).WithTradeFlow(runner)
+	route := authoritativeTestRoute(cexaccount.TradeModeHedgefullSingleCollateral, "onchain_swap")
+	route.RequiredBTCLiquidity = 0
+	body, err := json.Marshal(map[string]any{"resolved_route": route})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/cex/tradeflow", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	s.handleCexTradeflow(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	var response map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	want := "invalid resolved_route from unified API: required_btc_liquidity must cover btc_amount plus security_deposit_btc"
+	if response["error"] != want {
+		t.Fatalf("error = %q, want %q", response["error"], want)
+	}
 }
 
 func TestHandleCexPreTradeCheckRequiresUnifiedAPIRouteSnapshot(t *testing.T) {

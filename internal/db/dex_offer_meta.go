@@ -82,55 +82,59 @@ func (r ResolvedRoute) ValidForExecution() bool {
 	}
 }
 
-// ValidAuthoritativeSnapshot applies the stricter contract required at public
-// pre-trade and execution boundaries. ValidForExecution intentionally remains
-// compatible with routes already persisted by older deployments so recovery
-// workers can finish in-flight transactions.
-func (r ResolvedRoute) ValidAuthoritativeSnapshot() bool {
+// ValidateAuthoritativeSnapshot applies the stricter contract required at
+// public pre-trade and execution boundaries. ValidForExecution intentionally
+// remains compatible with routes already persisted by older deployments so
+// recovery workers can finish in-flight transactions.
+func (r ResolvedRoute) ValidateAuthoritativeSnapshot() error {
 	if !r.ValidForExecution() || r.SnapshotRevision <= 0 {
-		return false
+		return fmt.Errorf("base execution fields and snapshot_revision must be valid")
 	}
 	if _, err := time.Parse(time.RFC3339Nano, r.ResolvedAt); err != nil {
-		return false
+		return fmt.Errorf("resolved_at must be an RFC3339 timestamp")
 	}
 	r.TargetDirection = strings.ToLower(strings.TrimSpace(r.TargetDirection))
 	r.MarketSide = strings.ToLower(strings.TrimSpace(r.MarketSide))
 	if (r.MarketSide != "bid" && r.MarketSide != "ask") || r.TargetDirection != r.MarketSide {
-		return false
+		return fmt.Errorf("target_direction and market_side must match and be bid or ask")
 	}
 	if strings.TrimSpace(r.FiatCurrency) == "" || r.FiatAmount <= 0 || r.RequiredBTCLiquidity < 0 || r.SecurityDepositBTC < 0 || r.TotalCostBTC < 0 || r.TotalCostPercent < 0 {
-		return false
+		return fmt.Errorf("fiat, BTC liquidity, deposit, and cost fields must be valid")
 	}
 	cost := r.CostInputs
 	if cost.ReferencePrice <= 0 || cost.FeeTier != "economic" || cost.FundingCostAvailable || cost.ProjectedFundingFeeBTC != 0 ||
 		cost.SpotTakerFeeBTC < 0 || cost.WithdrawalFeeBTC < 0 || cost.HedgeOpenFeeBTC < 0 || cost.HedgeCloseFeeBTC < 0 ||
 		cost.DEXFeeBTC < 0 || cost.MinerFeeBTC < 0 || cost.ConversionFeeBTC < 0 {
-		return false
+		return fmt.Errorf("cost_inputs do not match the executable economic-fee policy")
 	}
 	wantHub := r.Settlement == "onchain_hub" || r.Settlement == "onchain_swap"
 	wantLightning := r.Settlement == "onchain_swap"
 	if r.NeedsHub != wantHub || r.NeedsLightning != wantLightning {
-		return false
+		return fmt.Errorf("needs_hub and needs_lightning do not match settlement %q", r.Settlement)
 	}
 	switch r.TradeMode {
 	case "hedgefull_single_collateral":
 		if strings.TrimSpace(r.HedgeVenue) == "" || r.HedgeNotional <= 0 || r.Leverage <= 0 {
-			return false
+			return fmt.Errorf("hedgefull route requires hedge venue, notional, and leverage")
 		}
 		if (r.MarketSide == "bid" && r.HedgeSide != "short") || (r.MarketSide == "ask" && r.HedgeSide != "long") {
-			return false
+			return fmt.Errorf("hedge_side does not match market_side")
 		}
 	case "hedgeless_double_collateral":
 		if r.MarketSide != "bid" || r.RequiredBTCLiquidity <= 0 || r.HedgeVenue != "" || r.HedgeSide != "" || r.HedgeNotional != 0 {
-			return false
+			return fmt.Errorf("hedgeless route must be bid-side, funded with BTC liquidity, and contain no hedge leg")
 		}
 	default:
-		return false
+		return fmt.Errorf("unsupported trade_mode %q", r.TradeMode)
 	}
-	if wantLightning && r.RequiredBTCLiquidity <= 0 {
-		return false
+	if (wantLightning || r.TradeMode == "hedgeless_double_collateral") && r.RequiredBTCLiquidity+1e-12 < r.BTCAmount+r.SecurityDepositBTC {
+		return fmt.Errorf("required_btc_liquidity must cover btc_amount plus security_deposit_btc")
 	}
-	return true
+	return nil
+}
+
+func (r ResolvedRoute) ValidAuthoritativeSnapshot() bool {
+	return r.ValidateAuthoritativeSnapshot() == nil
 }
 
 func (r ResolvedRoute) UsesHub() bool {

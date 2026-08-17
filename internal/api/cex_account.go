@@ -74,8 +74,12 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 			req.ResolvedRoute = selected.Metadata.ResolvedRoute
 		}
 	}
-	if req.ResolvedRoute == nil || !req.ResolvedRoute.ValidAuthoritativeSnapshot() {
+	if req.ResolvedRoute == nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route from unified API is required"))
+		return
+	}
+	if err := req.ResolvedRoute.ValidateAuthoritativeSnapshot(); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid resolved_route from unified API: %w", err))
 		return
 	}
 	if err := validateLegacyTradeflowFields(req); err != nil {
@@ -348,8 +352,12 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
 	}
-	if req.ResolvedRoute == nil || !req.ResolvedRoute.ValidAuthoritativeSnapshot() {
+	if req.ResolvedRoute == nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route from unified API is required"))
+		return
+	}
+	if err := req.ResolvedRoute.ValidateAuthoritativeSnapshot(); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid resolved_route from unified API: %w", err))
 		return
 	}
 	if err := validateLegacyPreTradeFields(req); err != nil {
