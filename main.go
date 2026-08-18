@@ -761,6 +761,11 @@ func lndStatsFetcher(client *lnd.Client) mmmetrics.LNDStatsFunc {
 			return s
 		}
 		s.Up = true
+		if info, err := client.NodeInfo(ctx); err == nil && info != nil {
+			s.SyncedToChain = info.SyncedToChain
+			s.SyncedToGraph = info.SyncedToGraph
+			s.BlockHeight = float64(info.BlockHeight)
+		}
 		if channels, err := client.ListChannels(ctx); err == nil {
 			for _, c := range channels {
 				if c.Active {

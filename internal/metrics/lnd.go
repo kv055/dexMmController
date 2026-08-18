@@ -23,6 +23,10 @@ type LNDStats struct {
 	ConfirmedSat, UnconfirmedSat float64
 	// LocalSat / RemoteSat are the channel balances in satoshis.
 	LocalSat, RemoteSat float64
+	// SyncedToChain / SyncedToGraph mirror lncli getinfo; BlockHeight is the
+	// Neutrino header tip (not proof that the wallet rescan finished).
+	SyncedToChain, SyncedToGraph bool
+	BlockHeight                  float64
 }
 
 // LNDStatsFunc fetches a sample from the live LND node. It runs under the
@@ -45,6 +49,12 @@ var lndCollector = &lndMetrics{
 		"LND on-chain wallet balance in satoshis by confirmation state.", []string{"state"}, nil),
 	channelBal: prometheus.NewDesc("dex_lnd_channel_balance_sat",
 		"LND channel balance in satoshis by side (local/remote).", []string{"side"}, nil),
+	syncedChain: prometheus.NewDesc("dex_lnd_synced_to_chain",
+		"1 when LND reports synced_to_chain (wallet rescan caught up to Neutrino tip).", nil, nil),
+	syncedGraph: prometheus.NewDesc("dex_lnd_synced_to_graph",
+		"1 when LND reports synced_to_graph.", nil, nil),
+	blockHeight: prometheus.NewDesc("dex_lnd_block_height",
+		"LND reported Bitcoin header height. Header tip can lead a still-running wallet rescan.", nil, nil),
 }
 
 // SetLNDStatsSource wires the live wallet stats fetcher into the collector.
@@ -62,10 +72,13 @@ type lndMetrics struct {
 	cached   *LNDStats
 	cachedAt time.Time
 
-	up         *prometheus.Desc
-	channels   *prometheus.Desc
-	onchain    *prometheus.Desc
-	channelBal *prometheus.Desc
+	up          *prometheus.Desc
+	channels    *prometheus.Desc
+	onchain     *prometheus.Desc
+	channelBal  *prometheus.Desc
+	syncedChain *prometheus.Desc
+	syncedGraph *prometheus.Desc
+	blockHeight *prometheus.Desc
 }
 
 func (m *lndMetrics) Describe(ch chan<- *prometheus.Desc) {
@@ -73,6 +86,9 @@ func (m *lndMetrics) Describe(ch chan<- *prometheus.Desc) {
 	ch <- m.channels
 	ch <- m.onchain
 	ch <- m.channelBal
+	ch <- m.syncedChain
+	ch <- m.syncedGraph
+	ch <- m.blockHeight
 }
 
 func (m *lndMetrics) Collect(ch chan<- prometheus.Metric) {
@@ -88,6 +104,16 @@ func (m *lndMetrics) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(m.onchain, prometheus.GaugeValue, snap.UnconfirmedSat, "unconfirmed")
 	ch <- prometheus.MustNewConstMetric(m.channelBal, prometheus.GaugeValue, snap.LocalSat, "local")
 	ch <- prometheus.MustNewConstMetric(m.channelBal, prometheus.GaugeValue, snap.RemoteSat, "remote")
+	ch <- prometheus.MustNewConstMetric(m.syncedChain, prometheus.GaugeValue, boolGauge(snap.SyncedToChain))
+	ch <- prometheus.MustNewConstMetric(m.syncedGraph, prometheus.GaugeValue, boolGauge(snap.SyncedToGraph))
+	ch <- prometheus.MustNewConstMetric(m.blockHeight, prometheus.GaugeValue, snap.BlockHeight)
+}
+
+func boolGauge(ok bool) float64 {
+	if ok {
+		return 1
+	}
+	return 0
 }
 
 func (m *lndMetrics) snapshot() LNDStats {
