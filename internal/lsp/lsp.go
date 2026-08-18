@@ -64,6 +64,10 @@ type Status struct {
 func Inspect(cfg Config, channels []lnd.Channel) Status {
 	s := Status{Enabled: cfg.Enabled, Configured: strings.TrimSpace(cfg.ChannelPoint) != "" && strings.TrimSpace(cfg.RemotePubkey) != "", ChannelPoint: cfg.ChannelPoint, RemotePubkey: cfg.RemotePubkey, ProviderLabel: cfg.ProviderLabel, HeadroomSat: cfg.HeadroomSat, MaxSwapFeeSat: cfg.MaxSwapFeeSat, MaxSwapFeePPM: cfg.MaxSwapFeePPM}
 	if !cfg.Enabled {
+		if !s.Configured {
+			s.Reason = "No LSP channel configured"
+			return s
+		}
 		s.Reason = "LSP channel is disabled"
 		return s
 	}

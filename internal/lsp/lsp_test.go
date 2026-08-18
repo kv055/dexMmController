@@ -28,6 +28,16 @@ func TestInspectRequiresExactSelectedActiveChannelButCountsOtherChannels(t *test
 	}
 }
 
+func TestInspectUnconfiguredDoesNotReportDisabled(t *testing.T) {
+	got := Inspect(Config{}, nil)
+	if got.Configured || got.Enabled || got.LSPHealthy {
+		t.Fatalf("unconfigured status = %#v", got)
+	}
+	if got.Reason != "No LSP channel configured" {
+		t.Fatalf("reason = %q, want unconfigured not disabled", got.Reason)
+	}
+}
+
 func TestInspectRejectsSamePeerReplacementOrInactiveChannel(t *testing.T) {
 	cfg := Config{Enabled: true, ChannelPoint: "expected:0", RemotePubkey: "03lsp"}
 	for _, ch := range []lnd.Channel{{ChannelPoint: "replacement:0", RemotePubkey: "03lsp", Active: true}, {ChannelPoint: "expected:0", RemotePubkey: "03lsp", Active: false}} {

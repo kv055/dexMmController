@@ -262,6 +262,60 @@ paths:
           description: Successful response
         default:
           description: Error response
+  '/api/lnd/lsp-channel/magma/info':
+    get:
+      operationId: getApiLndLspChannelMagmaInfo
+      tags: ['lnd']
+      summary: 'GET /api/lnd/lsp-channel/magma/info'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
+  '/api/lnd/lsp-channel/magma/orders':
+    get:
+      operationId: getApiLndLspChannelMagmaOrders
+      tags: ['lnd']
+      summary: 'GET /api/lnd/lsp-channel/magma/orders'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
+    post:
+      operationId: postApiLndLspChannelMagmaOrders
+      tags: ['lnd']
+      summary: 'POST /api/lnd/lsp-channel/magma/orders'
+      x-contract-status: route-catalog
+      responses:
+        '201':
+          description: Successful response
+        default:
+          description: Error response
+  '/api/lnd/lsp-channel/magma/orders/{id}':
+    get:
+      operationId: getApiLndLspChannelMagmaOrderById
+      tags: ['lnd']
+      summary: 'GET /api/lnd/lsp-channel/magma/orders/{id}'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
+  '/api/lnd/lsp-channel/magma/orders/{id}/pay':
+    post:
+      operationId: postApiLndLspChannelMagmaOrderPay
+      tags: ['lnd']
+      summary: 'POST /api/lnd/lsp-channel/magma/orders/{id}/pay'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
   '/api/lnd/submarine-swaps':
     get:
       operationId: getApiLndSubmarineSwaps

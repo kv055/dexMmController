@@ -18,6 +18,8 @@ import (
 	"dexMmController/internal/hedgestream"
 	"dexMmController/internal/lndhealth"
 
+	"dexMmController/internal/magma"
+
 	"commons/metrics"
 	"commons/mmcapabilities"
 	"commons/telegram"
@@ -73,6 +75,7 @@ type Server struct {
 	transactionalLiquiditySettingsRepo transactionalLiquiditySettingsBackend
 	lspChannelConfig                   lspChannelConfigBackend
 	submarineSwapHistory               submarineSwapHistory
+	magmaLSP                           *magma.Coordinator
 	telegramStore                      *telegram.Store
 	telegramExtraSetters               []telegramClientSetter
 	telegramPairingMu                  sync.Mutex
@@ -255,6 +258,11 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("PUT /api/lnd/lsp-channel", s.handleLSPChannelConfig)
 	mux.HandleFunc("GET /api/lnd/lsp-channel/status", s.handleLSPChannelStatus)
 	mux.HandleFunc("GET /api/lnd/lsp-channel/candidates", s.handleLSPChannelCandidates)
+	mux.HandleFunc("GET /api/lnd/lsp-channel/magma/info", s.handleMagmaLSPInfo)
+	mux.HandleFunc("GET /api/lnd/lsp-channel/magma/orders", s.handleMagmaLSPOrders)
+	mux.HandleFunc("POST /api/lnd/lsp-channel/magma/orders", s.handleMagmaLSPOrders)
+	mux.HandleFunc("GET /api/lnd/lsp-channel/magma/orders/{id}", s.handleMagmaLSPOrderByID)
+	mux.HandleFunc("POST /api/lnd/lsp-channel/magma/orders/{id}/pay", s.handleMagmaLSPOrderPay)
 	mux.HandleFunc("GET /api/lnd/submarine-swaps", s.handleSubmarineSwapHistory)
 	mux.HandleFunc("POST /api/lnd/channels/open", s.handleLNDOpenChannel)
 	mux.HandleFunc("POST /api/lnd/channels/close", s.handleLNDCloseChannel)

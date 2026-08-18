@@ -534,6 +534,23 @@ func decodeJSONBody(r *http.Request, out any) error {
 	return nil
 }
 
+func decodeOptionalJSONBody(r *http.Request, out any) error {
+	if r.Body == nil {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read request body: %w", err)
+	}
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("invalid JSON body")
+	}
+	return nil
+}
+
 func buildLNDWalletStatus(
 	ctx context.Context,
 	client lndWalletClient,

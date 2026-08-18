@@ -32,6 +32,7 @@ import (
 	"dexMmController/internal/hedgestream"
 	"dexMmController/internal/lndhealth"
 	"dexMmController/internal/lsp"
+	"dexMmController/internal/magma"
 	mmmetrics "dexMmController/internal/metrics"
 	// "dexMmController/internal/premiumoffers" // Disabled: premium-offer watcher is not currently in use.
 	"dexMmController/internal/pretrade"
@@ -158,8 +159,16 @@ func main() {
 	repo := db.NewTransactionRepository(database)
 	transactionalLiquiditySettingsRepo := db.NewTransactionalLiquiditySettingsRepository(database)
 	lspChannelConfigRepo := db.NewLSPChannelConfigRepository(database)
+	lspMagmaOrderRepo := db.NewLSPMagmaOrderRepository(database)
 	submarineSwapRepo := db.NewSubmarineSwapRepository(database)
 	mmmetrics.RegisterTradeStats(metricsReg.Registry, repo)
+	magmaCoordinator := &magma.Coordinator{
+		Client:             magma.NewClient(strings.TrimRight(envOr("MAGMA_LSP_BASE_URL", ""), "/")),
+		Store:              db.NewMagmaOrderStore(lspMagmaOrderRepo),
+		LSPRegistrar:       db.NewLSPConfigRegistrar(lspChannelConfigRepo),
+		DefaultPool:        magma.Pool(envOr("MAGMA_LSP_DEFAULT_POOL", string(magma.PoolRecommended))),
+		DefaultFeeLimitSat: envInt64Or("MAGMA_LSP_PAY_FEE_LIMIT_SAT", 1000),
+	}
 
 	lndAccount, err := repo.EnsureAccount(ctx, db.LNDAccountProvider)
 	if err != nil {
@@ -461,7 +470,8 @@ func main() {
 		WithTelegramSettings(telegramSettingsRepo, telegramStore, anomalyNotifier).
 		WithTransactionalLiquiditySettings(transactionalLiquiditySettingsRepo).
 		WithLSPChannelConfig(lspChannelConfigRepo).
-		WithSubmarineSwapHistory(submarineSwapRepo)
+		WithSubmarineSwapHistory(submarineSwapRepo).
+		WithMagmaLSP(magmaCoordinator)
 
 	// lndInit creates (or restores) the LND wallet using the password stored in the
 	// database, persists the generated seed + primary address + channel backup, and
@@ -516,6 +526,7 @@ func main() {
 		}
 
 		apiServer.WithLNDWallet(lndClient)
+		magmaCoordinator.Wallet = func(context.Context) magma.LNDWallet { return lndClient }
 		lndHealthChecker.SetClient(lndClient)
 		mmmetrics.SetLNDStatsSource(lndStatsFetcher(lndClient))
 		preTradeChecker.SetWallet(pretrade.WalletSourceFunc(func(ctx context.Context) ([]string, error) {
@@ -676,6 +687,7 @@ func main() {
 		lndWorkersOnce.Do(func() {
 			lndHealthChecker.RunAndLog(ctx)
 			go lndHealthChecker.RunPeriodic(ctx, accountHealthInterval)
+			go magmaCoordinator.RunPoller(ctx)
 			if boltzAPI != nil {
 				go func() {
 					if recoverErr := coordinator.Recover(ctx); recoverErr != nil && ctx.Err() == nil {
@@ -793,6 +805,18 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envInt64Or(key string, fallback int64) int64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return n
 }
 
 func firstNonEmpty(values ...string) string {
