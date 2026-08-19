@@ -22,6 +22,7 @@ type transactionalLiquidityUpdateRequest struct {
 	TradeMode                string   `json:"trade_mode"`
 	TargetDirection          string   `json:"target_direction"`
 	LightningLiquiditySource string   `json:"lightning_liquidity_source"`
+	SupportedRoutingProfiles []string `json:"supported_routing_profiles"`
 	FeeTier                  string   `json:"fee_tier"`
 	CoupledHedge             bool     `json:"coupled_hedge"`
 }
@@ -73,6 +74,7 @@ func (s *Server) updateTransactionalLiquiditySettings(w http.ResponseWriter, r *
 		TradeMode:                strings.TrimSpace(req.TradeMode),
 		TargetDirection:          strings.TrimSpace(req.TargetDirection),
 		LightningLiquiditySource: strings.TrimSpace(req.LightningLiquiditySource),
+		SupportedRoutingProfiles: req.SupportedRoutingProfiles,
 		FeeTier:                  strings.TrimSpace(req.FeeTier),
 		CoupledHedge:             req.CoupledHedge,
 	})

@@ -36,6 +36,7 @@ func TestTransactionalLiquiditySettingsPutForwardsTargetDirection(t *testing.T) 
 		"trade_mode":"hedgefull_single_collateral",
 		"target_direction":"ask",
 		"lightning_liquidity_source":"lsp_channel",
+		"supported_routing_profiles":["Direct_main2main","Hub_main2main"],
 		"fee_tier":"economic",
 		"coupled_hedge":true
 	}`))
@@ -52,7 +53,22 @@ func TestTransactionalLiquiditySettingsPutForwardsTargetDirection(t *testing.T) 
 	if repo.update.LightningLiquiditySource != db.TransactionalLiquidityLSPChannel {
 		t.Fatalf("lightning liquidity source = %q, want %q", repo.update.LightningLiquiditySource, db.TransactionalLiquidityLSPChannel)
 	}
+	if !stringSlicesEqual(repo.update.SupportedRoutingProfiles, []string{db.TransactionalRoutingProfileDirect, db.TransactionalRoutingProfileHub}) {
+		t.Fatalf("supported routing profiles = %#v", repo.update.SupportedRoutingProfiles)
+	}
 	if repo.update.AmountFiat == nil || *repo.update.AmountFiat != 500 || repo.update.FeeTier != db.TransactionalLiquidityFeeEconomic || !repo.update.CoupledHedge {
 		t.Fatalf("routing settings were not forwarded: %+v", repo.update)
 	}
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"commons/paymentmethods"
 	"gorm.io/gorm"
 )
 
@@ -20,21 +21,31 @@ const (
 	TransactionalLiquidityOwnChannels  = "own_channels"
 	TransactionalLiquidityLSPChannel   = "lsp_channel"
 	TransactionalLiquidityFeeEconomic  = "economic"
+	TransactionalRoutingProfileDirect  = "Direct_main2main"
+	TransactionalRoutingProfileHub     = "Hub_main2main"
+	TransactionalRoutingProfileSwap    = "Swap_main2lightning"
 )
+
+var defaultSupportedRoutingProfiles = []string{
+	TransactionalRoutingProfileDirect,
+	TransactionalRoutingProfileHub,
+	TransactionalRoutingProfileSwap,
+}
 
 // TransactionalLiquiditySettings is the singleton operator target profile.
 type TransactionalLiquiditySettings struct {
-	ID                       int       `gorm:"primaryKey" json:"-"`
-	FiatCurrency             string    `gorm:"column:fiat_currency" json:"fiat_currency"`
-	AmountSource             string    `gorm:"column:amount_source" json:"amount_source"`
-	AmountFiat               *float64  `gorm:"column:amount_fiat" json:"amount_fiat"`
-	TradeMode                string    `gorm:"column:trade_mode" json:"trade_mode"`
-	TargetDirection          string    `gorm:"column:target_direction" json:"target_direction"`
-	LightningLiquiditySource string    `gorm:"column:lightning_liquidity_source" json:"lightning_liquidity_source"`
-	FeeTier                  string    `gorm:"column:fee_tier" json:"fee_tier"`
-	CoupledHedge             bool      `gorm:"column:coupled_hedge" json:"coupled_hedge"`
-	ConfigVersion            int64     `gorm:"column:config_version" json:"config_version"`
-	UpdatedAt                time.Time `gorm:"column:updated_at" json:"updated_at"`
+	ID                       int                      `gorm:"primaryKey" json:"-"`
+	FiatCurrency             string                   `gorm:"column:fiat_currency" json:"fiat_currency"`
+	AmountSource             string                   `gorm:"column:amount_source" json:"amount_source"`
+	AmountFiat               *float64                 `gorm:"column:amount_fiat" json:"amount_fiat"`
+	TradeMode                string                   `gorm:"column:trade_mode" json:"trade_mode"`
+	TargetDirection          string                   `gorm:"column:target_direction" json:"target_direction"`
+	LightningLiquiditySource string                   `gorm:"column:lightning_liquidity_source" json:"lightning_liquidity_source"`
+	SupportedRoutingProfiles paymentmethods.TextArray `gorm:"column:supported_routing_profiles;type:text[]" json:"supported_routing_profiles"`
+	FeeTier                  string                   `gorm:"column:fee_tier" json:"fee_tier"`
+	CoupledHedge             bool                     `gorm:"column:coupled_hedge" json:"coupled_hedge"`
+	ConfigVersion            int64                    `gorm:"column:config_version" json:"config_version"`
+	UpdatedAt                time.Time                `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (TransactionalLiquiditySettings) TableName() string { return "transactional_liquidity_settings" }
@@ -48,6 +59,7 @@ type TransactionalLiquiditySettingsUpdate struct {
 	TradeMode                string
 	TargetDirection          string
 	LightningLiquiditySource string
+	SupportedRoutingProfiles []string
 	FeeTier                  string
 	CoupledHedge             bool
 }
@@ -99,6 +111,10 @@ func (r *TransactionalLiquiditySettingsRepository) Update(ctx context.Context, u
 	if lightningSource != TransactionalLiquidityOwnChannels && lightningSource != TransactionalLiquidityLSPChannel {
 		return TransactionalLiquiditySettings{}, TransactionalLiquidityValidationError{"lightning_liquidity_source must be own_channels or lsp_channel"}
 	}
+	profiles, err := normalizeSupportedRoutingProfiles(u.SupportedRoutingProfiles)
+	if err != nil {
+		return TransactionalLiquiditySettings{}, err
+	}
 	if u.AmountFiat == nil || *u.AmountFiat <= 0 {
 		return TransactionalLiquiditySettings{}, TransactionalLiquidityValidationError{"amount_fiat must be greater than zero"}
 	}
@@ -112,6 +128,7 @@ func (r *TransactionalLiquiditySettingsRepository) Update(ctx context.Context, u
 	if currentErr == nil && current.FiatCurrency == fiat && current.AmountSource == source &&
 		floatPointersEqual(current.AmountFiat, u.AmountFiat) && current.TradeMode == mode &&
 		current.TargetDirection == direction && current.LightningLiquiditySource == lightningSource &&
+		stringSlicesEqual(current.SupportedRoutingProfiles, profiles) &&
 		current.FeeTier == feeTier && current.CoupledHedge == u.CoupledHedge {
 		return current, nil
 	}
@@ -126,6 +143,7 @@ func (r *TransactionalLiquiditySettingsRepository) Update(ctx context.Context, u
 		"trade_mode":                 mode,
 		"target_direction":           direction,
 		"lightning_liquidity_source": lightningSource,
+		"supported_routing_profiles": paymentmethods.TextArray(profiles),
 		"fee_tier":                   feeTier,
 		"coupled_hedge":              u.CoupledHedge,
 		"config_version":             gorm.Expr("config_version + 1"),
@@ -137,7 +155,7 @@ func (r *TransactionalLiquiditySettingsRepository) Update(ctx context.Context, u
 		return TransactionalLiquiditySettings{}, fmt.Errorf("update transactional liquidity settings: %w", res.Error)
 	}
 	if res.RowsAffected == 0 {
-		row := TransactionalLiquiditySettings{ID: transactionalLiquidityRowID, FiatCurrency: fiat, AmountSource: source, AmountFiat: u.AmountFiat, TradeMode: mode, TargetDirection: direction, LightningLiquiditySource: lightningSource, FeeTier: feeTier, CoupledHedge: u.CoupledHedge, ConfigVersion: 1}
+		row := TransactionalLiquiditySettings{ID: transactionalLiquidityRowID, FiatCurrency: fiat, AmountSource: source, AmountFiat: u.AmountFiat, TradeMode: mode, TargetDirection: direction, LightningLiquiditySource: lightningSource, SupportedRoutingProfiles: paymentmethods.TextArray(profiles), FeeTier: feeTier, CoupledHedge: u.CoupledHedge, ConfigVersion: 1}
 		if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
 			return TransactionalLiquiditySettings{}, fmt.Errorf("create transactional liquidity settings: %w", err)
 		}
@@ -150,4 +168,48 @@ func floatPointersEqual(a, b *float64) bool {
 		return a == nil && b == nil
 	}
 	return *a == *b
+}
+
+func normalizeSupportedRoutingProfiles(in []string) ([]string, error) {
+	if in == nil {
+		return append([]string{}, defaultSupportedRoutingProfiles...), nil
+	}
+	allowed := map[string]struct{}{
+		TransactionalRoutingProfileDirect: {},
+		TransactionalRoutingProfileHub:    {},
+		TransactionalRoutingProfileSwap:   {},
+	}
+	seen := make(map[string]bool, len(in))
+	for _, profile := range in {
+		profile = strings.TrimSpace(profile)
+		if profile == "" {
+			continue
+		}
+		if _, ok := allowed[profile]; !ok {
+			return nil, TransactionalLiquidityValidationError{"supported_routing_profiles contains an unsupported profile"}
+		}
+		seen[profile] = true
+	}
+	if len(seen) == 0 {
+		return nil, TransactionalLiquidityValidationError{"supported_routing_profiles must not be empty"}
+	}
+	out := make([]string, 0, len(seen))
+	for _, profile := range defaultSupportedRoutingProfiles {
+		if seen[profile] {
+			out = append(out, profile)
+		}
+	}
+	return out, nil
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
