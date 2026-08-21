@@ -3,6 +3,7 @@ package lndhealth
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,18 +52,39 @@ func (f *fakeRepo) UpdateAccountHealthCheckedAt(_ context.Context, provider stri
 }
 
 type fakeClient struct {
-	healthErr   error
-	nodeInfo    *lnd.NodeInfoResponse
-	nodeInfoErr error
-	channels    []lnd.Channel
-	channelsErr error
-	exportErr   error
-	exportRaw   []byte
-	exportCount int
+	healthErr    error
+	unlockCalled bool
+	unlockResult bool
+	unlockErr    error
+	nodeInfo     *lnd.NodeInfoResponse
+	nodeInfoErr  error
+	channels     []lnd.Channel
+	channelsErr  error
+	exportErr    error
+	exportRaw    []byte
+	exportCount  int
+}
+
+type fakeChainBackend struct {
+	pingCalled bool
+	pingErr    error
+}
+
+func (f *fakeChainBackend) Ping(context.Context) error {
+	f.pingCalled = true
+	return f.pingErr
 }
 
 func (f *fakeClient) HealthCheck(context.Context) error {
 	return f.healthErr
+}
+
+func (f *fakeClient) UnlockIfLocked(context.Context, string) (bool, error) {
+	f.unlockCalled = true
+	if f.unlockErr == nil && f.unlockResult {
+		f.healthErr = nil
+	}
+	return f.unlockResult, f.unlockErr
 }
 
 func (f *fakeClient) NodeInfo(context.Context) (*lnd.NodeInfoResponse, error) {
@@ -149,6 +171,58 @@ func TestCheckUnhealthyWhenLNDDown(t *testing.T) {
 	}
 	if result.Healthy {
 		t.Fatalf("healthy = true, want false; message=%s", result.Message)
+	}
+}
+
+func TestCheckAndUnlockRestoresLockedWallet(t *testing.T) {
+	repo := &fakeRepo{
+		password: "secret",
+		wallet:   &db.WalletAddress{Address: "bc1qexample"},
+	}
+	client := &fakeClient{healthErr: errors.New("wallet locked"), unlockResult: true}
+	chain := &fakeChainBackend{}
+	result, err := NewChecker(repo, client).WithChainBackend(chain).CheckAndUnlock(context.Background())
+	if err != nil {
+		t.Fatalf("CheckAndUnlock: %v", err)
+	}
+	if !client.unlockCalled {
+		t.Fatal("expected operator health check to attempt wallet unlock")
+	}
+	if !chain.pingCalled {
+		t.Fatal("expected operator health check to ping the configured Bitcoin Core RPC")
+	}
+	if !result.Healthy {
+		t.Fatalf("healthy = false, want true; message=%s", result.Message)
+	}
+	if !strings.Contains(result.Message, "wallet unlock ✓") {
+		t.Fatalf("message = %q, want wallet unlock result", result.Message)
+	}
+}
+
+func TestCheckAndUnlockFailsWhenBitcoinCoreIsUnavailable(t *testing.T) {
+	repo := &fakeRepo{password: "secret", wallet: &db.WalletAddress{Address: "bc1qexample"}}
+	chain := &fakeChainBackend{pingErr: errors.New("connection refused")}
+	result, err := NewChecker(repo, &fakeClient{}).WithChainBackend(chain).CheckAndUnlock(context.Background())
+	if err != nil {
+		t.Fatalf("CheckAndUnlock: %v", err)
+	}
+	if result.Healthy {
+		t.Fatalf("healthy = true, want false; message=%s", result.Message)
+	}
+	if !strings.Contains(result.Message, "Bitcoin Core RPC ✗") {
+		t.Fatalf("message = %q, want Bitcoin Core RPC failure", result.Message)
+	}
+}
+
+func TestCheckDoesNotUnlockWallet(t *testing.T) {
+	repo := &fakeRepo{password: "secret", wallet: &db.WalletAddress{Address: "bc1qexample"}}
+	client := &fakeClient{healthErr: errors.New("wallet locked")}
+	_, err := NewChecker(repo, client).Check(context.Background())
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if client.unlockCalled {
+		t.Fatal("periodic health check must not unlock the wallet")
 	}
 }
 

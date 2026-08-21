@@ -19,10 +19,16 @@ import (
 // Client defines the LND operations required for wallet health checks.
 type Client interface {
 	HealthCheck(ctx context.Context) error
+	UnlockIfLocked(ctx context.Context, password string) (bool, error)
 	NodeInfo(ctx context.Context) (*lnd.NodeInfoResponse, error)
 	ListChannels(ctx context.Context) ([]lnd.Channel, error)
 	ExportChannelBackup(ctx context.Context) error
 	LastExportedChannelBackup() ([]byte, int)
+}
+
+// ChainBackend is the Bitcoin Core RPC endpoint used by LND.
+type ChainBackend interface {
+	Ping(ctx context.Context) error
 }
 
 // Repository defines the database access required for wallet health checks.
@@ -57,11 +63,22 @@ type Checker struct {
 
 	mu     sync.RWMutex
 	client Client
+	chain  ChainBackend
 }
 
 // NewChecker creates an LND wallet health checker.
 func NewChecker(repo Repository, client Client) *Checker {
 	return &Checker{repo: repo, client: client}
+}
+
+// WithChainBackend adds the configured Bitcoin Core RPC endpoint to the manual
+// LND health check.
+func (c *Checker) WithChainBackend(chain ChainBackend) *Checker {
+	if c == nil {
+		return c
+	}
+	c.chain = chain
+	return c
 }
 
 // SetClient swaps the live LND client used by the checker. It is safe to call at
@@ -93,6 +110,17 @@ func IsLNDWalletProvider(raw string) bool {
 
 // Check runs all LND wallet health checks and persists account health state.
 func (c *Checker) Check(ctx context.Context) (Result, error) {
+	return c.check(ctx, false, false)
+}
+
+// CheckAndUnlock is the operator-triggered health check. If LND restarted with
+// the wallet locked, it unlocks the wallet from the stored credential before
+// running the normal health checks.
+func (c *Checker) CheckAndUnlock(ctx context.Context) (Result, error) {
+	return c.check(ctx, true, true)
+}
+
+func (c *Checker) check(ctx context.Context, unlockIfNeeded, checkChain bool) (Result, error) {
 	if c == nil || c.repo == nil {
 		return Result{}, errors.New("lnd health checker is not configured")
 	}
@@ -127,6 +155,23 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 		addRequired("wallet password", false, "missing in database")
 	} else {
 		addRequired("wallet password", true, "configured in database")
+	}
+	if unlockIfNeeded && clientConfigured(client) && strings.TrimSpace(password) != "" {
+		unlocked, unlockErr := client.UnlockIfLocked(ctx, password)
+		if unlockErr != nil {
+			addRequired("wallet unlock", false, unlockErr.Error())
+		} else if unlocked {
+			addInfo("wallet unlock", "wallet was locked and has been unlocked")
+		}
+	}
+	if checkChain {
+		if c.chain == nil {
+			addRequired("Bitcoin Core RPC", false, "not configured")
+		} else if err := c.chain.Ping(ctx); err != nil {
+			addRequired("Bitcoin Core RPC", false, err.Error())
+		} else {
+			addRequired("Bitcoin Core RPC", true, "configured pruned-node RPC reachable")
+		}
 	}
 
 	if !clientConfigured(client) {

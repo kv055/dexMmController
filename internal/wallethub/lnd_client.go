@@ -141,6 +141,32 @@ func (c *Client) ExportChannelBackup(ctx context.Context) error {
 	return c.exportChannelBackup(ctx)
 }
 
+// UnlockIfLocked restores wallet RPC access after an LND restart. It is safe to
+// call during an account health check: active wallets are left unchanged.
+func (c *Client) UnlockIfLocked(ctx context.Context, password string) (bool, error) {
+	if c == nil {
+		return false, fmt.Errorf("LND client is not configured")
+	}
+	if strings.TrimSpace(password) == "" {
+		return false, fmt.Errorf("LND wallet password is empty")
+	}
+
+	state, err := c.getState(ctx)
+	if err != nil {
+		return false, fmt.Errorf("getting LND wallet state: %w", err)
+	}
+	if state != "LOCKED" {
+		return false, nil
+	}
+	if err := c.unlockWallet(ctx, password); err != nil {
+		return true, fmt.Errorf("unlocking wallet: %w", err)
+	}
+	if err := c.waitState(ctx, "RPC_ACTIVE", "SERVER_ACTIVE"); err != nil {
+		return true, fmt.Errorf("waiting for LND RPC readiness after unlock: %w", err)
+	}
+	return true, nil
+}
+
 // ── static channel backups ──────────────────────────────────────────────────────
 
 // ChannelPoint identifies a channel funding output.

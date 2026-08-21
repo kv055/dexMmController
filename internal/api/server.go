@@ -128,6 +128,7 @@ type accountHealthChecker interface {
 
 type lndWalletHealthChecker interface {
 	Check(ctx context.Context) (lndhealth.Result, error)
+	CheckAndUnlock(ctx context.Context) (lndhealth.Result, error)
 }
 
 type transactionListResponse struct {
@@ -345,7 +346,7 @@ func (s *Server) handleAccountHealthCheck(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusServiceUnavailable, fmt.Errorf("LND wallet health checker is not configured"))
 			return
 		}
-		result, err := s.lndHealth.Check(r.Context())
+		result, err := s.lndHealth.CheckAndUnlock(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return

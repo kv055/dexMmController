@@ -48,7 +48,8 @@ func TestHandleAccountHealthCheckRejectsUnsupportedProvider(t *testing.T) {
 }
 
 type fakeLNDHealthChecker struct {
-	called bool
+	called           bool
+	checkAndUnlocked bool
 }
 
 func (f *fakeLNDHealthChecker) Check(context.Context) (lndhealth.Result, error) {
@@ -62,6 +63,11 @@ func (f *fakeLNDHealthChecker) Check(context.Context) (lndhealth.Result, error) 
 	}, nil
 }
 
+func (f *fakeLNDHealthChecker) CheckAndUnlock(ctx context.Context) (lndhealth.Result, error) {
+	f.checkAndUnlocked = true
+	return f.Check(ctx)
+}
+
 func TestHandleAccountHealthCheckRoutesLNDWallet(t *testing.T) {
 	lndChecker := &fakeLNDHealthChecker{}
 	s := (&Server{}).WithLNDHealth(lndChecker)
@@ -71,8 +77,8 @@ func TestHandleAccountHealthCheckRoutesLNDWallet(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if !lndChecker.called {
-		t.Fatal("expected LND health checker to be called")
+	if !lndChecker.checkAndUnlocked {
+		t.Fatal("expected LND health checker to run the unlock-aware check")
 	}
 }
 

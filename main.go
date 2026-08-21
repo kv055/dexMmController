@@ -105,6 +105,9 @@ func main() {
 	lndSeedMnemonicFile := envOr("LND_SEED_MNEMONIC_FILE", "")
 	lndAEZEEDPassphraseFile := envOr("LND_AEZEED_PASSPHRASE_FILE", "")
 	lndRecoveryWindow := envOr("LND_RECOVERY_WINDOW", "")
+	bitcoindRPCURL := envOr("LND_BITCOIND_RPC_URL", "")
+	bitcoindRPCUser := envOr("LND_BITCOIND_RPCUSER", "")
+	bitcoindRPCPass := envOr("LND_BITCOIND_RPCPASS", "")
 	accountHealthInterval := parseAccountHealthInterval(envOr("ACCOUNT_HEALTH_INTERVAL", ""))
 	healthcheckInterval := parseAccountHealthInterval(envOr("HEALTHCHECK_INTERVAL", "30s"))
 	automatedTradeflowWorkers := strings.EqualFold(strings.TrimSpace(envOr("ENABLE_AUTOMATED_TRADEFLOW_WORKERS", "false")), "true")
@@ -396,7 +399,8 @@ func main() {
 	))
 	cexAccountService.WithPreTradeChecker(preTradeChecker)
 	dexRelayWorker := dexrelay.NewWorker(repo, cexAccountService, btc, dexTaker, dexPaymentResolver)
-	lndHealthChecker := lndhealth.NewChecker(repo, nil)
+	lndHealthChecker := lndhealth.NewChecker(repo, nil).
+		WithChainBackend(bitcoin.NewCoreRPCClient(bitcoindRPCURL, bitcoindRPCUser, bitcoindRPCPass))
 	// hedgeStreamManager multiplexes each futures venue's live position feed to any
 	// number of WebSocket subscribers. Each lazy source resolves the active database
 	// credential when the first subscriber starts it.
@@ -502,7 +506,14 @@ func main() {
 			return api.LNDInitResult{}, api.ErrLNDWalletPasswordMissing
 		}
 		cfg := mergeLNDInitConfig(fileInitCfg, aezeed)
-		cfg.ChannelBackupRestore = loadLNDChannelBackupRestore(reqCtx, repo, int64(lndAccount.ID))
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("LND_INIT_FRESH")), "true") {
+			// Keep previously stored recovery material intact, but don't apply it
+			// while deliberately initializing a separate, empty wallet.
+			log.Println("LND fresh-wallet initialization requested; skipping stored seed and channel backup")
+			cfg = lnd.InitConfig{}
+		} else {
+			cfg.ChannelBackupRestore = loadLNDChannelBackupRestore(reqCtx, repo, int64(lndAccount.ID))
+		}
 
 		primaryAddress, lndClient, err := ensurePrimaryDepositAddress(
 			reqCtx, repo, lndHost, lndTLSCertPath, lndMacaroonPath, password, cfg,

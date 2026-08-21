@@ -14,7 +14,9 @@ type WalletAddress struct {
 	// as a withdrawal-whitelist destination.
 	Provider string `json:"provider,omitempty"`
 	// Category identifies the operational purpose of the stored address.
-	Category string `json:"category,omitempty"`
+	// Category is nullable in Postgres. A pointer ensures new general-purpose
+	// on-chain addresses are stored as NULL rather than an invalid empty enum.
+	Category *string `json:"category,omitempty"`
 	// CreatedAt records the relevant time for the wallet address.
 	CreatedAt time.Time `json:"created_at"`
 	// UpdatedAt records the relevant time for the wallet address.
