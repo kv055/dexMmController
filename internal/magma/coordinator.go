@@ -81,6 +81,7 @@ var ErrLSPConfigNotFound = errors.New("LSP channel configuration not found")
 // Coordinator orchestrates Magma BLIP-0051 purchases against LND.
 type Coordinator struct {
 	Client             *Client
+	Offers             *OffersClient
 	Store              OrderStore
 	LSPRegistrar       LSPRegistrar
 	Wallet             func(context.Context) LNDWallet
@@ -303,6 +304,14 @@ func (c *Coordinator) GetOrder(ctx context.Context, id string) (OrderRecord, err
 		return OrderRecord{}, err
 	}
 	return c.syncOrder(ctx, record)
+}
+
+// ListOffers returns the current Amboss Magma marketplace offer book.
+func (c *Coordinator) ListOffers(ctx context.Context) ([]Offer, error) {
+	if c == nil || c.Offers == nil {
+		return nil, fmt.Errorf("magma offer book is not configured")
+	}
+	return c.Offers.ListOffers(ctx)
 }
 
 // ListOrders returns recent persisted orders without remote refresh.

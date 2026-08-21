@@ -260,6 +260,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/lnd/lsp-channel/status", s.handleLSPChannelStatus)
 	mux.HandleFunc("GET /api/lnd/lsp-channel/candidates", s.handleLSPChannelCandidates)
 	mux.HandleFunc("GET /api/lnd/lsp-channel/magma/info", s.handleMagmaLSPInfo)
+	mux.HandleFunc("GET /api/lnd/lsp-channel/magma/offers", s.handleMagmaOffers)
 	mux.HandleFunc("GET /api/lnd/lsp-channel/magma/orders", s.handleMagmaLSPOrders)
 	mux.HandleFunc("POST /api/lnd/lsp-channel/magma/orders", s.handleMagmaLSPOrders)
 	mux.HandleFunc("GET /api/lnd/lsp-channel/magma/orders/{id}", s.handleMagmaLSPOrderByID)

@@ -167,6 +167,7 @@ func main() {
 	mmmetrics.RegisterTradeStats(metricsReg.Registry, repo)
 	magmaCoordinator := &magma.Coordinator{
 		Client:             magma.NewClient(strings.TrimRight(envOr("MAGMA_LSP_BASE_URL", ""), "/")),
+		Offers:             magma.NewOffersClient(envOr("AMBOSS_GRAPHQL_URL", ""), envOr("AMBOSS_API_KEY", "")),
 		Store:              db.NewMagmaOrderStore(lspMagmaOrderRepo),
 		LSPRegistrar:       db.NewLSPConfigRegistrar(lspChannelConfigRepo),
 		DefaultPool:        magma.Pool(envOr("MAGMA_LSP_DEFAULT_POOL", string(magma.PoolRecommended))),

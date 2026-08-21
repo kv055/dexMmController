@@ -30,6 +30,19 @@ func (s *Server) handleMagmaLSPInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
+func (s *Server) handleMagmaOffers(w http.ResponseWriter, r *http.Request) {
+	if s.magmaLSP == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("magma LSP integration is not configured"))
+		return
+	}
+	offers, err := s.magmaLSP.ListOffers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, offers)
+}
+
 func (s *Server) handleMagmaLSPOrders(w http.ResponseWriter, r *http.Request) {
 	if s.magmaLSP == nil {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("magma LSP integration is not configured"))
