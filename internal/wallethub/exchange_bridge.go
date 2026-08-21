@@ -3,6 +3,7 @@ package lnd
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -157,14 +158,13 @@ type WithdrawFromExchangeRequest struct {
 	Network string
 	// Amount is the amount value for the withdraw from exchange request.
 	Amount string
-	// LNDDestination is the lnddestination value for the withdraw from exchange request.
+	// LNDDestination is the pre-whitelisted LND on-chain destination supplied
+	// to the exchange withdrawal API.
 	LNDDestination string
 	// ClientRequestID is the client request id value for the withdraw from exchange request.
 	ClientRequestID string
 	// AddressTag carries exchange-specific destination metadata (Kraken withdrawal key).
 	AddressTag string
-	// GenerateNewLNDAdress is the generate new lndadress value for the withdraw from exchange request.
-	GenerateNewLNDAdress bool
 }
 
 // WithdrawFromExchangeResult represents a withdraw from exchange result.
@@ -221,13 +221,9 @@ func (b *WalletExchangeBridge) WithdrawFromExchangeToLND(ctx context.Context, re
 		return nil, fmt.Errorf("wallethub: exchange bridge is not fully configured")
 	}
 
-	address := req.LNDDestination
-	if address == "" || req.GenerateNewLNDAdress {
-		var err error
-		address, err = b.lnd.NewAddress(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("wallethub: generate LND address: %w", err)
-		}
+	address, err := validatedCEXWithdrawalDestination(req.LNDDestination)
+	if err != nil {
+		return nil, err
 	}
 
 	resp, err := b.exchange.WithdrawToAddress(ctx, ExchangeWithdrawRequest{
@@ -248,4 +244,16 @@ func (b *WalletExchangeBridge) WithdrawFromExchangeToLND(ctx context.Context, re
 		WalletAddress:   address,
 		ClientRequestID: req.ClientRequestID,
 	}, nil
+}
+
+// validatedCEXWithdrawalDestination refuses implicit address generation. CEX
+// withdrawals must use an operator-provisioned whitelist entry; creating a new
+// LND address here would make the withdrawal fail at the exchange and leave
+// unnecessary derived addresses in the wallet.
+func validatedCEXWithdrawalDestination(destination string) (string, error) {
+	destination = strings.TrimSpace(destination)
+	if destination == "" {
+		return "", fmt.Errorf("wallethub: pre-whitelisted LND destination is required")
+	}
+	return destination, nil
 }

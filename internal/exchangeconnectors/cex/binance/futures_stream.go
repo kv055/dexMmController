@@ -2,23 +2,22 @@ package binance
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	sharedbinance "commons/cexclient/binance"
 	"dexMmController/internal/exchangeconnectors/cex"
 	"dexMmController/internal/metrics"
 )
 
 const (
-	defaultFuturesWSBaseURL = "wss://fstream.binance.com"
-	hedgeSymbol             = "BTCUSDT"
-	listenKeyKeepAlive      = 30 * time.Minute
+	hedgeSymbol          = "BTCUSDT"
+	listenKeyKeepAlive   = 30 * time.Minute
+	streamHealthInterval = time.Second
 )
 
 // StreamPositions creates a Binance USDⓈ-M Futures user-data stream (for live
@@ -65,11 +64,89 @@ func (c *FuturesClient) streamSession(ctx context.Context, out chan<- cex.HedgeP
 	// Keep the listenKey alive for the lifetime of this session.
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go c.keepListenKeyAlive(sessionCtx)
 
-	wsURL := fmt.Sprintf("%s/stream?streams=%s/%s@markPrice@1s",
-		defaultFuturesWSBaseURL, listenKey, strings.ToLower(hedgeSymbol))
-	return streamCombined(sessionCtx, wsURL, out)
+	streams, err := sharedbinance.NewFuturesCombinedStreams(c.options)
+	if err != nil {
+		return err
+	}
+	streamNames := []string{listenKey, strings.ToLower(hedgeSymbol) + "@markPrice@1s"}
+	if err := streams.Connect("binance-futures-connector", streamNames); err != nil {
+		return err
+	}
+	defer streams.CloseWebSocketStreamConnection()
+	defer func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		if _, err := c.client.RestApi.UserDataStreamsAPI.CloseUserDataStream(closeCtx).Execute(); err != nil {
+			log.Printf("binance futures: close listen key failed: %v", err)
+		}
+	}()
+
+	var snap snapshot
+	var snapMu sync.Mutex
+	streamErr := make(chan error, 1)
+	keepAliveErr := make(chan error, 1)
+	go func() { keepAliveErr <- c.keepListenKeyAlive(sessionCtx) }()
+	if err := streams.On(listenKey, func(frame map[string]interface{}) {
+		data, _ := frame["data"].(map[string]interface{})
+		if data == nil {
+			data = frame
+		}
+		if err := binanceUserStreamError(data); err != nil {
+			signalStreamError(streamErr, err)
+			return
+		}
+		snapMu.Lock()
+		changed := applyAccountUpdate(data, &snap)
+		update := updateFromSnapshot(snap)
+		snapMu.Unlock()
+		if changed {
+			select {
+			case out <- update:
+			case <-sessionCtx.Done():
+			}
+		}
+	}); err != nil {
+		return err
+	}
+	markStream := strings.ToLower(hedgeSymbol) + "@markPrice@1s"
+	if err := streams.On(markStream, func(frame map[string]interface{}) {
+		data, _ := frame["data"].(map[string]interface{})
+		if data == nil {
+			data = frame
+		}
+		snapMu.Lock()
+		applyMarkPrice(data, &snap)
+		update := updateFromSnapshot(snap)
+		snapMu.Unlock()
+		select {
+		case out <- update:
+		case <-sessionCtx.Done():
+		}
+	}); err != nil {
+		return err
+	}
+	connection := streams.WsCommon.Connections[0]
+	healthTicker := time.NewTicker(streamHealthInterval)
+	defer healthTicker.Stop()
+	for {
+		select {
+		case <-sessionCtx.Done():
+			return sessionCtx.Err()
+		case err := <-connection.ErrorChan:
+			return err
+		case err := <-streamErr:
+			return err
+		case err := <-keepAliveErr:
+			if err != nil {
+				return err
+			}
+		case <-healthTicker.C:
+			if !connection.IsHealthy() {
+				return fmt.Errorf("binance futures websocket closed")
+			}
+		}
+	}
 }
 
 // snapshot accumulates the latest values from the two interleaved streams so a
@@ -86,58 +163,48 @@ type snapshot struct {
 }
 
 func (c *FuturesClient) createListenKey(ctx context.Context) (string, error) {
-	raw, err := c.listenKeyRequest(ctx, http.MethodPost)
+	resp, err := c.client.RestApi.UserDataStreamsAPI.StartUserDataStream(ctx).Execute()
 	if err != nil {
 		return "", err
 	}
-	var resp struct {
-		ListenKey string `json:"listenKey"`
+	listenKey := resp.Data.GetListenKey()
+	if listenKey == "" {
+		return "", fmt.Errorf("empty listenKey in response")
 	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return "", err
-	}
-	if resp.ListenKey == "" {
-		return "", fmt.Errorf("empty listenKey in response: %s", string(raw))
-	}
-	return resp.ListenKey, nil
+	return listenKey, nil
 }
 
-func (c *FuturesClient) keepListenKeyAlive(ctx context.Context) {
+func (c *FuturesClient) keepListenKeyAlive(ctx context.Context) error {
 	ticker := time.NewTicker(listenKeyKeepAlive)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-ticker.C:
-			if _, err := c.listenKeyRequest(ctx, http.MethodPut); err != nil {
-				log.Printf("binance futures: listenKey keep-alive failed: %v", err)
+			if _, err := c.client.RestApi.UserDataStreamsAPI.KeepaliveUserDataStream(ctx).Execute(); err != nil {
+				return fmt.Errorf("binance futures listen-key keepalive: %w", err)
 			}
 		}
 	}
 }
 
-// listenKeyRequest performs an unsigned listenKey lifecycle call (only the API key
-// header is required by Binance for these endpoints).
-func (c *FuturesClient) listenKeyRequest(ctx context.Context, method string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+"/fapi/v1/listenKey", nil)
-	if err != nil {
-		return nil, err
+func binanceUserStreamError(data map[string]any) error {
+	event, _ := data["e"].(string)
+	if event != "listenKeyExpired" {
+		return nil
 	}
-	req.Header.Set("X-MBX-APIKEY", c.apiKey)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
+	return fmt.Errorf("binance futures listen key expired")
+}
+
+func signalStreamError(ch chan<- error, err error) {
+	if err == nil {
+		return
 	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
-	if err != nil {
-		return nil, err
+	select {
+	case ch <- err:
+	default:
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	return raw, nil
 }
 
 // applyAccountUpdate merges an ACCOUNT_UPDATE event's BTCUSDT position into snap.

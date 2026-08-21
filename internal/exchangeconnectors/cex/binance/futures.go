@@ -2,222 +2,109 @@ package binance
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	sharedbinance "commons/cexclient/binance"
 	"dexMmController/internal/exchangeconnectors/cex"
+	futures "github.com/binance/binance-connector-go/clients/derivativestradingusdsfutures"
+	models "github.com/binance/binance-connector-go/clients/derivativestradingusdsfutures/src/restapi/models"
 )
 
 const defaultFuturesBaseURL = "https://fapi.binance.com"
 
-// FuturesClient places orders on Binance USDⓈ-M Futures (fapi.binance.com).
+// FuturesClient adapts Binance's official USDⓈ-M Futures SDK to the controller's
+// hedge interface. Authentication, signing, HTTP transport, and WebSocket
+// transport remain owned by the SDK.
 type FuturesClient struct {
-	baseURL   string
+	client    *futures.BinanceDerivativesTradingUsdsFuturesClient
 	apiKey    string
 	secretKey string
-	http      *http.Client
+	options   sharedbinance.Options
 }
 
-// NewFuturesClient creates a FuturesClient from database-loaded credentials.
 func NewFuturesClient(apiKey, apiSecret string) *FuturesClient {
+	return NewFuturesClientWithBaseURL("", apiKey, apiSecret)
+}
+
+// NewFuturesClientWithBaseURL overrides only the REST endpoint. Stream users
+// that need testnet or a mock server should use NewFuturesClientWithURLs.
+func NewFuturesClientWithBaseURL(baseURL, apiKey, apiSecret string) *FuturesClient {
+	return newFuturesClient(sharedbinance.Options{BaseURL: baseURL}, apiKey, apiSecret)
+}
+
+// NewFuturesClientWithURLs configures both REST and WebSocket endpoints. It is
+// useful for testnet and deterministic stream tests.
+func NewFuturesClientWithURLs(baseURL, websocketStreamsURL, apiKey, apiSecret string) *FuturesClient {
+	return newFuturesClient(sharedbinance.Options{BaseURL: baseURL, WebsocketStreamsURL: websocketStreamsURL}, apiKey, apiSecret)
+}
+
+func newFuturesClient(options sharedbinance.Options, apiKey, apiSecret string) *FuturesClient {
+	baseURL := options.BaseURL
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = defaultFuturesBaseURL
+	}
+	options.BaseURL = strings.TrimRight(baseURL, "/")
+	key := strings.TrimSpace(apiKey)
+	secret := strings.TrimSpace(apiSecret)
 	return &FuturesClient{
-		baseURL:   defaultFuturesBaseURL,
-		apiKey:    strings.TrimSpace(apiKey),
-		secretKey: strings.TrimSpace(apiSecret),
-		http:      &http.Client{Timeout: 15 * time.Second},
+		client: sharedbinance.NewFutures(key, secret, options),
+		apiKey: key, secretKey: secret, options: options,
 	}
 }
 
-// PlaceOrder places a market order on Binance USDⓈ-M Futures.
-// symbol is e.g. "BTCUSDT". side must be "short" or "long".
-// leverage is applied best-effort (logged on failure, order not aborted).
 func (c *FuturesClient) PlaceOrder(ctx context.Context, symbol, side string, btcQty float64, leverage int) (*cex.FuturesOrderResult, error) {
 	if leverage > 0 {
 		if err := c.setLeverage(ctx, symbol, leverage); err != nil {
-			// Non-fatal: leverage may already be set, or account may have restrictions.
-			// Log but continue so the order is still placed.
+			// Leverage may already be set; reconciliation still makes a placement
+			// attempt safe to continue.
 			fmt.Printf("binance futures: set leverage warning: %v\n", err)
 		}
 	}
 
-	bnbSide := "SELL"
+	binanceSide := models.NewAlgoOrderSideParameterSell
 	if side == "long" {
-		bnbSide = "BUY"
+		binanceSide = models.NewAlgoOrderSideParameterBuy
 	}
-
-	params := url.Values{}
-	params.Set("symbol", symbol)
-	params.Set("side", bnbSide)
-	params.Set("type", "MARKET")
-	params.Set("quantity", strconv.FormatFloat(btcQty, 'f', 3, 64))
-
-	rawResp, err := c.signedPost(ctx, "/fapi/v1/order", params)
+	resp, err := c.client.RestApi.TradeAPI.NewOrder(ctx).
+		Symbol(symbol).
+		Side(binanceSide).
+		Type(models.PlaceMultipleOrdersBatchOrdersParameterInnerTypeMarket).
+		Quantity(float32(btcQty)).
+		Execute()
 	if err != nil {
 		return nil, fmt.Errorf("binance futures order: %w", err)
 	}
-
-	var resp binanceFuturesOrderResponse
-	if err := json.Unmarshal(rawResp, &resp); err != nil {
-		return nil, fmt.Errorf("binance futures order decode: %w", err)
-	}
-
 	return &cex.FuturesOrderResult{
-		Venue:      "binance_futures",
-		Instrument: symbol,
-		Side:       side,
-		OrderID:    strconv.FormatInt(resp.OrderID, 10),
-		Status:     strings.ToLower(resp.Status),
-		Raw:        rawResp,
+		Venue: "binance_futures", Instrument: symbol, Side: side,
+		OrderID: strconv.FormatInt(resp.Data.GetOrderId(), 10),
+		Status:  strings.ToLower(resp.Data.GetStatus()),
 	}, nil
 }
 
-type binanceFuturesOrderResponse struct {
-	OrderID int64  `json:"orderId"`
-	Status  string `json:"status"`
-}
-
-// binanceFuturesPositionRisk is the relevant subset of a /fapi/v2/positionRisk row.
-type binanceFuturesPositionRisk struct {
-	Symbol      string `json:"symbol"`
-	PositionAmt string `json:"positionAmt"`
-	EntryPrice  string `json:"entryPrice"`
-	UnrealizedP string `json:"unRealizedProfit"`
-	UpdateTime  int64  `json:"updateTime"`
-}
-
-// CurrentPosition fetches the live BTCUSDT futures position synchronously via the
-// signed /fapi/v2/positionRisk REST endpoint. Used as an idempotency guard after a
-// hedge attempt errors: it answers "did my order actually open?" A flat/absent
-// position yields Side:"flat".
 func (c *FuturesClient) CurrentPosition(ctx context.Context) (cex.HedgePositionUpdate, error) {
-	params := url.Values{}
-	params.Set("symbol", hedgeSymbol)
-	raw, err := c.signedGet(ctx, "/fapi/v2/positionRisk", params)
+	resp, err := c.client.RestApi.TradeAPI.PositionInformationV3(ctx).Symbol(hedgeSymbol).Execute()
 	if err != nil {
-		return cex.HedgePositionUpdate{}, err
+		return cex.HedgePositionUpdate{}, fmt.Errorf("binance futures position risk: %w", err)
 	}
-
-	var rows []binanceFuturesPositionRisk
-	if err := json.Unmarshal(raw, &rows); err != nil {
-		return cex.HedgePositionUpdate{}, fmt.Errorf("binance futures positionRisk decode: %w", err)
-	}
-
-	update := cex.HedgePositionUpdate{
-		Venue:      "binance_futures",
-		Instrument: hedgeSymbol,
-		Side:       "flat",
-		Currency:   "USDT",
-		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
-		Connected:  true,
-	}
-	for _, row := range rows {
-		if !strings.EqualFold(row.Symbol, hedgeSymbol) {
+	update := cex.HedgePositionUpdate{Venue: "binance_futures", Instrument: hedgeSymbol, Side: "flat", Currency: "USDT", UpdatedAt: time.Now().UTC().Format(time.RFC3339), Connected: true}
+	for _, row := range resp.Data.Items {
+		if !strings.EqualFold(row.GetSymbol(), hedgeSymbol) {
 			continue
 		}
-		amount := parseStringFloat(row.PositionAmt)
+		amount, _ := strconv.ParseFloat(row.GetPositionAmt(), 64)
 		update.SizeBTC = absFloat(amount)
 		update.Side = sideFromSignedSize(amount)
-		update.EntryPrice = parseStringFloat(row.EntryPrice)
-		update.UnrealizedPnL = parseStringFloat(row.UnrealizedP)
+		update.EntryPrice, _ = strconv.ParseFloat(row.GetEntryPrice(), 64)
+		update.UnrealizedPnL, _ = strconv.ParseFloat(row.GetUnRealizedProfit(), 64)
 		return update, nil
 	}
 	return update, nil
 }
 
-type binanceFuturesLeverageResponse struct {
-	Leverage  int    `json:"leverage"`
-	Symbol    string `json:"symbol"`
-	MaxNotVal string `json:"maxNotionalValue"`
-}
-
 func (c *FuturesClient) setLeverage(ctx context.Context, symbol string, leverage int) error {
-	params := url.Values{}
-	params.Set("symbol", symbol)
-	params.Set("leverage", strconv.Itoa(leverage))
-
-	raw, err := c.signedPost(ctx, "/fapi/v1/leverage", params)
-	if err != nil {
-		return err
-	}
-	var resp binanceFuturesLeverageResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return err
-	}
-	if resp.Symbol == "" {
-		return fmt.Errorf("unexpected response: %s", string(raw))
-	}
-	return nil
-}
-
-func (c *FuturesClient) signedGet(ctx context.Context, path string, params url.Values) ([]byte, error) {
-	if params == nil {
-		params = url.Values{}
-	}
-	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
-	queryString := params.Encode()
-	mac := hmac.New(sha256.New, []byte(c.secretKey))
-	mac.Write([]byte(queryString))
-	signed := queryString + "&signature=" + hex.EncodeToString(mac.Sum(nil))
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path+"?"+signed, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-MBX-APIKEY", c.apiKey)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	return raw, nil
-}
-
-func (c *FuturesClient) signedPost(ctx context.Context, path string, params url.Values) ([]byte, error) {
-	if params == nil {
-		params = url.Values{}
-	}
-	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
-	queryString := params.Encode()
-	mac := hmac.New(sha256.New, []byte(c.secretKey))
-	mac.Write([]byte(queryString))
-	params.Set("signature", hex.EncodeToString(mac.Sum(nil)))
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+path, strings.NewReader(params.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-MBX-APIKEY", c.apiKey)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	return raw, nil
+	_, err := c.client.RestApi.TradeAPI.ChangeInitialLeverage(ctx).Symbol(symbol).Leverage(int64(leverage)).Execute()
+	return err
 }

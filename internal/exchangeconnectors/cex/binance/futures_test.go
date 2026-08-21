@@ -3,7 +3,6 @@ package binance
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,8 +21,7 @@ func TestBinanceFuturesPlaceOrderShort(t *testing.T) {
 	var gotOrderBody string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		body := string(b)
+		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/fapi/v1/leverage":
 			leverageCalled = true
@@ -33,7 +31,7 @@ func TestBinanceFuturesPlaceOrderShort(t *testing.T) {
 				"maxNotionalValue": "1000000",
 			})
 		case "/fapi/v1/order":
-			gotOrderBody = body
+			gotOrderBody = r.URL.RawQuery
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"orderId": int64(99887766),
 				"status":  "NEW",
@@ -44,12 +42,7 @@ func TestBinanceFuturesPlaceOrderShort(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &FuturesClient{
-		baseURL:   srv.URL,
-		apiKey:    "testkey",
-		secretKey: "secret",
-		http:      &http.Client{},
-	}
+	client := NewFuturesClientWithBaseURL(srv.URL, "testkey", "secret")
 
 	res, err := client.PlaceOrder(context.Background(), "BTCUSDT", "short", 0.5, 3)
 	if err != nil {
@@ -64,7 +57,7 @@ func TestBinanceFuturesPlaceOrderShort(t *testing.T) {
 	if res.Side != "short" {
 		t.Fatalf("side = %q, want short", res.Side)
 	}
-	for _, want := range []string{"symbol=BTCUSDT", "side=SELL", "type=MARKET", "quantity=0.500"} {
+	for _, want := range []string{"symbol=BTCUSDT", "side=SELL", "type=MARKET", "quantity=0.5"} {
 		if !strings.Contains(gotOrderBody, want) {
 			t.Fatalf("order body %q missing %q", gotOrderBody, want)
 		}
@@ -74,14 +67,14 @@ func TestBinanceFuturesPlaceOrderShort(t *testing.T) {
 func TestBinanceFuturesPlaceOrderLongUsesBuy(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/fapi/v1/leverage":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"symbol": "BTCUSDT", "leverage": 1, "maxNotionalValue": "1000000",
 			})
 		case "/fapi/v1/order":
-			gotBody = string(b)
+			gotBody = r.URL.RawQuery
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"orderId": int64(12345), "status": "NEW",
 			})
@@ -89,9 +82,7 @@ func TestBinanceFuturesPlaceOrderLongUsesBuy(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &FuturesClient{
-		baseURL: srv.URL, apiKey: "k", secretKey: "s", http: &http.Client{},
-	}
+	client := NewFuturesClientWithBaseURL(srv.URL, "k", "s")
 	if _, err := client.PlaceOrder(context.Background(), "BTCUSDT", "long", 0.1, 1); err != nil {
 		t.Fatalf("PlaceOrder long: %v", err)
 	}
@@ -102,6 +93,7 @@ func TestBinanceFuturesPlaceOrderLongUsesBuy(t *testing.T) {
 
 func TestBinanceFuturesLeverageFailureDoesNotAbortOrder(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/fapi/v1/leverage":
 			w.WriteHeader(http.StatusBadRequest)
@@ -114,9 +106,7 @@ func TestBinanceFuturesLeverageFailureDoesNotAbortOrder(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &FuturesClient{
-		baseURL: srv.URL, apiKey: "k", secretKey: "s", http: &http.Client{},
-	}
+	client := NewFuturesClientWithBaseURL(srv.URL, "k", "s")
 	res, err := client.PlaceOrder(context.Background(), "BTCUSDT", "short", 0.2, 5)
 	if err != nil {
 		t.Fatalf("expected order to succeed despite leverage failure, got: %v", err)

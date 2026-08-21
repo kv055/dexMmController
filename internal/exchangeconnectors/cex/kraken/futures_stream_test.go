@@ -1,6 +1,9 @@
 package kraken
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestPositionUpdateFromKrakenFrameLong(t *testing.T) {
 	frame := map[string]any{
@@ -86,5 +89,34 @@ func TestPositionUpdateFromKrakenFrameFlat(t *testing.T) {
 func TestPositionUpdateFromKrakenFrameNoPositionsKey(t *testing.T) {
 	if _, ok := positionUpdateFromKrakenFrame(map[string]any{"feed": "ticker"}, 0); ok {
 		t.Error("expected ok=false when positions key is absent")
+	}
+}
+
+func TestPositionUpdateFromKrakenFrameJSONNumbers(t *testing.T) {
+	frame := map[string]any{
+		"positions": []any{map[string]any{
+			"instrument":  "PI_XBTUSD",
+			"balance":     json.Number("-1.25"),
+			"entry_price": json.Number("50000.5"),
+			"mark_price":  json.Number("50100.5"),
+		}},
+	}
+	update, ok := positionUpdateFromKrakenFrame(frame, 0.0002)
+	if !ok || update.Side != "short" || update.SizeBTC != 1.25 || update.EntryPrice != 50000.5 || update.MarkPrice != 50100.5 {
+		t.Fatalf("JSON number frame normalized incorrectly: ok=%v update=%+v", ok, update)
+	}
+}
+
+func TestKrakenSessionError(t *testing.T) {
+	for _, frame := range []map[string]any{
+		{"event": "error", "message": "permission denied"},
+		{"event": "subscribed_failed", "message": "invalid feed"},
+	} {
+		if err := krakenSessionError(frame); err == nil {
+			t.Fatalf("expected session error for %#v", frame)
+		}
+	}
+	if err := krakenSessionError(map[string]any{"event": "subscribed", "feed": "ticker"}); err != nil {
+		t.Fatalf("successful subscription returned error: %v", err)
 	}
 }

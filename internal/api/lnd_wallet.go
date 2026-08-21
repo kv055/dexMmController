@@ -95,7 +95,11 @@ type lndWalletStatusResponse struct {
 	PendingChannels []lndPendingChannelSummary `json:"pending_channels"`
 	Addresses       []lndWalletAddressEntry    `json:"addresses"`
 	CheckedAt       string                     `json:"checked_at"`
+	Degraded        bool                       `json:"degraded"`
+	Warnings        []string                   `json:"warnings"`
 }
+
+const lndWalletStatusTimeout = 7 * time.Second
 
 type createLNDAddressRequest struct {
 	Label string `json:"label"`
@@ -160,7 +164,9 @@ func (s *Server) handleLNDWalletStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("LND wallet client is not configured"))
 		return
 	}
-	status, err := buildLNDWalletStatus(r.Context(), client, s.currentRepo())
+	ctx, cancel := context.WithTimeout(r.Context(), lndWalletStatusTimeout)
+	defer cancel()
+	status, err := buildLNDWalletStatus(ctx, client, s.currentRepo())
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
@@ -556,26 +562,52 @@ func buildLNDWalletStatus(
 	client lndWalletClient,
 	repo *db.TransactionRepository,
 ) (*lndWalletStatusResponse, error) {
-	nodeInfo, err := client.NodeInfo(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("lnd node info: %w", err)
+	type rpcResult struct {
+		kind  string
+		value any
+		err   error
 	}
+	results := make(chan rpcResult, 5)
+	go func() { value, err := client.NodeInfo(ctx); results <- rpcResult{"node info", value, err} }()
+	go func() { value, err := client.ListChannels(ctx); results <- rpcResult{"channels", value, err} }()
+	go func() {
+		value, err := client.ListPendingChannels(ctx)
+		results <- rpcResult{"pending channels", value, err}
+	}()
+	go func() { value, err := client.ListPeers(ctx); results <- rpcResult{"peers", value, err} }()
+	go func() { value, err := client.ListWalletAddresses(ctx); results <- rpcResult{"addresses", value, err} }()
 
-	channels, err := client.ListChannels(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("lnd list channels: %w", err)
-	}
-	pending, err := client.ListPendingChannels(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("lnd pending channels: %w", err)
-	}
-	peers, err := client.ListPeers(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("lnd list peers: %w", err)
-	}
-	onChain, err := client.ListWalletAddresses(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("lnd list addresses: %w", err)
+	nodeInfo := &lnd.NodeInfoResponse{}
+	var channels []lnd.Channel
+	var pending *lnd.PendingChannelsResponse
+	var peers []lnd.Peer
+	var onChain []lnd.WalletAddressProperty
+	warnings := make([]string, 0)
+	for received := 0; received < 5; received++ {
+		select {
+		case result := <-results:
+			if result.err != nil {
+				warnings = append(warnings, fmt.Sprintf("lnd %s unavailable: %v", result.kind, result.err))
+				continue
+			}
+			switch result.kind {
+			case "node info":
+				if value := result.value.(*lnd.NodeInfoResponse); value != nil {
+					nodeInfo = value
+				}
+			case "channels":
+				channels = result.value.([]lnd.Channel)
+			case "pending channels":
+				pending = result.value.(*lnd.PendingChannelsResponse)
+			case "peers":
+				peers = result.value.([]lnd.Peer)
+			case "addresses":
+				onChain = result.value.([]lnd.WalletAddressProperty)
+			}
+		case <-ctx.Done():
+			warnings = append(warnings, "LND wallet data is still loading; some fields may be temporarily unavailable")
+			received = 5
+		}
 	}
 
 	peerByPubkey := make(map[string]lnd.Peer, len(peers))
@@ -601,6 +633,8 @@ func buildLNDWalletStatus(
 		PendingChannels: []lndPendingChannelSummary{},
 		Addresses:       []lndWalletAddressEntry{},
 		CheckedAt:       time.Now().UTC().Format(time.RFC3339),
+		Degraded:        len(warnings) > 0,
+		Warnings:        warnings,
 	}
 	for _, peer := range peers {
 		resp.Peers = append(resp.Peers, lndPeerSummary{
@@ -671,6 +705,7 @@ func buildLNDWalletStatus(
 
 	labelByAddress := map[string]string{}
 	whitelistedByAddress := map[string][]string{}
+	primaryAddress := ""
 	if repo != nil {
 		stored, err := repo.ListWalletAddresses()
 		if err != nil {
@@ -678,43 +713,59 @@ func buildLNDWalletStatus(
 		}
 		for _, item := range stored {
 			labelByAddress[item.Address] = item.Label
+			if item.Label == "Primary" {
+				primaryAddress = item.Address
+			}
 			if provider := strings.TrimSpace(item.Provider); provider != "" {
 				whitelistedByAddress[item.Address] = append(whitelistedByAddress[item.Address], provider)
 			}
 		}
 	}
 
-	resp.Addresses = append(resp.Addresses, lndWalletAddressEntry{
-		Address: nodeInfo.IdentityPubkey,
-		Kind:    "lightning",
-		Label:   strings.TrimSpace(nodeInfo.Alias),
-	})
+	if identityPubkey := strings.TrimSpace(nodeInfo.IdentityPubkey); identityPubkey != "" {
+		resp.Addresses = append(resp.Addresses, lndWalletAddressEntry{
+			Address: identityPubkey,
+			Kind:    "lightning",
+			Label:   strings.TrimSpace(nodeInfo.Alias),
+		})
+	}
 
 	seenOnChain := make(map[string]struct{}, len(onChain))
 	for _, addr := range onChain {
 		seenOnChain[addr.Address] = struct{}{}
+		balance := parseSatString(addr.Balance)
+		if !shouldDisplayWalletAddress(addr.Address, primaryAddress, balance) {
+			continue
+		}
 		resp.Addresses = append(resp.Addresses, lndWalletAddressEntry{
 			Address:       addr.Address,
 			Kind:          "onchain",
 			Label:         labelByAddress[addr.Address],
-			BalanceSat:    parseSatString(addr.Balance),
+			BalanceSat:    balance,
 			IsInternal:    addr.IsInternal,
 			WhitelistedBy: whitelistedByAddress[addr.Address],
 		})
 	}
-	for address, label := range labelByAddress {
-		if _, ok := seenOnChain[address]; ok {
-			continue
-		}
+	if primaryAddress != "" {
+		if _, ok := seenOnChain[primaryAddress]; !ok {
 		resp.Addresses = append(resp.Addresses, lndWalletAddressEntry{
-			Address:       address,
+			Address:       primaryAddress,
 			Kind:          "onchain",
-			Label:         label,
-			WhitelistedBy: whitelistedByAddress[address],
+			Label:         labelByAddress[primaryAddress],
+			WhitelistedBy: whitelistedByAddress[primaryAddress],
 		})
+		}
 	}
 
 	return resp, nil
+}
+
+// shouldDisplayWalletAddress keeps the wallet panel focused on the configured
+// deposit address and actual funds. LND retains derived look-ahead addresses
+// for recovery and scanning, which are operational metadata rather than a
+// useful inventory list for operators.
+func shouldDisplayWalletAddress(address, primaryAddress string, balance int64) bool {
+	return address == primaryAddress || balance > 0
 }
 
 func lookupNodeAlias(

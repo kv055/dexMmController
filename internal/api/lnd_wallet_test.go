@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	lnd "dexMmController/internal/wallethub"
 )
@@ -16,6 +17,30 @@ type fakeLNDWalletClient struct {
 	peers    []lnd.Peer
 	onChain  []lnd.WalletAddressProperty
 	newAddr  string
+}
+
+type blockingLNDWalletClient struct{ fakeLNDWalletClient }
+
+func waitForCancellation[T any](ctx context.Context) (T, error) {
+	var zero T
+	<-ctx.Done()
+	return zero, ctx.Err()
+}
+
+func (b *blockingLNDWalletClient) NodeInfo(ctx context.Context) (*lnd.NodeInfoResponse, error) {
+	return waitForCancellation[*lnd.NodeInfoResponse](ctx)
+}
+func (b *blockingLNDWalletClient) ListChannels(ctx context.Context) ([]lnd.Channel, error) {
+	return waitForCancellation[[]lnd.Channel](ctx)
+}
+func (b *blockingLNDWalletClient) ListPendingChannels(ctx context.Context) (*lnd.PendingChannelsResponse, error) {
+	return waitForCancellation[*lnd.PendingChannelsResponse](ctx)
+}
+func (b *blockingLNDWalletClient) ListPeers(ctx context.Context) ([]lnd.Peer, error) {
+	return waitForCancellation[[]lnd.Peer](ctx)
+}
+func (b *blockingLNDWalletClient) ListWalletAddresses(ctx context.Context) ([]lnd.WalletAddressProperty, error) {
+	return waitForCancellation[[]lnd.WalletAddressProperty](ctx)
 }
 
 func (f *fakeLNDWalletClient) NodeInfo(context.Context) (*lnd.NodeInfoResponse, error) {
@@ -113,6 +138,45 @@ func TestHandleLNDWalletStatusReturnsChannels(t *testing.T) {
 	}
 	if !strings.Contains(body, `"kind":"lightning"`) {
 		t.Fatalf("expected lightning identity in addresses, got %s", body)
+	}
+}
+
+func TestHandleLNDWalletStatusReturnsDegradedResponseBeforeCallerDeadline(t *testing.T) {
+	s := (&Server{}).WithLNDWallet(&blockingLNDWalletClient{})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/lnd/wallet", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	started := time.Now()
+	s.handleLNDWalletStatus(rec, req)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("handler took %s", elapsed)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"degraded":true`) || !strings.Contains(body, `"warnings":[`) {
+		t.Fatalf("expected degraded partial response, got %s", body)
+	}
+}
+
+func TestShouldDisplayWalletAddress(t *testing.T) {
+	primary := "bc1qprimary"
+	for _, tc := range []struct {
+		name    string
+		address string
+		balance int64
+		want    bool
+	}{
+		{name: "primary with no balance", address: primary, want: true},
+		{name: "funded derived address", address: "bc1qfunded", balance: 1, want: true},
+		{name: "unused derived address", address: "bc1qunused", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldDisplayWalletAddress(tc.address, primary, tc.balance); got != tc.want {
+				t.Fatalf("shouldDisplayWalletAddress(%q, %q, %d) = %t, want %t", tc.address, primary, tc.balance, got, tc.want)
+			}
+		})
 	}
 }
 

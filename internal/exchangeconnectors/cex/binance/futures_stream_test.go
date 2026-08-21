@@ -73,3 +73,12 @@ func TestUpdateFromSnapshotDefaultsFlat(t *testing.T) {
 		t.Errorf("expected flat, got %q", update.Side)
 	}
 }
+
+func TestBinanceUserStreamError(t *testing.T) {
+	if err := binanceUserStreamError(map[string]any{"e": "ACCOUNT_UPDATE"}); err != nil {
+		t.Fatalf("ordinary account update returned error: %v", err)
+	}
+	if err := binanceUserStreamError(map[string]any{"e": "listenKeyExpired"}); err == nil {
+		t.Fatal("expected listen-key expiration error")
+	}
+}

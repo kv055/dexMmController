@@ -2,35 +2,24 @@ package kraken
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/sha512"
-	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
 	"dexMmController/internal/exchangeconnectors/cex"
 	"dexMmController/internal/metrics"
-
-	"nhooyr.io/websocket"
-	"nhooyr.io/websocket/wsjson"
+	"github.com/krakenfx/api-go/v2/pkg/callback"
+	"github.com/krakenfx/api-go/v2/pkg/derivatives"
+	krakenapi "github.com/krakenfx/api-go/v2/pkg/kraken"
 )
 
-const (
-	defaultFuturesWSURL = "wss://futures.kraken.com/ws/v1"
-	hedgeInstrument     = "PI_XBTUSD"
-)
+const hedgeInstrument = "PI_XBTUSD"
 
-// StreamPositions connects to the Kraken Futures WebSocket, subscribes to the
-// authenticated open_positions feed (plus the public ticker feed for the live
-// funding rate), and emits a normalized cex.HedgePositionUpdate for PI_XBTUSD on
-// every update. It owns its own reconnect/backoff loop and runs until ctx is
-// cancelled, at which point the returned channel is closed.
-//
-// On a disconnect it first emits a Connected:false snapshot so subscribers can
-// surface the outage, then reconnects with exponential backoff.
+// StreamPositions uses Kraken's official Futures WebSocket client for the
+// authenticated open_positions and public ticker feeds.
 func (c *FuturesClient) StreamPositions(ctx context.Context) (<-chan cex.HedgePositionUpdate, error) {
 	if strings.TrimSpace(c.apiKey) == "" || strings.TrimSpace(c.apiSecret) == "" {
 		return nil, fmt.Errorf("kraken futures: active database API credentials are missing")
@@ -61,121 +50,153 @@ func (c *FuturesClient) StreamPositions(ctx context.Context) (<-chan cex.HedgePo
 }
 
 func (c *FuturesClient) streamSession(ctx context.Context, out chan<- cex.HedgePositionUpdate) error {
-	wsURL := defaultFuturesWSURL
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		return err
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "client shutdown")
-	conn.SetReadLimit(4 << 20)
-
-	// 1) Request an auth challenge.
-	if err := wsjson.Write(ctx, conn, map[string]any{
-		"event":   "challenge",
-		"api_key": c.apiKey,
-	}); err != nil {
-		return fmt.Errorf("kraken futures: request challenge: %w", err)
-	}
-
-	// 2) Read frames until we get the challenge, then subscribe to the feeds.
-	subscribed := false
-	var signed, original string
-	// funding holds the last funding rate seen on the ticker feed, merged into
-	// each open_positions snapshot.
+	ws := derivatives.NewWebSocket()
+	ws.PublicKey, ws.PrivateKey = c.apiKey, c.apiSecret
 	funding := 0.0
-
-	for {
-		var frame map[string]any
-		if err := wsjson.Read(ctx, conn, &frame); err != nil {
-			return err
+	disconnected := make(chan error, 1)
+	sessionErr := make(chan error, 1)
+	ws.OnDisconnected.Recurring(func(e *callback.Event[error]) {
+		signalKrakenStreamError(disconnected, e.Data)
+	})
+	ws.OnReceived.Recurring(func(e *callback.Event[*krakenapi.WebSocketMessage]) {
+		frame, err := e.Data.Map()
+		if err != nil {
+			signalKrakenStreamError(sessionErr, fmt.Errorf("decode websocket message: %w", err))
+			return
 		}
-
-		event, _ := frame["event"].(string)
-		feed, _ := frame["feed"].(string)
-
-		switch {
-		case event == "challenge":
-			original, _ = frame["message"].(string)
-			signed = c.signChallenge(original)
-			if err := c.subscribeFeeds(ctx, conn, original, signed); err != nil {
-				return err
-			}
-			subscribed = true
-		case event == "error":
-			msg, _ := frame["message"].(string)
-			return fmt.Errorf("kraken futures ws error: %s", msg)
-		case feed == "ticker" && subscribed:
+		if err := krakenSessionError(frame); err != nil {
+			signalKrakenStreamError(sessionErr, err)
+			return
+		}
+		if frame["feed"] == "ticker" {
 			if rate, ok := floatFromAny(frame["funding_rate"]); ok {
 				funding = rate
 			}
-		case feed == "open_positions" || feed == "open_positions_snapshot":
-			update, ok := positionUpdateFromKrakenFrame(frame, funding)
-			if !ok {
-				continue
-			}
+			return
+		}
+		if frame["feed"] != "open_positions" && frame["feed"] != "open_positions_snapshot" {
+			return
+		}
+		if update, ok := positionUpdateFromKrakenFrame(frame, funding); ok {
 			select {
 			case out <- update:
 			case <-ctx.Done():
-				return ctx.Err()
 			}
 		}
+	})
+	if err := ws.Connect(); err != nil {
+		return err
+	}
+	// The connector owns the session lifecycle so a new client can authenticate
+	// and resubscribe after every disconnect.
+	ws.DoReconnect = false
+	defer ws.Disconnect()
+	if err := authenticateWithContext(ctx, ws, disconnected); err != nil {
+		return fmt.Errorf("kraken futures authenticate: %w", err)
+	}
+	if err := ws.SubPrivate("open_positions"); err != nil {
+		return fmt.Errorf("kraken futures subscribe open positions: %w", err)
+	}
+	if err := ws.SubTicker(hedgeInstrument); err != nil {
+		return fmt.Errorf("kraken futures subscribe ticker: %w", err)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-disconnected:
+		return err
+	case err := <-sessionErr:
+		return err
 	}
 }
 
-func (c *FuturesClient) subscribeFeeds(ctx context.Context, conn *websocket.Conn, original, signed string) error {
-	if err := wsjson.Write(ctx, conn, map[string]any{
-		"event":              "subscribe",
-		"feed":               "open_positions",
-		"api_key":            c.apiKey,
-		"original_challenge": original,
-		"signed_challenge":   signed,
-	}); err != nil {
-		return fmt.Errorf("kraken futures: subscribe open_positions: %w", err)
-	}
-	if err := wsjson.Write(ctx, conn, map[string]any{
-		"event":       "subscribe",
-		"feed":        "ticker",
-		"product_ids": []string{hedgeInstrument},
-	}); err != nil {
-		return fmt.Errorf("kraken futures: subscribe ticker: %w", err)
-	}
-	return nil
+type krakenAuthentication struct {
+	challenge string
+	signature string
 }
 
-// signChallenge produces the signed challenge string Kraken Futures expects for
-// authenticated WS feeds: base64(HMAC-SHA512(base64decode(secret), SHA256(challenge))).
-// This mirrors the REST signing in signedPost.
-func (c *FuturesClient) signChallenge(challenge string) string {
-	hash := sha256.Sum256([]byte(challenge))
-	secretBytes, err := base64.StdEncoding.DecodeString(c.apiSecret)
-	if err != nil {
-		return ""
+func authenticateWithContext(ctx context.Context, ws *derivatives.WebSocket, disconnected <-chan error) error {
+	result := make(chan krakenAuthentication, 1)
+	authErr := make(chan error, 1)
+	callback := ws.OnReceived.Recurring(func(e *callback.Event[*krakenapi.WebSocketMessage]) {
+		frame, err := e.Data.Map()
+		if err != nil {
+			signalKrakenStreamError(authErr, err)
+			return
+		}
+		if err := krakenSessionError(frame); err != nil {
+			signalKrakenStreamError(authErr, err)
+			return
+		}
+		event, _ := frame["event"].(string)
+		if event != "challenge" {
+			return
+		}
+		challenge, _ := frame["message"].(string)
+		if challenge == "" {
+			signalKrakenStreamError(authErr, fmt.Errorf("empty authentication challenge"))
+			return
+		}
+		signature, err := derivatives.Sign(ws.PrivateKey, strings.NewReader(challenge), "", "")
+		if err != nil {
+			signalKrakenStreamError(authErr, fmt.Errorf("sign authentication challenge: %w", err))
+			return
+		}
+		select {
+		case result <- krakenAuthentication{challenge: challenge, signature: signature}:
+		default:
+		}
+	})
+	defer ws.OnReceived.Deregister(callback)
+	if err := ws.WriteJSON(map[string]any{"event": "challenge", "api_key": ws.PublicKey}); err != nil {
+		return fmt.Errorf("request challenge: %w", err)
 	}
-	mac := hmac.New(sha512.New, secretBytes)
-	mac.Write(hash[:])
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	timer := time.NewTimer(ws.AuthenticateTimeout)
+	defer timer.Stop()
+	select {
+	case auth := <-result:
+		ws.Challenge, ws.Signature = auth.challenge, auth.signature
+		ws.OnAuthenticated.Call(auth.challenge)
+		return nil
+	case err := <-authErr:
+		return err
+	case err := <-disconnected:
+		return fmt.Errorf("disconnected during authentication: %w", err)
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return fmt.Errorf("authentication timed out")
+	}
 }
 
-// positionUpdateFromKrakenFrame translates a Kraken Futures open_positions frame into
-// the common schema, picking the PI_XBTUSD position. funding is the latest funding
-// rate from the ticker feed (0 if not yet seen). It returns ok=false when the frame
-// carries no PI_XBTUSD position (a flat snapshot still yields a Side:"flat" update).
+func krakenSessionError(frame map[string]any) error {
+	event, _ := frame["event"].(string)
+	if event != "error" && !strings.HasSuffix(event, "_failed") {
+		return nil
+	}
+	message, _ := frame["message"].(string)
+	if message == "" {
+		message = "unspecified error"
+	}
+	return fmt.Errorf("kraken futures websocket %s: %s", event, message)
+}
+
+func signalKrakenStreamError(ch chan<- error, err error) {
+	if err == nil {
+		err = fmt.Errorf("kraken futures websocket disconnected")
+	}
+	select {
+	case ch <- err:
+	default:
+	}
+}
+
 func positionUpdateFromKrakenFrame(frame map[string]any, funding float64) (cex.HedgePositionUpdate, bool) {
 	positions, ok := frame["positions"].([]any)
 	if !ok {
 		return cex.HedgePositionUpdate{}, false
 	}
-
-	update := cex.HedgePositionUpdate{
-		Venue:       "kraken_futures",
-		Instrument:  hedgeInstrument,
-		Side:        "flat",
-		FundingRate: funding,
-		Currency:    "USD",
-		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
-		Connected:   true,
-	}
-
+	update := cex.HedgePositionUpdate{Venue: "kraken_futures", Instrument: hedgeInstrument, Side: "flat", FundingRate: funding, Currency: "USD", UpdatedAt: time.Now().UTC().Format(time.RFC3339), Connected: true}
 	for _, p := range positions {
 		pos, ok := p.(map[string]any)
 		if !ok {
@@ -186,19 +207,17 @@ func positionUpdateFromKrakenFrame(frame map[string]any, funding float64) (cex.H
 			continue
 		}
 		balance, _ := floatFromAny(pos["balance"])
-		update.SizeBTC = absFloat(balance)
-		update.Side = sideFromSignedSize(balance)
+		update.SizeBTC, update.Side = absFloat(balance), sideFromSignedSize(balance)
 		update.EntryPrice, _ = floatFromAny(pos["entry_price"])
 		update.MarkPrice, _ = floatFromAny(pos["mark_price"])
 		update.LiquidationPrice, _ = floatFromAny(pos["liquidation_threshold"])
 		update.UnrealizedPnL, _ = floatFromAny(pos["pnl"])
 		update.Margin, _ = floatFromAny(pos["initial_margin"])
-		if cur, ok := pos["pnl_currency"].(string); ok && cur != "" {
-			update.Currency = cur
+		if currency, ok := pos["pnl_currency"].(string); ok && currency != "" {
+			update.Currency = currency
 		}
 		return update, true
 	}
-	// No matching position in this frame: the hedge is flat.
 	return update, true
 }
 
@@ -208,45 +227,37 @@ func floatFromAny(v any) (float64, bool) {
 		return t, true
 	case float32:
 		return float64(t), true
+	case json.Number:
+		f, err := t.Float64()
+		return f, err == nil
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(t), 64)
+		return f, err == nil
 	default:
 		return 0, false
 	}
 }
-
 func sideFromSignedSize(size float64) string {
-	switch {
-	case size > 0:
+	if size > 0 {
 		return "long"
-	case size < 0:
-		return "short"
-	default:
-		return "flat"
 	}
+	if size < 0 {
+		return "short"
+	}
+	return "flat"
 }
-
 func absFloat(v float64) float64 {
 	if v < 0 {
 		return -v
 	}
 	return v
 }
-
-// emitDisconnected pushes a Connected:false snapshot (best-effort, non-blocking on
-// ctx cancellation) so subscribers can render an outage banner.
 func emitDisconnected(ctx context.Context, out chan<- cex.HedgePositionUpdate, venue, instrument string, cause error) {
 	msg := ""
 	if cause != nil {
 		msg = cause.Error()
 	}
-	update := cex.HedgePositionUpdate{
-		Venue:      venue,
-		Instrument: instrument,
-		Side:       "flat",
-		Currency:   "USD",
-		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
-		Connected:  false,
-		Error:      msg,
-	}
+	update := cex.HedgePositionUpdate{Venue: venue, Instrument: instrument, Side: "flat", Currency: "USD", UpdatedAt: time.Now().UTC().Format(time.RFC3339), Connected: false, Error: msg}
 	select {
 	case out <- update:
 	case <-ctx.Done():

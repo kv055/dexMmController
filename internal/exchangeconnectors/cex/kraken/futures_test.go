@@ -73,12 +73,7 @@ func TestKrakenFuturesPlaceOrderShort(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &FuturesClient{
-		baseURL:   srv.URL,
-		apiKey:    "testkey",
-		apiSecret: base64.StdEncoding.EncodeToString([]byte("secret")),
-		http:      &http.Client{},
-	}
+	client := NewFuturesClientWithBaseURL(srv.URL, "testkey", base64.StdEncoding.EncodeToString([]byte("secret")))
 
 	res, err := client.PlaceOrder(context.Background(), "PI_XBTUSD", "short", 0.5)
 	if err != nil {
@@ -120,12 +115,7 @@ func TestKrakenFuturesPlaceOrderLong(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &FuturesClient{
-		baseURL:   srv.URL,
-		apiKey:    "testkey",
-		apiSecret: base64.StdEncoding.EncodeToString([]byte("secret")),
-		http:      &http.Client{},
-	}
+	client := NewFuturesClientWithBaseURL(srv.URL, "testkey", base64.StdEncoding.EncodeToString([]byte("secret")))
 	if _, err := client.PlaceOrder(context.Background(), "PI_XBTUSD", "long", 0.1); err != nil {
 		t.Fatalf("PlaceOrder long: %v", err)
 	}
@@ -151,12 +141,7 @@ func TestKrakenFuturesPlaceOrderAPIError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &FuturesClient{
-		baseURL:   srv.URL,
-		apiKey:    "testkey",
-		apiSecret: base64.StdEncoding.EncodeToString([]byte("secret")),
-		http:      &http.Client{},
-	}
+	client := NewFuturesClientWithBaseURL(srv.URL, "testkey", base64.StdEncoding.EncodeToString([]byte("secret")))
 	_, err := client.PlaceOrder(context.Background(), "PI_XBTUSD", "short", 0.5)
 	if err == nil || !strings.Contains(err.Error(), "Insufficient funds") {
 		t.Fatalf("expected Insufficient funds error, got %v", err)
