@@ -122,6 +122,15 @@ type ServiceVersions struct {
 // is stored yet. The init hook returns it so the handler can answer 400.
 var ErrLNDWalletPasswordMissing = errors.New("LND wallet password is not set; set it under Account → Edit first")
 
+// ErrLNDConfigIncomplete signals the LND connection settings (host, TLS cert,
+// macaroon path) are missing, so no wallet client can be created. Bootstrap
+// treats it as a permanent failure instead of retrying.
+var ErrLNDConfigIncomplete = errors.New("LND startup configuration incomplete; set LND_HOST, LND_TLS_CERT_PATH and LND_MACAROON_PATH")
+
+// ErrLNDRestoreSecretInvalid signals a configured seed or passphrase secret file
+// failed validation. Bootstrap treats it as a permanent failure instead of retrying.
+var ErrLNDRestoreSecretInvalid = errors.New("invalid LND wallet restore secret")
+
 type accountHealthChecker interface {
 	CheckProvider(ctx context.Context, provider string) (cexaccount.HealthResult, error)
 }

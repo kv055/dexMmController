@@ -514,8 +514,11 @@ func (s *Server) InitializeLND(ctx context.Context) (LNDInitResult, error) {
 // lndInitErrorStatus maps wallet-init failures to HTTP status codes.
 func lndInitErrorStatus(err error) int {
 	switch {
-	case errors.Is(err, ErrLNDWalletPasswordMissing):
+	case errors.Is(err, ErrLNDWalletPasswordMissing),
+		errors.Is(err, ErrLNDRestoreSecretInvalid):
 		return http.StatusBadRequest
+	case errors.Is(err, ErrLNDConfigIncomplete):
+		return http.StatusServiceUnavailable
 	case strings.Contains(strings.ToLower(err.Error()), "invalid passphrase"):
 		return http.StatusConflict
 	default:

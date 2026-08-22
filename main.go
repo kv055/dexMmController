@@ -191,12 +191,9 @@ func main() {
 		log.Fatalf("failed to import LND seed into database: %v", err)
 	}
 
-	walletPassword, _, err := repo.LNDWalletCredentials(ctx)
-	if err != nil {
-		log.Fatalf("failed to load LND wallet credentials from database: %v", err)
-	}
-	// LND wallet bootstrap is defined below (lndInit) so it can run at startup when a
-	// password already exists, or on demand from the UI via POST /api/lnd/wallet/init.
+	// LND wallet bootstrap is defined below (lndInit) so it runs automatically at
+	// startup — generating and storing the wallet password when none exists yet —
+	// or on demand from the UI via POST /api/lnd/wallet/init.
 
 	// ── Bitcoin ───────────────────────────────────────────────────────────────
 	btc := bitcoin.NewNetworkDataFetcher()
@@ -478,10 +475,11 @@ func main() {
 		WithSubmarineSwapHistory(submarineSwapRepo).
 		WithMagmaLSP(magmaCoordinator)
 
-	// lndInit creates (or restores) the LND wallet using the password stored in the
-	// database, persists the generated seed + primary address + channel backup, and
-	// injects the live client into the running API server and health checker. It runs
-	// once at startup when a password already exists, and on demand from the UI via
+	// lndInit creates (or restores) the LND wallet, auto-generating and storing an
+	// encrypted password when the operator has not configured one. It persists the
+	// generated seed + primary address + channel backup and injects the live client
+	// into the running API server and health checker. It runs automatically at
+	// startup via retryLNDInitialization, or on demand from the UI via
 	// POST /api/lnd/wallet/init.
 	var lndBackupOnce sync.Once
 	var lndWorkersOnce sync.Once
@@ -501,10 +499,30 @@ func main() {
 		}()
 		password, aezeed, err := repo.LNDWalletCredentials(reqCtx)
 		if err != nil {
-			return api.LNDInitResult{}, err
+			return api.LNDInitResult{}, fmt.Errorf("load LND wallet credentials: %w", err)
 		}
 		if strings.TrimSpace(password) == "" {
-			return api.LNDInitResult{}, api.ErrLNDWalletPasswordMissing
+			// No operator-configured password: generate one, store it encrypted,
+			// and use it for wallet creation. It stays revealable via the
+			// dexMonitor Accounts panel.
+			generated, genErr := generateWalletPassword()
+			if genErr != nil {
+				return api.LNDInitResult{}, genErr
+			}
+			if err := repo.EnsureLNDWalletPassword(reqCtx, int64(lndAccount.ID), generated); err != nil {
+				return api.LNDInitResult{}, fmt.Errorf("store generated LND wallet password: %w", err)
+			}
+			// Re-read so concurrent provisioning can never init the wallet with a
+			// password that differs from the stored one.
+			stored, _, credErr := repo.LNDWalletCredentials(reqCtx)
+			if credErr != nil {
+				return api.LNDInitResult{}, fmt.Errorf("reload LND wallet password after generation: %w", credErr)
+			}
+			if strings.TrimSpace(stored) == "" {
+				return api.LNDInitResult{}, fmt.Errorf("generated LND wallet password was not persisted")
+			}
+			password = stored
+			log.Println("generated LND wallet password and stored it encrypted in accounts.password (revealable via dexMonitor Accounts panel)")
 		}
 		cfg := mergeLNDInitConfig(fileInitCfg, aezeed)
 		if strings.EqualFold(strings.TrimSpace(os.Getenv("LND_INIT_FRESH")), "true") {
@@ -523,7 +541,7 @@ func main() {
 			return api.LNDInitResult{}, err
 		}
 		if lndClient == nil {
-			return api.LNDInitResult{}, fmt.Errorf("LND wallet client was not created; check LND_HOST/LND_TLS_CERT_PATH/LND_MACAROON_PATH")
+			return api.LNDInitResult{}, fmt.Errorf("LND wallet client was not created: %w", api.ErrLNDConfigIncomplete)
 		}
 
 		if mnemonic := lndClient.GeneratedCipherSeedMnemonic(); mnemonic != "" {
@@ -714,6 +732,11 @@ func main() {
 		}
 		return api.LNDInitResult{PrimaryAddress: primaryAddress}, nil
 	}
+	lndHealthChecker.WithInitStatus(func() string {
+		lndInitStatusMu.RLock()
+		defer lndInitStatusMu.RUnlock()
+		return strings.TrimSpace(lastLNDInitError)
+	})
 	apiServer = apiServer.WithLNDManagement(api.LNDManagement{
 		Init: lndInit,
 		StateProbe: func(probeCtx context.Context) (string, error) {
@@ -727,12 +750,10 @@ func main() {
 	})
 	startupState.SetDatabaseReady(true, "lnd_bootstrap", nil)
 
-	if strings.TrimSpace(walletPassword) != "" {
-		go retryLNDInitialization(ctx, apiServer, startupState)
-	} else {
-		log.Println("LND wallet password not set; skipping wallet bootstrap — create it from the UI")
-		startupState.SetLNDReady(false, "awaiting_lnd_password", api.ErrLNDWalletPasswordMissing)
-	}
+	// The supervisor provisions credentials (generating a wallet password when the
+	// operator has not set one), then creates or restores the wallet. It retries
+	// transient failures forever and stops on permanent misconfigurations.
+	go retryLNDInitialization(ctx, apiServer, startupState)
 
 	// ── Periodic healthcheck + dexrelay ─────────────────────────────────────────
 	// Money-moving recovery remains an explicit deployment opt-in. Hedgeless
@@ -881,6 +902,10 @@ func nonRetryableDatabaseError(err error) bool {
 		strings.Contains(message, "invalid dsn")
 }
 
+// retryLNDInitialization drives the LND wallet bootstrap loop. Transient
+// failures (database or LND still coming up) are retried with capped exponential
+// backoff; permanent misconfigurations stop the loop and surface through the
+// startup state until the operator fixes them.
 func retryLNDInitialization(ctx context.Context, server *api.Server, state *api.StartupState) {
 	delay := time.Second
 	for {
@@ -888,6 +913,11 @@ func retryLNDInitialization(ctx context.Context, server *api.Server, state *api.
 		result, err := server.InitializeLND(ctx)
 		if err == nil {
 			log.Printf("LND wallet bootstrap complete (primary address %s)", result.PrimaryAddress)
+			return
+		}
+		if isPermanentLNDInitError(err) {
+			state.SetLNDReady(false, "lnd_bootstrap_failed", err)
+			log.Printf("LND wallet bootstrap stopped: %s (fix the configuration and restart)", describePermanentLNDInitError(err))
 			return
 		}
 		state.SetLNDReady(false, "waiting_for_lnd", err)
@@ -983,9 +1013,9 @@ func ensurePrimaryDepositAddress(
 	if lndHost == "" || tlsCertPath == "" || macaroonPath == "" {
 		log.Println("LND startup configuration incomplete; skipping primary wallet bootstrap")
 		if existing, err := repo.GetPrimaryWalletAddress(); err == nil && existing.Address != "" {
-			return existing.Address, nil, nil
+			return existing.Address, nil, fmt.Errorf("%w (stored primary address %s reused)", api.ErrLNDConfigIncomplete, existing.Address)
 		}
-		return "", nil, nil
+		return "", nil, api.ErrLNDConfigIncomplete
 	}
 	if strings.TrimSpace(password) == "" {
 		return "", nil, fmt.Errorf("LND wallet password missing in accounts.password for provider %q", db.LNDAccountProvider)
@@ -994,7 +1024,7 @@ func ensurePrimaryDepositAddress(
 	log.Println("initializing LND wallet hub")
 	if initCfg.HasRestoreSecret() {
 		if err := initCfg.Validate(); err != nil {
-			return "", nil, fmt.Errorf("invalid LND wallet restore secret: %w", err)
+			return "", nil, fmt.Errorf("%w: %v", api.ErrLNDRestoreSecretInvalid, err)
 		}
 	}
 	client, err := lnd.New(ctx, lndHost, tlsCertPath, macaroonPath, password, initCfg)

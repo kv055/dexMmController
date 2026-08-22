@@ -64,6 +64,10 @@ type Checker struct {
 	mu     sync.RWMutex
 	client Client
 	chain  ChainBackend
+
+	// initStatus optionally reports what the wallet bootstrap supervisor is
+	// currently doing, so a missing client check can explain why.
+	initStatus func() string
 }
 
 // NewChecker creates an LND wallet health checker.
@@ -78,6 +82,16 @@ func (c *Checker) WithChainBackend(chain ChainBackend) *Checker {
 		return c
 	}
 	c.chain = chain
+	return c
+}
+
+// WithInitStatus attaches a callback that describes the current wallet
+// bootstrap state. It is surfaced when the health check finds no LND client.
+func (c *Checker) WithInitStatus(fn func() string) *Checker {
+	if c == nil {
+		return c
+	}
+	c.initStatus = fn
 	return c
 }
 
@@ -175,7 +189,13 @@ func (c *Checker) check(ctx context.Context, unlockIfNeeded, checkChain bool) (R
 	}
 
 	if !clientConfigured(client) {
-		addRequired("lnd reachable", false, "LND client is not initialized")
+		detail := "LND client is not initialized"
+		if c.initStatus != nil {
+			if status := strings.TrimSpace(c.initStatus()); status != "" {
+				detail += "; bootstrap: " + status
+			}
+		}
+		addRequired("lnd reachable", false, detail)
 	} else if err := client.HealthCheck(ctx); err != nil {
 		addRequired("lnd reachable", false, err.Error())
 	} else {

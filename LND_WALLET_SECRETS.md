@@ -2,9 +2,11 @@
 
 ## Fresh wallet (default)
 
-For a **new** LND wallet you only need the **wallet password** in the dexMonitor Accounts panel (`accounts.password` on the `LND wallet` account).
+For a **new** LND wallet you do not need to configure anything by hand. mm-controller's bootstrap supervisor runs on every startup and auto-provisions the wallet password: when `accounts.password` on the `LND wallet` account is empty, it generates a 256-bit secret, stores it encrypted in the database, and uses it for `InitWallet`. The password stays revealable via the dexMonitor Accounts panel (Account → Reveal). A password entered manually in the Accounts panel is always respected and never overwritten.
 
 On first startup, when LND reports `NON_EXISTING`, mm-controller calls LND's `GenSeed` API, commits that aezeed with `InitWallet`, and stores the 24-word phrase in `seeds.seed_phrase`. You do not generate or paste the seed yourself.
+
+The supervisor retries transient failures (database or LND still starting) forever. Permanent misconfigurations — missing `LND_HOST` / `LND_TLS_CERT_PATH` / `LND_MACAROON_PATH` or an invalid seed import file — stop the loop and surface through the startup diagnostics until fixed.
 
 ## Restore an existing wallet
 
@@ -53,7 +55,7 @@ Example bind mounts in `docker-compose.yml`:
 
 ## Wallet Password and Aezeed in Postgres
 
-The LND wallet password and aezeed are stored in Postgres and edited in the dexMonitor **Accounts** panel:
+The LND wallet password and aezeed are stored in Postgres and visible in the dexMonitor **Accounts** panel (the password is auto-generated when the operator has not set one):
 
 | Secret | Storage |
 |--------|---------|

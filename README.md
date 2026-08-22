@@ -71,7 +71,8 @@ Default listen address: `:5001`.
 The controller stores reusable wallet addresses in the `wallet_addresses` table.
 
 - Label `Primary` is reserved for the main CEX withdrawal destination.
-- LND wallet password and aezeed live in Postgres (`accounts.password`, `seeds.seed_phrase`) via the dexMonitor Accounts panel — not in `.env`.
+- LND wallet password and aezeed live in Postgres (`accounts.password`, `seeds.seed_phrase`) — not in `.env`. The password can be entered via the dexMonitor Accounts panel, or is auto-generated on first bootstrap and stays revealable there.
+- A bootstrap supervisor runs on every startup: it provisions the wallet password when missing (generating a 256-bit secret if none is stored), then creates or restores the wallet. Transient failures retry with backoff; permanent misconfigurations stop the loop and surface through startup diagnostics.
 - On first startup with an empty `seeds` row, mm-controller asks LND to generate a new aezeed (`GenSeed` + `InitWallet`) and stores it in the database.
 - To restore an existing wallet, set the aezeed in Seeds (or mount `LND_SEED_MNEMONIC_FILE` once) before first init.
 - The supported restore input is a 24-word aezeed mnemonic.

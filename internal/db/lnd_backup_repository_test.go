@@ -25,3 +25,17 @@ func TestRecordLNDChannelBackupNoOpWhenEmpty(t *testing.T) {
 		t.Fatalf("RecordLNDChannelBackup() error = %v", err)
 	}
 }
+
+func TestEnsureLNDWalletPasswordRequiresPassword(t *testing.T) {
+	repo := &TransactionRepository{}
+	if err := repo.EnsureLNDWalletPassword(context.Background(), 1, "   "); err == nil {
+		t.Fatal("EnsureLNDWalletPassword() error = nil, want password required")
+	}
+}
+
+func TestEnsureLNDWalletPasswordRequiresAccountID(t *testing.T) {
+	repo := &TransactionRepository{}
+	if err := repo.EnsureLNDWalletPassword(context.Background(), 0, "secret"); err == nil {
+		t.Fatal("EnsureLNDWalletPassword() error = nil, want account id required")
+	}
+}

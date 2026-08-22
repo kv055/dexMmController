@@ -51,6 +51,32 @@ func (r *TransactionRepository) LNDWalletCredentials(ctx context.Context) (passw
 	return strings.TrimSpace(password), strings.TrimSpace(mnemonic), nil
 }
 
+// EnsureLNDWalletPassword stores an encrypted wallet password for the LND
+// account when none is configured yet. A guarded UPDATE keeps the write
+// idempotent: an existing password is never overwritten, so a concurrently
+// generated value cannot clobber the credential the wallet was created with.
+func (r *TransactionRepository) EnsureLNDWalletPassword(ctx context.Context, accountID int64, password string) error {
+	password = strings.TrimSpace(password)
+	if password == "" {
+		return errors.New("LND wallet password is required")
+	}
+	if accountID <= 0 {
+		return errors.New("LND account id is required")
+	}
+	encrypted, err := credentialcrypto.Encrypt(password)
+	if err != nil {
+		return fmt.Errorf("encrypt LND wallet password: %w", err)
+	}
+	if err := r.db.WithContext(ctx).Exec(`
+		UPDATE accounts
+		SET password = ?
+		WHERE id = ? AND (password IS NULL OR TRIM(password) = '')
+	`, encrypted, accountID).Error; err != nil {
+		return fmt.Errorf("store LND wallet password: %w", err)
+	}
+	return nil
+}
+
 // EnsureLNDSeed stores the aezeed in seeds when it is not already present.
 func (r *TransactionRepository) EnsureLNDSeed(ctx context.Context, accountID int64, mnemonic string) error {
 	mnemonic = strings.TrimSpace(mnemonic)
