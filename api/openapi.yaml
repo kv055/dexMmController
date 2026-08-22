@@ -262,6 +262,17 @@ paths:
           description: Successful response
         default:
           description: Error response
+  '/api/lnd/lsp-channel/magma/offers':
+    get:
+      operationId: getApiLndLspChannelMagmaOffers
+      tags: ['lnd']
+      summary: 'GET /api/lnd/lsp-channel/magma/offers'
+      x-contract-status: route-catalog
+      responses:
+        '200':
+          description: Successful response
+        default:
+          description: Error response
   '/api/lnd/lsp-channel/magma/orders':
     get:
       operationId: getApiLndLspChannelMagmaOrders
