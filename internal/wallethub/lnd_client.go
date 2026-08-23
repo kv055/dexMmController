@@ -781,8 +781,7 @@ func (c *Client) do(req *http.Request, out any) error {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("LND %s %s → %d: %s",
-			req.Method, req.URL.Path, resp.StatusCode, rawBody)
+		return newLNDAPIError(req.Method, req.URL.Path, resp.StatusCode, rawBody)
 	}
 
 	if out != nil {
@@ -792,6 +791,68 @@ func (c *Client) do(req *http.Request, out any) error {
 	}
 
 	return nil
+}
+
+// LNDAPIError is a failed LND REST call. It renders as a readable sentence
+// (with a remediation hint for well-known failures) instead of dumping the
+// raw JSON error body; the original LND message is kept in Detail and shown
+// in brackets when it differs from the friendly message.
+type LNDAPIError struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Code       int
+	Message    string // human-friendly description
+	Detail     string // verbatim message from LND
+}
+
+func (e *LNDAPIError) Error() string {
+	var b strings.Builder
+	b.WriteString("LND request failed (")
+	b.WriteString(e.Method)
+	b.WriteString(" ")
+	b.WriteString(e.Path)
+	if e.StatusCode != 0 {
+		fmt.Fprintf(&b, ", HTTP %d", e.StatusCode)
+	}
+	b.WriteString(")")
+	if e.Message != "" {
+		b.WriteString(": ")
+		b.WriteString(e.Message)
+	}
+	if e.Detail != "" && e.Detail != e.Message {
+		fmt.Fprintf(&b, " [LND said: %s]", e.Detail)
+	}
+	return b.String()
+}
+
+// newLNDAPIError parses an LND REST error body ("code"/"message") and maps
+// known failure modes to actionable operator guidance.
+func newLNDAPIError(method, path string, status int, rawBody []byte) error {
+	apiErr := &LNDAPIError{Method: method, Path: path, StatusCode: status}
+	var body struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rawBody, &body); err == nil {
+		apiErr.Code = body.Code
+		apiErr.Detail = strings.TrimSpace(body.Message)
+	} else if trimmed := strings.TrimSpace(string(rawBody)); trimmed != "" {
+		apiErr.Detail = trimmed
+	}
+
+	switch {
+	case apiErr.Detail == "":
+		apiErr.Message = fmt.Sprintf("LND returned HTTP %d with no details", status)
+	case strings.Contains(apiErr.Detail, "wallet locked"):
+		apiErr.Message = "the LND wallet is locked; unlock it to enable RPC access — check that the wallet password is configured so LND can auto-unlock after a restart"
+	case strings.Contains(strings.ToLower(apiErr.Detail), "permission") ||
+		strings.Contains(strings.ToLower(apiErr.Detail), "macaroon"):
+		apiErr.Message = "the macaroon was rejected; verify the configured macaroon grants the required permission"
+	default:
+		apiErr.Message = apiErr.Detail
+	}
+	return apiErr
 }
 
 func buildHTTPClient(tlsCertPath string) (*http.Client, error) {

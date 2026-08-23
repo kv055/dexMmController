@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -148,5 +149,22 @@ func TestSyncChannelBackupsRestoresOnlyAfterFreshInit(t *testing.T) {
 	}
 	if !restoreCalled {
 		t.Fatal("restore not called after fresh wallet init")
+	}
+}
+
+func TestLNDAPIErrorWalletLockedIsReadable(t *testing.T) {
+	body := []byte(`{"code":2,"message":"wallet locked, unlock it to enable full RPC access","details":[]}`)
+	err := newLNDAPIError(http.MethodGet, "/v1/balance/blockchain", 500, body)
+	want := "the LND wallet is locked"
+	if got := err.Error(); !strings.Contains(got, want) || strings.Contains(got, `"code":2`) {
+		t.Fatalf("Error() = %q, want readable message containing %q without raw JSON", got, want)
+	}
+}
+
+func TestLNDAPIErrorUnknownMessageFallsBackToLNDText(t *testing.T) {
+	body := []byte(`{"code":1,"message":"something else failed"}`)
+	err := newLNDAPIError("POST", "/v1/channels", 500, body).(*LNDAPIError)
+	if err.Message != "something else failed" || err.Code != 1 {
+		t.Fatalf("LNDAPIError = %+v", err)
 	}
 }

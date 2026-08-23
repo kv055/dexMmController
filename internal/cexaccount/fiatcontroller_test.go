@@ -44,7 +44,7 @@ func TestHTTPFiatControllerCheckerRejectsUnhealthySelectedChannel(t *testing.T) 
 	defer server.Close()
 
 	err := NewHTTPFiatControllerChecker(server.URL, "", server.Client()).Check(context.Background(), "PayPal")
-	if err == nil || !strings.Contains(err.Error(), "email notification channel is unhealthy") {
+	if err == nil || !strings.Contains(err.Error(), `notification channel "email" is unhealthy`) {
 		t.Fatalf("Check error = %v, want unhealthy email failure", err)
 	}
 }

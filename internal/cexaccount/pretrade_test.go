@@ -1082,7 +1082,7 @@ func TestLNDWalletOnlineCheckFailsWhenOffline(t *testing.T) {
 		PaymentMethod: "Revolut",
 	})
 	chk := paymentCheckNamed(t, report, "lnd_wallet")
-	if chk.Passed || !strings.Contains(chk.Message, "LND wallet is not online") {
+	if chk.Passed || !strings.Contains(chk.Message, "connection refused") {
 		t.Fatalf("lnd_wallet check = %+v", chk)
 	}
 	if report.OK {

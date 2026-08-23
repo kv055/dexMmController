@@ -34,10 +34,10 @@ func (c *HTTPFiatControllerChecker) Check(ctx context.Context, paymentMethod str
 // CheckService verifies that the Fiat Controller HTTP service is reachable.
 func (c *HTTPFiatControllerChecker) CheckService(ctx context.Context) error {
 	if c.baseURL == "" {
-		return fmt.Errorf("pre-trade check failed: Fiat Controller URL is not configured")
+		return fmt.Errorf("Fiat Controller URL is not configured; set it in the Fiat Controller integration settings")
 	}
 	if err := c.get(ctx, "/health", nil); err != nil {
-		return fmt.Errorf("pre-trade check failed: Fiat Controller is unavailable: %w", err)
+		return fmt.Errorf("the Fiat Controller service is unreachable: %w; verify the service is running and its URL is configured correctly", err)
 	}
 	return nil
 }
@@ -52,15 +52,27 @@ func (c *HTTPFiatControllerChecker) CheckNotificationHealth(ctx context.Context,
 	}
 	path := "/notification-health?payment_method=" + url.QueryEscape(strings.TrimSpace(paymentMethod))
 	if err := c.get(ctx, path, &health); err != nil {
-		return fmt.Errorf("pre-trade check failed: could not read payment notification health: %w", err)
+		return fmt.Errorf("could not read payment notification health from Fiat Controller: %w", err)
 	}
 	if len(health.SelectedChannels) == 0 {
-		return fmt.Errorf("pre-trade check failed: payment account has no selected notification channel")
+		return fmt.Errorf(
+			"the payment account for %s has no notification channel selected; select at least one channel in the payment method categorization panel",
+			paymentMethod,
+		)
 	}
 	for _, channel := range health.SelectedChannels {
 		state, ok := health.Channels[channel]
-		if !ok || !state.Healthy {
-			return fmt.Errorf("pre-trade check failed: selected %s notification channel is unhealthy or has never succeeded", channel)
+		if !ok {
+			return fmt.Errorf(
+				"notification channel %q has no health status yet; send a test notification so Fiat Controller records a delivery",
+				channel,
+			)
+		}
+		if !state.Healthy {
+			return fmt.Errorf(
+				"notification channel %q is unhealthy: its most recent delivery attempt failed or no delivery has ever succeeded; check the channel configuration in Fiat Controller and send a test notification",
+				channel,
+			)
 		}
 	}
 	return nil

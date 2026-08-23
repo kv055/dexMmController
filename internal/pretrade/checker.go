@@ -3,6 +3,7 @@ package pretrade
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -289,7 +290,7 @@ func (c *BidChecker) checkLSPAndLiquidity(ctx context.Context, side string, p Pa
 	c.walletMu.RUnlock()
 	if source == nil {
 		report.BlockingReason = "registered LSP channel status is not available"
-		return fmt.Errorf("pre-trade check failed: %s", report.BlockingReason)
+		return errors.New(report.BlockingReason)
 	}
 	status, err := source.Status(ctx)
 	if err != nil {
@@ -300,17 +301,17 @@ func (c *BidChecker) checkLSPAndLiquidity(ctx context.Context, side string, p Pa
 	report.UsableOutboundSat = status.UsableOutboundSat
 	required := int64(p.RequiredBTCLiquidity*1e8+.5) + p.RoutingFeeAllowanceSat
 	if required <= 0 {
-		return fmt.Errorf("pre-trade check failed: required Lightning amount is missing or zero")
+		return fmt.Errorf("required Lightning amount is missing or zero")
 	}
 	report.RequiredLightningSat = required
 	if !status.LSPHealthy {
 		report.BlockingReason = status.Reason
-		return fmt.Errorf("pre-trade check failed: %s", status.Reason)
+		return errors.New(status.Reason)
 	}
 	if side == "ask" {
 		if status.UsableInboundSat < required {
 			report.BlockingReason = fmt.Sprintf("insufficient node-wide usable inbound liquidity: available %d sats, required %d sats", status.UsableInboundSat, required)
-			return fmt.Errorf("pre-trade check failed: %s", report.BlockingReason)
+			return errors.New(report.BlockingReason)
 		}
 		return nil
 	}
@@ -322,23 +323,23 @@ func (c *BidChecker) checkLSPAndLiquidity(ctx context.Context, side string, p Pa
 	report.SwapShortfallSat = shortfall
 	if status.LSPInboundSat < shortfall {
 		report.BlockingReason = fmt.Sprintf("insufficient registered LSP inbound liquidity for submarine swap: available %d sats, required %d sats", status.LSPInboundSat, shortfall)
-		return fmt.Errorf("pre-trade check failed: %s", report.BlockingReason)
+		return errors.New(report.BlockingReason)
 	}
 	c.walletMu.RLock()
 	quotes := c.swapQuotes
 	c.walletMu.RUnlock()
 	if quotes == nil {
 		report.BlockingReason = "Boltz quote source is not configured"
-		return fmt.Errorf("pre-trade check failed: %s", report.BlockingReason)
+		return errors.New(report.BlockingReason)
 	}
 	quote, quoteErr := quotes.Quote(ctx, shortfall)
 	if quoteErr != nil {
 		report.BlockingReason = quoteErr.Error()
-		return fmt.Errorf("pre-trade check failed: obtain Boltz quote: %w", quoteErr)
+		return fmt.Errorf("obtain Boltz quote: %w", quoteErr)
 	}
 	if quoteErr = quote.Validate(time.Now(), status.MaxSwapFeeSat, status.MaxSwapFeePPM); quoteErr != nil {
 		report.BlockingReason = quoteErr.Error()
-		return fmt.Errorf("pre-trade check failed: %w", quoteErr)
+		return fmt.Errorf("%w", quoteErr)
 	}
 	report.ExpectedLockupSat = quote.LockupAmountSat
 	report.EstimatedFundingFeeSat = quote.FundingTxFeeSat
@@ -348,7 +349,7 @@ func (c *BidChecker) checkLSPAndLiquidity(ctx context.Context, side string, p Pa
 	c.walletMu.RUnlock()
 	if onchainSource == nil {
 		report.BlockingReason = "confirmed LND on-chain balance is not available"
-		return fmt.Errorf("pre-trade check failed: %s", report.BlockingReason)
+		return errors.New(report.BlockingReason)
 	}
 	onchainBTC, balanceErr := onchainSource.ConfirmedOnChainBTC(ctx)
 	if balanceErr != nil {
@@ -357,7 +358,7 @@ func (c *BidChecker) checkLSPAndLiquidity(ctx context.Context, side string, p Pa
 	report.ConfirmedOnchainSat = int64(onchainBTC * 1e8)
 	if report.ConfirmedOnchainSat < quote.LockupAmountSat+quote.FundingTxFeeSat {
 		report.BlockingReason = fmt.Sprintf("insufficient confirmed LND on-chain balance: available %d sats, expected lockup and funding fee %d sats", report.ConfirmedOnchainSat, quote.LockupAmountSat+quote.FundingTxFeeSat)
-		return fmt.Errorf("pre-trade check failed: %s", report.BlockingReason)
+		return errors.New(report.BlockingReason)
 	}
 	return nil
 }
@@ -400,7 +401,7 @@ func (c *BidChecker) checkPermissions(ctx context.Context, provider, tradeMode, 
 	}
 	if spotPerms[PermSpotTrading] != PermGranted {
 		return fmt.Errorf(
-			"pre-trade check failed: %s API key does not have spot trading permission (status: %q); check account health",
+			"%s API key does not have spot trading permission (status: %q); check account health",
 			provider, spotPerms[PermSpotTrading],
 		)
 	}
@@ -413,7 +414,7 @@ func (c *BidChecker) checkPermissions(ctx context.Context, provider, tradeMode, 
 	if strings.TrimSpace(hedgeVenue) != "" {
 		hp, err := ProviderForHedgeVenue(hedgeVenue)
 		if err != nil {
-			return fmt.Errorf("pre-trade check failed: %v", err)
+			return err
 		}
 		hedgeProvider = hp
 	}
@@ -428,7 +429,7 @@ func (c *BidChecker) checkPermissions(ctx context.Context, provider, tradeMode, 
 
 	if hedgeStatus := hedgePerms[PermHedgePositions]; hedgeStatus != PermGranted {
 		return fmt.Errorf(
-			"pre-trade check failed: %s API key does not have hedge position permission (status: %q); check account health",
+			"%s API key does not have hedge position permission (status: %q); check account health",
 			hedgeProvider, hedgeStatus,
 		)
 	}
@@ -463,14 +464,14 @@ func (c *BidChecker) checkCapital(ctx context.Context, provider, currency string
 // Directional channel capacity is checked separately by checkLightningLiquidity.
 func (c *BidChecker) checkLiquidityPool(ctx context.Context, hasLightning bool, requiredBTC float64) error {
 	if requiredBTC <= 0 {
-		return fmt.Errorf("pre-trade check failed: required BTC liquidity pool size is missing or zero")
+		return fmt.Errorf("required BTC liquidity pool size is missing or zero")
 	}
 	c.walletMu.RLock()
 	src := c.btcBalance
 	lightning := c.lightningBalance
 	c.walletMu.RUnlock()
 	if src == nil {
-		return fmt.Errorf("pre-trade check failed: LND wallet balance is not available; initialise the LND wallet before running hedgeless trades")
+		return fmt.Errorf("LND wallet balance is not available; initialise the LND wallet before running hedgeless trades")
 	}
 	onChain, err := src.ConfirmedOnChainBTC(ctx)
 	if err != nil {
@@ -479,7 +480,7 @@ func (c *BidChecker) checkLiquidityPool(ctx context.Context, hasLightning bool, 
 	available := onChain
 	if hasLightning {
 		if lightning == nil {
-			return fmt.Errorf("pre-trade check failed: LND Lightning balance is not available for Swap liquidity pool")
+			return fmt.Errorf("LND Lightning balance is not available for Swap liquidity pool")
 		}
 		local, err := lightning.OutboundLightningBTC(ctx)
 		if err != nil {
@@ -507,7 +508,7 @@ func (c *BidChecker) checkLiquidityPool(ctx context.Context, hasLightning bool, 
 // outbound (bid) or inbound (ask) channel balance covers position + deposit.
 func (c *BidChecker) checkLightningLiquidity(ctx context.Context, side string, requiredBTC float64) error {
 	if requiredBTC <= 0 {
-		return fmt.Errorf("pre-trade check failed: required BTC liquidity (position + security deposit) is missing or zero")
+		return fmt.Errorf("required BTC liquidity (position + security deposit) is missing or zero")
 	}
 	c.walletMu.RLock()
 	channels := c.lightningChannels
@@ -515,18 +516,18 @@ func (c *BidChecker) checkLightningLiquidity(ctx context.Context, side string, r
 	c.walletMu.RUnlock()
 
 	if channels == nil {
-		return fmt.Errorf("pre-trade check failed: self-funded Lightning channel status is not available")
+		return fmt.Errorf("self-funded Lightning channel status is not available")
 	}
 	active, err := channels.HasActiveChannel(ctx)
 	if err != nil {
 		return fmt.Errorf("reading LND open channels: %w", err)
 	}
 	if !active {
-		return fmt.Errorf("pre-trade check failed: no active self-funded Lightning channel is open")
+		return errors.New("no active self-funded Lightning channel is open; open a channel from the LND wallet to give the node spendable channel balance")
 	}
 
 	if lightning == nil {
-		return fmt.Errorf("pre-trade check failed: self-funded Lightning balance is not available")
+		return fmt.Errorf("self-funded Lightning balance is not available")
 	}
 
 	var available float64
@@ -559,24 +560,24 @@ func (c *BidChecker) checkLNDOnline(ctx context.Context) error {
 	src := c.lndOnline
 	c.walletMu.RUnlock()
 	if src == nil {
-		return fmt.Errorf("pre-trade check failed: LND wallet is not online; initialise the LND wallet before trading")
+		return fmt.Errorf("LND wallet is not online; initialise the LND wallet before trading")
 	}
 	if err := src.CheckOnline(ctx); err != nil {
-		return fmt.Errorf("pre-trade check failed: LND wallet is not online: %w", err)
+		return err
 	}
 	return nil
 }
 
 func (c *BidChecker) checkCommunicationGateway(ctx context.Context) error {
 	if c.communication == nil || !c.communication.Enabled() {
-		return fmt.Errorf("pre-trade check failed: no active Telegram communication channel is configured; configure the Telegram bot token and chat ID before trading")
+		return fmt.Errorf("no active Telegram communication channel is configured; configure the Telegram bot token and chat ID before trading")
 	}
 	return nil
 }
 
 func (c *BidChecker) checkFiatControllerService(ctx context.Context) error {
 	if c.fiatController == nil {
-		return fmt.Errorf("pre-trade check failed: Fiat Controller checker is not configured")
+		return fmt.Errorf("Fiat Controller checker is not configured")
 	}
 	if checker, ok := c.fiatController.(FiatControllerHealthChecker); ok {
 		return checker.CheckService(ctx)
@@ -586,10 +587,10 @@ func (c *BidChecker) checkFiatControllerService(ctx context.Context) error {
 
 func (c *BidChecker) checkFiatControllerNotifications(ctx context.Context, paymentMethod string) error {
 	if c.fiatController == nil {
-		return fmt.Errorf("pre-trade check failed: Fiat Controller checker is not configured")
+		return fmt.Errorf("Fiat Controller checker is not configured")
 	}
 	if strings.TrimSpace(paymentMethod) == "" {
-		return fmt.Errorf("pre-trade check failed: cannot validate notification channels without a resolved payment method")
+		return fmt.Errorf("cannot validate notification channels without a resolved payment method")
 	}
 	if checker, ok := c.fiatController.(FiatControllerHealthChecker); ok {
 		return checker.CheckNotificationHealth(ctx, paymentMethod)
@@ -609,7 +610,7 @@ func (c *BidChecker) checkWhitelist(ctx context.Context, provider string) (strin
 	if err != nil {
 		if message := whitelistCredentialErrorMessage(provider, err); message != "" {
 			log.Printf("pre-trade whitelist check: %s: %v", provider, err)
-			return "", fmt.Errorf("%s", message)
+			return "", errors.New(message)
 		}
 		return "", fmt.Errorf("fetching %s whitelist for pre-trade check: %w", provider, err)
 	}
@@ -623,7 +624,7 @@ func (c *BidChecker) checkWhitelist(ctx context.Context, provider string) (strin
 	}
 
 	return "", fmt.Errorf(
-		"pre-trade check failed: %s whitelist contains no address from the current LND wallet; add an LND on-chain address to the %s withdrawal whitelist before trading",
+		"%s whitelist contains no address from the current LND wallet; add an LND on-chain address to the %s withdrawal whitelist before trading",
 		provider, provider,
 	)
 }
@@ -653,13 +654,13 @@ func (c *BidChecker) resolvePaymentMethod(ctx context.Context, paymentMethod str
 		if err != nil {
 			log.Printf("pre-trade payment setup: load payment method %q: %v", method, err)
 			return "", fmt.Errorf(
-				"pre-trade check failed: %s payment configuration could not be read; retry, then check the mm-controller logs if the problem persists",
+				"%s payment configuration could not be read; retry, then check the mm-controller logs if the problem persists",
 				method,
 			)
 		}
 		if row == nil {
 			return "", fmt.Errorf(
-				"pre-trade check failed: %s is not in the payment methods catalog; run a snapshot or add it in the categorization panel",
+				"%s is not in the payment methods catalog; run a snapshot or add it in the categorization panel",
 				method,
 			)
 		}
@@ -672,7 +673,7 @@ func (c *BidChecker) resolvePaymentMethod(ctx context.Context, paymentMethod str
 		}
 	}
 	if len(names) == 0 {
-		return "", fmt.Errorf("pre-trade check failed: payment method is required; select one on the offer or in the dashboard payment filter")
+		return "", fmt.Errorf("payment method is required; select one on the offer or in the dashboard payment filter")
 	}
 	if c.paymentSetup == nil {
 		return "", fmt.Errorf("payment setup checker not configured")
@@ -683,7 +684,7 @@ func (c *BidChecker) resolvePaymentMethod(ctx context.Context, paymentMethod str
 	}
 	if row == nil {
 		return "", fmt.Errorf(
-			"pre-trade check failed: none of the offer's payment methods (%s) is linked and active; link one under Accounts Management → payment accounts",
+			"none of the offer's payment methods (%s) is linked and active; link one under Accounts Management → payment accounts",
 			strings.Join(names, ", "),
 		)
 	}
@@ -698,7 +699,7 @@ func (c *BidChecker) resolvePaymentMethod(ctx context.Context, paymentMethod str
 func (c *BidChecker) checkPaymentSetup(ctx context.Context, paymentMethod string) error {
 	method := strings.TrimSpace(paymentMethod)
 	if method == "" {
-		return fmt.Errorf("pre-trade check failed: payment method is required; select one on the offer or in the dashboard payment filter")
+		return fmt.Errorf("payment method is required; select one on the offer or in the dashboard payment filter")
 	}
 	if c.paymentSetup == nil {
 		return fmt.Errorf("payment setup checker not configured")
@@ -708,19 +709,19 @@ func (c *BidChecker) checkPaymentSetup(ctx context.Context, paymentMethod string
 	if err != nil {
 		log.Printf("pre-trade payment setup: load payment method %q: %v", method, err)
 		return fmt.Errorf(
-			"pre-trade check failed: %s payment configuration could not be read; retry, then check the mm-controller logs if the problem persists",
+			"%s payment configuration could not be read; retry, then check the mm-controller logs if the problem persists",
 			method,
 		)
 	}
 	if row == nil {
 		return fmt.Errorf(
-			"pre-trade check failed: %s is not in the payment methods catalog; run a snapshot or add it in the categorization panel",
+			"%s is not in the payment methods catalog; run a snapshot or add it in the categorization panel",
 			method,
 		)
 	}
 	if !row.IsActive {
 		return fmt.Errorf(
-			"pre-trade check failed: %s is disabled; link or re-activate it under Accounts Management → payment accounts",
+			"%s is disabled; link or re-activate it under Accounts Management → payment accounts",
 			method,
 		)
 	}
@@ -732,7 +733,7 @@ func (c *BidChecker) checkPaymentSetup(ctx context.Context, paymentMethod string
 		return c.checkBankAccountSetup(ctx, method, row)
 	default:
 		return fmt.Errorf(
-			"pre-trade check failed: %s (%s) is not supported for automated trading",
+			"%s (%s) is not supported for automated trading",
 			method, row.Category,
 		)
 	}
@@ -741,7 +742,7 @@ func (c *BidChecker) checkPaymentSetup(ctx context.Context, paymentMethod string
 func (c *BidChecker) checkFiatTransmitterSetup(ctx context.Context, method string, row *PaymentMethodSnapshot) error {
 	if row.AccountID == nil {
 		return fmt.Errorf(
-			"pre-trade check failed: %s is not linked to a Fiat Transmitter account; link one under Accounts Management → payment accounts",
+			"%s is not linked to a Fiat Transmitter account; link one under Accounts Management → payment accounts",
 			method,
 		)
 	}
@@ -751,7 +752,7 @@ func (c *BidChecker) checkFiatTransmitterSetup(ctx context.Context, method strin
 	}
 	if account == nil {
 		return fmt.Errorf(
-			"pre-trade check failed: the account linked to %s no longer exists; re-link it under Accounts Management → payment accounts",
+			"the account linked to %s no longer exists; re-link it under Accounts Management → payment accounts",
 			method,
 		)
 	}
@@ -768,7 +769,7 @@ func (c *BidChecker) checkFiatTransmitterSetup(ctx context.Context, method strin
 				label = "payment tag"
 			}
 			return fmt.Errorf(
-				"pre-trade check failed: %s account is missing %s",
+				"%s account is missing %s",
 				account.Provider, label,
 			)
 		}
@@ -779,7 +780,7 @@ func (c *BidChecker) checkFiatTransmitterSetup(ctx context.Context, method strin
 func (c *BidChecker) checkBankAccountSetup(ctx context.Context, method string, row *PaymentMethodSnapshot) error {
 	if row.AccountID == nil {
 		return fmt.Errorf(
-			"pre-trade check failed: %s is not linked to a Bank account; link one under Accounts Management → payment accounts",
+			"%s is not linked to a Bank account; link one under Accounts Management → payment accounts",
 			method,
 		)
 	}
@@ -789,25 +790,25 @@ func (c *BidChecker) checkBankAccountSetup(ctx context.Context, method string, r
 	}
 	if acct == nil {
 		return fmt.Errorf(
-			"pre-trade check failed: the Bank account linked to %s has no bank account details; add an IBAN under Trading Accounts",
+			"the Bank account linked to %s has no bank account details; add an IBAN under Trading Accounts",
 			method,
 		)
 	}
 	if !acct.IsActive {
 		return fmt.Errorf(
-			"pre-trade check failed: the bank account linked to %s is inactive; activate it under Trading Accounts or add another currency",
+			"the bank account linked to %s is inactive; activate it under Trading Accounts or add another currency",
 			method,
 		)
 	}
 	if !strings.EqualFold(acct.Scheme, "iban_bic") {
 		return fmt.Errorf(
-			"pre-trade check failed: the bank account linked to %s uses scheme %q, expected iban_bic",
+			"the bank account linked to %s uses scheme %q, expected iban_bic",
 			method, acct.Scheme,
 		)
 	}
 	if strings.TrimSpace(acct.Details["iban"]) == "" {
 		return fmt.Errorf(
-			"pre-trade check failed: the bank account linked to %s has no IBAN; complete it under Trading Accounts",
+			"the bank account linked to %s has no IBAN; complete it under Trading Accounts",
 			method,
 		)
 	}
@@ -837,7 +838,7 @@ func (c *BidChecker) checkMessageTemplate(ctx context.Context, dex, paymentMetho
 	}
 	if strings.TrimSpace(template) == "" {
 		return fmt.Errorf(
-			"pre-trade check failed: no message template is saved for %s on %s; add one in the payment method categorization panel or the generic default request will be sent",
+			"no message template is saved for %s on %s; add one in the payment method categorization panel or the generic default request will be sent",
 			paymentMethod, platform,
 		)
 	}
