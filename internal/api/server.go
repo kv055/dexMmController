@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	internalapi "dexMmController/internal/api/gen/internalapi"
+	publicapi "dexMmController/internal/api/gen/public"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/hedgestream"
@@ -248,6 +250,57 @@ func (s *Server) WithInternalSecret(secret string) *Server {
 // Run runs value.
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
+	s.registerRoutes(mux)
+
+	var handler http.Handler = s.startupGate(s.internalSecretMiddleware(mux))
+	if s.metrics != nil {
+		mux.Handle("GET /metrics", s.metrics.Handler())
+		handler = s.metrics.Middleware(handler)
+	}
+
+	server := &http.Server{
+		Addr:              s.addr,
+		Handler:           corsMiddleware(handler),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("starting dexMmController API server on %s", s.addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return server.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		if err != nil {
+			return fmt.Errorf("mm controller api server: %w", err)
+		}
+		return nil
+	}
+}
+
+func (s *Server) registerRoutes(mux *http.ServeMux) {
+	legacyMux := http.NewServeMux()
+	s.registerLegacyRoutes(legacyMux)
+	publicapi.RegisterLegacyStrictHandler(legacyMux, mux)
+	internalapi.RegisterLegacyStrictHandler(legacyMux, mux)
+
+	// WebSocket upgrades bypass generated response handling by design.
+	mux.HandleFunc("GET /ws/cex/hedge-stream", s.handleCexHedgeStream)
+}
+
+// registerLegacyRoutes is the wire-compatible response implementation behind
+// the generated strict request adapters. New JSON operations should implement
+// the generated StrictServerInterface directly.
+func (s *Server) registerLegacyRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /livez", s.handleLivez)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /health", s.handleHealth)
@@ -300,40 +353,6 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/bisq/payment-accounts", s.handleBisqCreatePaymentAccount)
 	mux.HandleFunc("DELETE /api/bisq/payment-accounts/{id}", s.handleBisqDeletePaymentAccount)
 	mux.HandleFunc("GET /ws/cex/hedge-stream", s.handleCexHedgeStream)
-
-	var handler http.Handler = s.startupGate(s.internalSecretMiddleware(mux))
-	if s.metrics != nil {
-		mux.Handle("GET /metrics", s.metrics.Handler())
-		handler = s.metrics.Middleware(handler)
-	}
-
-	server := &http.Server{
-		Addr:              s.addr,
-		Handler:           corsMiddleware(handler),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		log.Printf("starting dexMmController API server on %s", s.addr)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-			return
-		}
-		errCh <- nil
-	}()
-
-	select {
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return server.Shutdown(shutdownCtx)
-	case err := <-errCh:
-		if err != nil {
-			return fmt.Errorf("mm controller api server: %w", err)
-		}
-		return nil
-	}
 }
 
 type accountHealthResponse struct {

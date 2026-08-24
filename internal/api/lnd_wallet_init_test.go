@@ -140,6 +140,26 @@ func TestHandleLNDWalletInitSuccess(t *testing.T) {
 	}
 }
 
+func TestRegisteredLNDWalletInitPassesCreatedResponseValidation(t *testing.T) {
+	s := (&Server{}).WithLNDManagement(LNDManagement{
+		Init: func(context.Context) (LNDInitResult, error) {
+			return LNDInitResult{PrimaryAddress: "bc1qvalidated"}, nil
+		},
+	})
+	mux := http.NewServeMux()
+	s.registerRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/api/lnd/wallet/init", nil)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("validated route status = %d, want %d (body=%s)", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("validated route content type = %q, want application/json", got)
+	}
+}
+
 func TestHandleLNDWalletInitIdempotentWhenClientWired(t *testing.T) {
 	initCalls := 0
 	s := (&Server{}).

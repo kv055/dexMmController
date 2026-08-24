@@ -6,11 +6,16 @@ require (
 	commons v0.0.0
 	github.com/BoltzExchange/boltz-client/v2 v2.11.0
 	github.com/ProtonMail/go-crypto v1.4.1
+	github.com/binance/binance-connector-go/clients/derivativestradingusdsfutures v1.14.0
 	github.com/binance/binance-connector-go/clients/spot v1.11.0
 	github.com/binance/binance-connector-go/clients/wallet v1.11.0
 	github.com/btcsuite/btcd/btcec/v2 v2.3.3
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
+	github.com/getkin/kin-openapi v0.147.0
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.5.5
+	github.com/krakenfx/api-go/v2 v2.0.0
+	github.com/oapi-codegen/runtime v1.7.0
 	github.com/prometheus/client_golang v1.20.5
 	golang.org/x/crypto v0.54.0
 	google.golang.org/grpc v1.79.1
@@ -23,8 +28,8 @@ require (
 require (
 	github.com/aead/siphash v1.0.1 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect
+	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/binance/binance-connector-go/clients/derivativestradingusdsfutures v1.14.0 // indirect
 	github.com/binance/binance-connector-go/common/v2 v2.6.0 // indirect
 	github.com/btcsuite/btcd v0.24.2-beta.rc1.0.20240403021926-ae5533602c46 // indirect
 	github.com/btcsuite/btcd/btcutil v1.1.5 // indirect
@@ -51,8 +56,9 @@ require (
 	github.com/go-errors/errors v1.4.2 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/go-openapi/jsonpointer v0.22.5 // indirect
+	github.com/go-openapi/swag/jsonname v0.25.5 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
@@ -64,7 +70,6 @@ require (
 	github.com/jrick/logrotate v1.0.0 // indirect
 	github.com/kkdai/bstream v1.0.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
-	github.com/krakenfx/api-go/v2 v2.0.0 // indirect
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf // indirect
 	github.com/lightninglabs/neutrino v0.16.1-0.20240425105051-602843d34ffd // indirect
 	github.com/lightninglabs/neutrino/cache v1.1.2 // indirect
@@ -80,10 +85,13 @@ require (
 	github.com/miekg/dns v1.1.50 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/oasdiff/yaml v0.1.1 // indirect
+	github.com/oasdiff/yaml3 v0.0.14 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7 // indirect

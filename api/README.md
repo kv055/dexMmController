@@ -1,37 +1,35 @@
 # MM Controller API documentation
 
-This directory contains two complementary OpenAPI documents:
+This directory owns two handwritten OpenAPI 3.1 source contracts:
 
-- `openapi.yaml` is the generated catalog of every registered HTTP route. It is
-  used by the project Swagger UI and intentionally does not claim precise body
-  schemas for operations that have not been formalized yet.
-- `execution.openapi.yaml` is the strongly typed source contract for the MM
-  execution operations consumed by the monitor frontend. The controller serves
-  these operations under `/api`; the monitor exposes them to the browser under
-  `/api/mm-controller`.
+- `public.openapi.yaml` describes webhook-facing operations that carry their own
+  credentials.
+- `internal.openapi.yaml` describes health, administration, and
+  service-to-service operations. It includes the typed CEX execution schemas
+  that previously lived in a separate execution contract.
 
-From the parent `dexArbTrading` checkout, regenerate the TypeScript contract with:
+The generated strict routers under `internal/api/gen/` own normal JSON route
+registration and request binding. The hedge-stream WebSocket remains a
+handwritten raw transport and is marked accordingly in the internal contract.
 
-```bash
-cd dexMonitor/react-frontend
-npm run generate:api
-```
-
-The generated file is committed at
-`dexMonitor/react-frontend/src/generated/mm-controller-api.ts`. CI regenerates it
-and fails when the committed output is stale. Changes to this specification also
-trigger the frontend job, even when the monitor submodule itself did not change.
-
-Regenerate the full route catalog from the repository root with:
+From the parent `dexArbTrading` checkout, regenerate all API artifacts with:
 
 ```bash
-python3 scripts/openapi-route-catalogs.py
+make api-generate
+make api-check
 ```
+
+The self-contained MM bundles are committed under
+`api-docs/specs/dex-mm-controller/`, and typed Go clients are committed under
+`commons/api/client/`. The monitor browser contract describes its
+`/api/mm-controller` proxy surface and reuses the MM execution schemas; its
+generated types live in
+`dexMonitor/react-frontend/src/generated/monitor-api.ts`.
 
 The `GET /api/transactions/dex-pending-liquidity` route reports the sum of
 `btc_required_liquidity` and count of non-deleted transactions whose status is
 `DexPositionTaken` or `DexFiatHasArrived`. The monitor publishes this controller
 route as `GET /api/mm-controller/transactions/dex-pending-liquidity`.
 
-Only transport schemas belong in the typed contract. Domain models and UI-only
+Only transport schemas belong in these contracts. Domain models and UI-only
 view models remain handwritten in their owning packages.
