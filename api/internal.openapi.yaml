@@ -212,6 +212,155 @@ paths:
       description: GET /api/bisq/payment-methods/{id}/form
       security:
         - internalSecret: []
+  /api/bisq/wallet/balances:
+    get:
+      operationId: getApiBisqWalletBalances
+      tags:
+        - bisq
+      summary: GET /api/bisq/wallet/balances
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            text/plain:
+              schema:
+                type: string
+      description: GET /api/bisq/wallet/balances
+      security:
+        - internalSecret: []
+  /api/bisq/wallet/addresses:
+    get:
+      operationId: getApiBisqWalletAddresses
+      tags:
+        - bisq
+      summary: GET /api/bisq/wallet/addresses
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            text/plain:
+              schema:
+                type: string
+      description: GET /api/bisq/wallet/addresses
+      security:
+        - internalSecret: []
+  /api/bisq/wallet/transactions:
+    get:
+      operationId: getApiBisqWalletTransactions
+      tags:
+        - bisq
+      summary: GET /api/bisq/wallet/transactions
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            text/plain:
+              schema:
+                type: string
+      description: GET /api/bisq/wallet/transactions
+      security:
+        - internalSecret: []
+  /api/bisq/wallet/withdraw:
+    post:
+      operationId: postApiBisqWalletWithdraw
+      tags:
+        - bisq
+      summary: POST /api/bisq/wallet/withdraw
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            text/plain:
+              schema:
+                type: string
+      description: POST /api/bisq/wallet/withdraw
+      security:
+        - internalSecret: []
+  /api/bisq/wallet/unlock:
+    post:
+      operationId: postApiBisqWalletUnlock
+      tags:
+        - bisq
+      summary: POST /api/bisq/wallet/unlock
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            text/plain:
+              schema:
+                type: string
+      description: POST /api/bisq/wallet/unlock
+      security:
+        - internalSecret: []
   /api/cex/balances:
     get:
       operationId: getApiCexBalances
@@ -251,8 +400,10 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
         default:
           description: Error response
           content:
@@ -335,8 +486,10 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
         default:
           description: Error response
           content:
@@ -392,8 +545,10 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
         default:
           description: Error response
           content:
@@ -707,8 +862,10 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
         default:
           description: Error response
           content:
@@ -734,8 +891,10 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
         default:
           description: Error response
           content:
@@ -901,8 +1060,10 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
         default:
           description: Error response
           content:

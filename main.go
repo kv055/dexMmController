@@ -252,6 +252,41 @@ func main() {
 	go chatRelay.Run(ctx)
 	go startTelegramSettingsPoller(ctx, telegramSettingsRepo, telegramStore, chatRelay, anomalyNotifier)
 
+	// The bisq wallet must stay unencrypted: encryption only adds failure modes for
+	// automated trading (locked-wallet errors on balance/withdrawal calls), and the
+	// headless daemon has no UI to re-enter a forgotten password. Probe once the
+	// daemon is up and strip any encryption found; the API password doubles as the
+	// candidate wallet password in deployments where they are configured together.
+	go func() {
+		const attempts = 60
+		const interval = 15 * time.Second
+		for i := 1; ; i++ {
+			removed, err := bq.EnsureWalletUnencrypted(ctx, bisqAPIPassword)
+			switch {
+			case err == nil && removed:
+				log.Printf("bisq wallet: removed wallet encryption (policy: wallets stay unencrypted)")
+				return
+			case err == nil:
+				log.Printf("bisq wallet: verified unencrypted")
+				return
+			case strings.Contains(err.Error(), "wallet is not yet available") || strings.Contains(err.Error(), "not yet initialized"):
+				if i == attempts {
+					log.Printf("warning: bisq wallet encryption check gave up after %d attempts: daemon wallet never became available", attempts)
+					return
+				}
+			default:
+				log.Printf("warning: bisq wallet stays encrypted and the API password does not unlock it "+
+					"(%v). Unlock it manually and call RemoveWalletPassword to enforce the unencrypted-wallet policy.", err)
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(interval):
+			}
+		}
+	}()
+
 	dexTaker := dexaccount.NewTaker(repo, bq, hh, rs)
 	// dexReleaser performs Stage-6 BTC release; dexReleaseWorker drains the webhook-fed
 	// queue and runs the (idempotent) releases in the background.
@@ -431,6 +466,7 @@ func main() {
 		WithLNDHealth(lndHealthChecker).
 		WithDexRelease(dexReleaseWorker, dexReleaseToken).
 		WithBisqPayments(bq).
+		WithBisqWallet(bq).
 		WithServiceVersions(func(versionCtx context.Context) api.ServiceVersions {
 			result := api.ServiceVersions{
 				Bisq1: strings.TrimPrefix(envOr("BISQ_VERSION", ""), "v"),

@@ -195,6 +195,51 @@ func (response legacyGetApiBisqPaymentMethodsIdFormResponse) VisitGetApiBisqPaym
 	return response.server.serveLegacy(w, response.request)
 }
 
+type legacyGetApiBisqWalletAddressesResponse struct {
+	server  *LegacyStrictServer
+	request *legacyRequest
+}
+
+func (response legacyGetApiBisqWalletAddressesResponse) VisitGetApiBisqWalletAddressesResponse(w http.ResponseWriter) error {
+	return response.server.serveLegacy(w, response.request)
+}
+
+type legacyGetApiBisqWalletBalancesResponse struct {
+	server  *LegacyStrictServer
+	request *legacyRequest
+}
+
+func (response legacyGetApiBisqWalletBalancesResponse) VisitGetApiBisqWalletBalancesResponse(w http.ResponseWriter) error {
+	return response.server.serveLegacy(w, response.request)
+}
+
+type legacyGetApiBisqWalletTransactionsResponse struct {
+	server  *LegacyStrictServer
+	request *legacyRequest
+}
+
+func (response legacyGetApiBisqWalletTransactionsResponse) VisitGetApiBisqWalletTransactionsResponse(w http.ResponseWriter) error {
+	return response.server.serveLegacy(w, response.request)
+}
+
+type legacyPostApiBisqWalletUnlockResponse struct {
+	server  *LegacyStrictServer
+	request *legacyRequest
+}
+
+func (response legacyPostApiBisqWalletUnlockResponse) VisitPostApiBisqWalletUnlockResponse(w http.ResponseWriter) error {
+	return response.server.serveLegacy(w, response.request)
+}
+
+type legacyPostApiBisqWalletWithdrawResponse struct {
+	server  *LegacyStrictServer
+	request *legacyRequest
+}
+
+func (response legacyPostApiBisqWalletWithdrawResponse) VisitPostApiBisqWalletWithdrawResponse(w http.ResponseWriter) error {
+	return response.server.serveLegacy(w, response.request)
+}
+
 type legacyGetApiCexBalancesResponse struct {
 	server  *LegacyStrictServer
 	request *legacyRequest
@@ -623,6 +668,41 @@ func (server *LegacyStrictServer) GetApiBisqPaymentMethodsIdForm(ctx context.Con
 		return nil, err
 	}
 	return legacyGetApiBisqPaymentMethodsIdFormResponse{server: server, request: request}, nil
+}
+func (server *LegacyStrictServer) GetApiBisqWalletAddresses(ctx context.Context, _ GetApiBisqWalletAddressesRequestObject) (GetApiBisqWalletAddressesResponseObject, error) {
+	request, err := legacyRequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return legacyGetApiBisqWalletAddressesResponse{server: server, request: request}, nil
+}
+func (server *LegacyStrictServer) GetApiBisqWalletBalances(ctx context.Context, _ GetApiBisqWalletBalancesRequestObject) (GetApiBisqWalletBalancesResponseObject, error) {
+	request, err := legacyRequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return legacyGetApiBisqWalletBalancesResponse{server: server, request: request}, nil
+}
+func (server *LegacyStrictServer) GetApiBisqWalletTransactions(ctx context.Context, _ GetApiBisqWalletTransactionsRequestObject) (GetApiBisqWalletTransactionsResponseObject, error) {
+	request, err := legacyRequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return legacyGetApiBisqWalletTransactionsResponse{server: server, request: request}, nil
+}
+func (server *LegacyStrictServer) PostApiBisqWalletUnlock(ctx context.Context, _ PostApiBisqWalletUnlockRequestObject) (PostApiBisqWalletUnlockResponseObject, error) {
+	request, err := legacyRequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return legacyPostApiBisqWalletUnlockResponse{server: server, request: request}, nil
+}
+func (server *LegacyStrictServer) PostApiBisqWalletWithdraw(ctx context.Context, _ PostApiBisqWalletWithdrawRequestObject) (PostApiBisqWalletWithdrawResponseObject, error) {
+	request, err := legacyRequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return legacyPostApiBisqWalletWithdrawResponse{server: server, request: request}, nil
 }
 func (server *LegacyStrictServer) GetApiCexBalances(ctx context.Context, _ GetApiCexBalancesRequestObject) (GetApiCexBalancesResponseObject, error) {
 	request, err := legacyRequestFromContext(ctx)

@@ -498,6 +498,12 @@ type PostApiAccountsHealthCheckJSONBody map[string]interface{}
 // PostApiBisqPaymentAccountsJSONBody defines parameters for PostApiBisqPaymentAccounts.
 type PostApiBisqPaymentAccountsJSONBody map[string]interface{}
 
+// PostApiBisqWalletUnlockJSONBody defines parameters for PostApiBisqWalletUnlock.
+type PostApiBisqWalletUnlockJSONBody map[string]interface{}
+
+// PostApiBisqWalletWithdrawJSONBody defines parameters for PostApiBisqWalletWithdraw.
+type PostApiBisqWalletWithdrawJSONBody map[string]interface{}
+
 // TrackCexWithdrawalParams defines parameters for TrackCexWithdrawal.
 type TrackCexWithdrawalParams struct {
 	Provider        string  `form:"provider" json:"provider"`
@@ -549,6 +555,12 @@ type PostApiAccountsHealthCheckJSONRequestBody PostApiAccountsHealthCheckJSONBod
 
 // PostApiBisqPaymentAccountsJSONRequestBody defines body for PostApiBisqPaymentAccounts for application/json ContentType.
 type PostApiBisqPaymentAccountsJSONRequestBody PostApiBisqPaymentAccountsJSONBody
+
+// PostApiBisqWalletUnlockJSONRequestBody defines body for PostApiBisqWalletUnlock for application/json ContentType.
+type PostApiBisqWalletUnlockJSONRequestBody PostApiBisqWalletUnlockJSONBody
+
+// PostApiBisqWalletWithdrawJSONRequestBody defines body for PostApiBisqWalletWithdraw for application/json ContentType.
+type PostApiBisqWalletWithdrawJSONRequestBody PostApiBisqWalletWithdrawJSONBody
 
 // RunCexPreTradeCheckJSONRequestBody defines body for RunCexPreTradeCheck for application/json ContentType.
 type RunCexPreTradeCheckJSONRequestBody = CexPreTradeCheckRequest
@@ -835,6 +847,21 @@ type ServerInterface interface {
 	// GetApiBisqPaymentMethodsIdForm GET /api/bisq/payment-methods/{id}/form
 	// (GET /api/bisq/payment-methods/{id}/form)
 	GetApiBisqPaymentMethodsIdForm(w http.ResponseWriter, r *http.Request, id string)
+	// GetApiBisqWalletAddresses GET /api/bisq/wallet/addresses
+	// (GET /api/bisq/wallet/addresses)
+	GetApiBisqWalletAddresses(w http.ResponseWriter, r *http.Request)
+	// GetApiBisqWalletBalances GET /api/bisq/wallet/balances
+	// (GET /api/bisq/wallet/balances)
+	GetApiBisqWalletBalances(w http.ResponseWriter, r *http.Request)
+	// GetApiBisqWalletTransactions GET /api/bisq/wallet/transactions
+	// (GET /api/bisq/wallet/transactions)
+	GetApiBisqWalletTransactions(w http.ResponseWriter, r *http.Request)
+	// PostApiBisqWalletUnlock POST /api/bisq/wallet/unlock
+	// (POST /api/bisq/wallet/unlock)
+	PostApiBisqWalletUnlock(w http.ResponseWriter, r *http.Request)
+	// PostApiBisqWalletWithdraw POST /api/bisq/wallet/withdraw
+	// (POST /api/bisq/wallet/withdraw)
+	PostApiBisqWalletWithdraw(w http.ResponseWriter, r *http.Request)
 	// GetApiCexBalances GET /api/cex/balances
 	// (GET /api/cex/balances)
 	GetApiCexBalances(w http.ResponseWriter, r *http.Request)
@@ -1074,6 +1101,76 @@ func (siw *ServerInterfaceWrapper) GetApiBisqPaymentMethodsIdForm(w http.Respons
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetApiBisqPaymentMethodsIdForm(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetApiBisqWalletAddresses operation middleware
+func (siw *ServerInterfaceWrapper) GetApiBisqWalletAddresses(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetApiBisqWalletAddresses(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetApiBisqWalletBalances operation middleware
+func (siw *ServerInterfaceWrapper) GetApiBisqWalletBalances(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetApiBisqWalletBalances(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetApiBisqWalletTransactions operation middleware
+func (siw *ServerInterfaceWrapper) GetApiBisqWalletTransactions(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetApiBisqWalletTransactions(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostApiBisqWalletUnlock operation middleware
+func (siw *ServerInterfaceWrapper) PostApiBisqWalletUnlock(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostApiBisqWalletUnlock(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostApiBisqWalletWithdraw operation middleware
+func (siw *ServerInterfaceWrapper) PostApiBisqWalletWithdraw(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostApiBisqWalletWithdraw(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1916,6 +2013,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/bisq/payment-accounts/{id}", wrapper.DeleteApiBisqPaymentAccountsId)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/bisq/payment-methods", wrapper.GetApiBisqPaymentMethods)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/bisq/payment-methods/{id}/form", wrapper.GetApiBisqPaymentMethodsIdForm)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/bisq/wallet/balances", wrapper.GetApiBisqWalletBalances)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/bisq/wallet/addresses", wrapper.GetApiBisqWalletAddresses)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/bisq/wallet/transactions", wrapper.GetApiBisqWalletTransactions)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/bisq/wallet/withdraw", wrapper.PostApiBisqWalletWithdraw)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/bisq/wallet/unlock", wrapper.PostApiBisqWalletUnlock)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/cex/balances", wrapper.GetApiCexBalances)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/cex/deposit-addresses", wrapper.GetApiCexDepositAddresses)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/cex/hedge-positions", wrapper.GetApiCexHedgePositions)
@@ -2289,6 +2391,268 @@ func (response GetApiBisqPaymentMethodsIdFormdefaultTextResponse) VisitGetApiBis
 	return err
 }
 
+type GetApiBisqWalletAddressesRequestObject struct {
+}
+
+type GetApiBisqWalletAddressesResponseObject interface {
+	VisitGetApiBisqWalletAddressesResponse(w http.ResponseWriter) error
+}
+
+type GetApiBisqWalletAddresses200JSONResponse map[string]interface{}
+
+func (response GetApiBisqWalletAddresses200JSONResponse) VisitGetApiBisqWalletAddressesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetApiBisqWalletAddressesdefaultJSONResponse struct {
+	Body       map[string]interface{}
+	StatusCode int
+}
+
+func (response GetApiBisqWalletAddressesdefaultJSONResponse) VisitGetApiBisqWalletAddressesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetApiBisqWalletAddressesdefaultTextResponse struct {
+	Body       string
+	StatusCode int
+}
+
+func (response GetApiBisqWalletAddressesdefaultTextResponse) VisitGetApiBisqWalletAddressesResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(response.StatusCode)
+
+	_, err := w.Write([]byte(fmt.Sprint(response.Body)))
+	return err
+}
+
+type GetApiBisqWalletBalancesRequestObject struct {
+}
+
+type GetApiBisqWalletBalancesResponseObject interface {
+	VisitGetApiBisqWalletBalancesResponse(w http.ResponseWriter) error
+}
+
+type GetApiBisqWalletBalances200JSONResponse map[string]interface{}
+
+func (response GetApiBisqWalletBalances200JSONResponse) VisitGetApiBisqWalletBalancesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetApiBisqWalletBalancesdefaultJSONResponse struct {
+	Body       map[string]interface{}
+	StatusCode int
+}
+
+func (response GetApiBisqWalletBalancesdefaultJSONResponse) VisitGetApiBisqWalletBalancesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetApiBisqWalletBalancesdefaultTextResponse struct {
+	Body       string
+	StatusCode int
+}
+
+func (response GetApiBisqWalletBalancesdefaultTextResponse) VisitGetApiBisqWalletBalancesResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(response.StatusCode)
+
+	_, err := w.Write([]byte(fmt.Sprint(response.Body)))
+	return err
+}
+
+type GetApiBisqWalletTransactionsRequestObject struct {
+}
+
+type GetApiBisqWalletTransactionsResponseObject interface {
+	VisitGetApiBisqWalletTransactionsResponse(w http.ResponseWriter) error
+}
+
+type GetApiBisqWalletTransactions200JSONResponse map[string]interface{}
+
+func (response GetApiBisqWalletTransactions200JSONResponse) VisitGetApiBisqWalletTransactionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetApiBisqWalletTransactionsdefaultJSONResponse struct {
+	Body       map[string]interface{}
+	StatusCode int
+}
+
+func (response GetApiBisqWalletTransactionsdefaultJSONResponse) VisitGetApiBisqWalletTransactionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetApiBisqWalletTransactionsdefaultTextResponse struct {
+	Body       string
+	StatusCode int
+}
+
+func (response GetApiBisqWalletTransactionsdefaultTextResponse) VisitGetApiBisqWalletTransactionsResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(response.StatusCode)
+
+	_, err := w.Write([]byte(fmt.Sprint(response.Body)))
+	return err
+}
+
+type PostApiBisqWalletUnlockRequestObject struct {
+	Body *PostApiBisqWalletUnlockJSONRequestBody
+}
+
+type PostApiBisqWalletUnlockResponseObject interface {
+	VisitPostApiBisqWalletUnlockResponse(w http.ResponseWriter) error
+}
+
+type PostApiBisqWalletUnlock200JSONResponse map[string]interface{}
+
+func (response PostApiBisqWalletUnlock200JSONResponse) VisitPostApiBisqWalletUnlockResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostApiBisqWalletUnlockdefaultJSONResponse struct {
+	Body       map[string]interface{}
+	StatusCode int
+}
+
+func (response PostApiBisqWalletUnlockdefaultJSONResponse) VisitPostApiBisqWalletUnlockResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostApiBisqWalletUnlockdefaultTextResponse struct {
+	Body       string
+	StatusCode int
+}
+
+func (response PostApiBisqWalletUnlockdefaultTextResponse) VisitPostApiBisqWalletUnlockResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(response.StatusCode)
+
+	_, err := w.Write([]byte(fmt.Sprint(response.Body)))
+	return err
+}
+
+type PostApiBisqWalletWithdrawRequestObject struct {
+	Body *PostApiBisqWalletWithdrawJSONRequestBody
+}
+
+type PostApiBisqWalletWithdrawResponseObject interface {
+	VisitPostApiBisqWalletWithdrawResponse(w http.ResponseWriter) error
+}
+
+type PostApiBisqWalletWithdraw200JSONResponse map[string]interface{}
+
+func (response PostApiBisqWalletWithdraw200JSONResponse) VisitPostApiBisqWalletWithdrawResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostApiBisqWalletWithdrawdefaultJSONResponse struct {
+	Body       map[string]interface{}
+	StatusCode int
+}
+
+func (response PostApiBisqWalletWithdrawdefaultJSONResponse) VisitPostApiBisqWalletWithdrawResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostApiBisqWalletWithdrawdefaultTextResponse struct {
+	Body       string
+	StatusCode int
+}
+
+func (response PostApiBisqWalletWithdrawdefaultTextResponse) VisitPostApiBisqWalletWithdrawResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(response.StatusCode)
+
+	_, err := w.Write([]byte(fmt.Sprint(response.Body)))
+	return err
+}
+
 type GetApiCexBalancesRequestObject struct {
 }
 
@@ -2348,7 +2712,7 @@ type GetApiCexDepositAddressesResponseObject interface {
 	VisitGetApiCexDepositAddressesResponse(w http.ResponseWriter) error
 }
 
-type GetApiCexDepositAddresses200JSONResponse map[string]interface{}
+type GetApiCexDepositAddresses200JSONResponse []map[string]interface{}
 
 func (response GetApiCexDepositAddresses200JSONResponse) VisitGetApiCexDepositAddressesResponse(w http.ResponseWriter) error {
 
@@ -2530,7 +2894,7 @@ type GetApiCexSpotTradesResponseObject interface {
 	VisitGetApiCexSpotTradesResponse(w http.ResponseWriter) error
 }
 
-type GetApiCexSpotTrades200JSONResponse map[string]interface{}
+type GetApiCexSpotTrades200JSONResponse []map[string]interface{}
 
 func (response GetApiCexSpotTrades200JSONResponse) VisitGetApiCexSpotTradesResponse(w http.ResponseWriter) error {
 
@@ -2660,7 +3024,7 @@ type GetApiCexWithdrawalAddressesResponseObject interface {
 	VisitGetApiCexWithdrawalAddressesResponse(w http.ResponseWriter) error
 }
 
-type GetApiCexWithdrawalAddresses200JSONResponse map[string]interface{}
+type GetApiCexWithdrawalAddresses200JSONResponse []map[string]interface{}
 
 func (response GetApiCexWithdrawalAddresses200JSONResponse) VisitGetApiCexWithdrawalAddressesResponse(w http.ResponseWriter) error {
 
@@ -3210,7 +3574,7 @@ type GetApiLndLspChannelMagmaOffersResponseObject interface {
 	VisitGetApiLndLspChannelMagmaOffersResponse(w http.ResponseWriter) error
 }
 
-type GetApiLndLspChannelMagmaOffers200JSONResponse map[string]interface{}
+type GetApiLndLspChannelMagmaOffers200JSONResponse []map[string]interface{}
 
 func (response GetApiLndLspChannelMagmaOffers200JSONResponse) VisitGetApiLndLspChannelMagmaOffersResponse(w http.ResponseWriter) error {
 
@@ -3262,7 +3626,7 @@ type GetApiLndLspChannelMagmaOrdersResponseObject interface {
 	VisitGetApiLndLspChannelMagmaOrdersResponse(w http.ResponseWriter) error
 }
 
-type GetApiLndLspChannelMagmaOrders200JSONResponse map[string]interface{}
+type GetApiLndLspChannelMagmaOrders200JSONResponse []map[string]interface{}
 
 func (response GetApiLndLspChannelMagmaOrders200JSONResponse) VisitGetApiLndLspChannelMagmaOrdersResponse(w http.ResponseWriter) error {
 
@@ -3540,7 +3904,7 @@ type GetApiLndSubmarineSwapsResponseObject interface {
 	VisitGetApiLndSubmarineSwapsResponse(w http.ResponseWriter) error
 }
 
-type GetApiLndSubmarineSwaps200JSONResponse map[string]interface{}
+type GetApiLndSubmarineSwaps200JSONResponse []map[string]interface{}
 
 func (response GetApiLndSubmarineSwaps200JSONResponse) VisitGetApiLndSubmarineSwapsResponse(w http.ResponseWriter) error {
 
@@ -4694,6 +5058,21 @@ type StrictServerInterface interface {
 	// GetApiBisqPaymentMethodsIdForm GET /api/bisq/payment-methods/{id}/form
 	// (GET /api/bisq/payment-methods/{id}/form)
 	GetApiBisqPaymentMethodsIdForm(ctx context.Context, request GetApiBisqPaymentMethodsIdFormRequestObject) (GetApiBisqPaymentMethodsIdFormResponseObject, error)
+	// GetApiBisqWalletAddresses GET /api/bisq/wallet/addresses
+	// (GET /api/bisq/wallet/addresses)
+	GetApiBisqWalletAddresses(ctx context.Context, request GetApiBisqWalletAddressesRequestObject) (GetApiBisqWalletAddressesResponseObject, error)
+	// GetApiBisqWalletBalances GET /api/bisq/wallet/balances
+	// (GET /api/bisq/wallet/balances)
+	GetApiBisqWalletBalances(ctx context.Context, request GetApiBisqWalletBalancesRequestObject) (GetApiBisqWalletBalancesResponseObject, error)
+	// GetApiBisqWalletTransactions GET /api/bisq/wallet/transactions
+	// (GET /api/bisq/wallet/transactions)
+	GetApiBisqWalletTransactions(ctx context.Context, request GetApiBisqWalletTransactionsRequestObject) (GetApiBisqWalletTransactionsResponseObject, error)
+	// PostApiBisqWalletUnlock POST /api/bisq/wallet/unlock
+	// (POST /api/bisq/wallet/unlock)
+	PostApiBisqWalletUnlock(ctx context.Context, request PostApiBisqWalletUnlockRequestObject) (PostApiBisqWalletUnlockResponseObject, error)
+	// PostApiBisqWalletWithdraw POST /api/bisq/wallet/withdraw
+	// (POST /api/bisq/wallet/withdraw)
+	PostApiBisqWalletWithdraw(ctx context.Context, request PostApiBisqWalletWithdrawRequestObject) (PostApiBisqWalletWithdrawResponseObject, error)
 	// GetApiCexBalances GET /api/cex/balances
 	// (GET /api/cex/balances)
 	GetApiCexBalances(ctx context.Context, request GetApiCexBalancesRequestObject) (GetApiCexBalancesResponseObject, error)
@@ -5025,6 +5404,146 @@ func (sh *strictHandler) GetApiBisqPaymentMethodsIdForm(w http.ResponseWriter, r
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetApiBisqPaymentMethodsIdFormResponseObject); ok {
 		if err := validResponse.VisitGetApiBisqPaymentMethodsIdFormResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetApiBisqWalletAddresses operation middleware
+func (sh *strictHandler) GetApiBisqWalletAddresses(w http.ResponseWriter, r *http.Request) {
+	var request GetApiBisqWalletAddressesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetApiBisqWalletAddresses(ctx, request.(GetApiBisqWalletAddressesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetApiBisqWalletAddresses")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetApiBisqWalletAddressesResponseObject); ok {
+		if err := validResponse.VisitGetApiBisqWalletAddressesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetApiBisqWalletBalances operation middleware
+func (sh *strictHandler) GetApiBisqWalletBalances(w http.ResponseWriter, r *http.Request) {
+	var request GetApiBisqWalletBalancesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetApiBisqWalletBalances(ctx, request.(GetApiBisqWalletBalancesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetApiBisqWalletBalances")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetApiBisqWalletBalancesResponseObject); ok {
+		if err := validResponse.VisitGetApiBisqWalletBalancesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetApiBisqWalletTransactions operation middleware
+func (sh *strictHandler) GetApiBisqWalletTransactions(w http.ResponseWriter, r *http.Request) {
+	var request GetApiBisqWalletTransactionsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetApiBisqWalletTransactions(ctx, request.(GetApiBisqWalletTransactionsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetApiBisqWalletTransactions")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetApiBisqWalletTransactionsResponseObject); ok {
+		if err := validResponse.VisitGetApiBisqWalletTransactionsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PostApiBisqWalletUnlock operation middleware
+func (sh *strictHandler) PostApiBisqWalletUnlock(w http.ResponseWriter, r *http.Request) {
+	var request PostApiBisqWalletUnlockRequestObject
+
+	var body PostApiBisqWalletUnlockJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PostApiBisqWalletUnlock(ctx, request.(PostApiBisqWalletUnlockRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PostApiBisqWalletUnlock")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PostApiBisqWalletUnlockResponseObject); ok {
+		if err := validResponse.VisitPostApiBisqWalletUnlockResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PostApiBisqWalletWithdraw operation middleware
+func (sh *strictHandler) PostApiBisqWalletWithdraw(w http.ResponseWriter, r *http.Request) {
+	var request PostApiBisqWalletWithdrawRequestObject
+
+	var body PostApiBisqWalletWithdrawJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PostApiBisqWalletWithdraw(ctx, request.(PostApiBisqWalletWithdrawRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PostApiBisqWalletWithdraw")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PostApiBisqWalletWithdrawResponseObject); ok {
+		if err := validResponse.VisitPostApiBisqWalletWithdrawResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -6225,80 +6744,82 @@ func (sh *strictHandler) GetReadyz(w http.ResponseWriter, r *http.Request) {
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"Mnp+ERHef77//wAAAP//",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

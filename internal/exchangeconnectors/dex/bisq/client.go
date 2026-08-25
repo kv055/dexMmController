@@ -132,6 +132,48 @@ type AddressBalance struct {
 	IsAddressUnused bool
 }
 
+// BtcBalance is the bisq wallet's BTC balance summary, in satoshis. Reserved funds
+// back open offers; locked funds are tied up in pending trade security deposits.
+type BtcBalance struct {
+	AvailableSats      uint64
+	ReservedSats       uint64
+	TotalAvailableSats uint64
+	LockedSats         uint64
+}
+
+// BsqBalance is the bisq wallet's BSQ balance summary, in satoshis (BSQ is a colored coin).
+type BsqBalance struct {
+	AvailableConfirmedSats uint64
+	UnverifiedSats         uint64
+	UnconfirmedChangeSats  uint64
+	LockedForVotingSats    uint64
+	LockupBondsSats        uint64
+	UnlockingBondsSats     uint64
+}
+
+// WalletBalances is the GetBalances reply for one currency code.
+type WalletBalances struct {
+	BTC *BtcBalance
+	BSQ *BsqBalance
+}
+
+// WalletTransaction is a normalized bisq wallet bitcoin transaction summary.
+type WalletTransaction struct {
+	// TxID is the bitcoin transaction id.
+	TxID string
+	// InputSumSats and OutputSumSats are the sums of the transaction's values in satoshis.
+	InputSumSats  uint64
+	OutputSumSats uint64
+	// FeeSats is the miner fee in satoshis.
+	FeeSats uint64
+	// SizeBytes is the transaction size in bytes.
+	SizeBytes int64
+	// IsPending reports whether the transaction has no confirmation yet.
+	IsPending bool
+	// Memo is an optional note attached to the transaction (e.g. by SendBtc).
+	Memo string
+}
+
 // TakeOfferParams represents a take offer params.
 type TakeOfferParams struct {
 	// PaymentAccountID is the count associated with the take offer params.
@@ -547,6 +589,136 @@ func (c *Client) FundingAddress(ctx context.Context) (string, error) {
 	return "", errors.New("bisq: no funding address available")
 }
 
+// GetBalances returns the bisq wallet's balance summary for currencyCode ("BTC" or "BSQ").
+// The wallet must be unlocked (see UnlockWallet) when it is encrypted.
+func (c *Client) GetBalances(ctx context.Context, currencyCode string) (*WalletBalances, error) {
+	req := newMessage("GetBalancesRequest")
+	setString(req, "currency_code", currencyCode)
+	resp := newMessage("GetBalancesReply")
+	if err := c.invoke(ctx, "/io.bisq.protobuffer.Wallets/GetBalances", req, resp); err != nil {
+		return nil, err
+	}
+
+	balField := resp.Descriptor().Fields().ByName("balances")
+	if !resp.Has(balField) {
+		return nil, errors.New("bisq: get balances returned no balance info")
+	}
+	msg := resp.Get(balField).Message()
+	out := &WalletBalances{}
+	if f := msg.Descriptor().Fields().ByName("btc"); f != nil && msg.Has(f) {
+		btc := msg.Get(f).Message()
+		out.BTC = &BtcBalance{
+			AvailableSats:      uint64Field(btc, "available_balance"),
+			ReservedSats:       uint64Field(btc, "reserved_balance"),
+			TotalAvailableSats: uint64Field(btc, "total_available_balance"),
+			LockedSats:         uint64Field(btc, "locked_balance"),
+		}
+	}
+	if f := msg.Descriptor().Fields().ByName("bsq"); f != nil && msg.Has(f) {
+		bsq := msg.Get(f).Message()
+		out.BSQ = &BsqBalance{
+			AvailableConfirmedSats: uint64Field(bsq, "available_confirmed_balance"),
+			UnverifiedSats:         uint64Field(bsq, "unverified_balance"),
+			UnconfirmedChangeSats:  uint64Field(bsq, "unconfirmed_change_balance"),
+			LockedForVotingSats:    uint64Field(bsq, "locked_for_voting_balance"),
+			LockupBondsSats:        uint64Field(bsq, "lockup_bonds_balance"),
+			UnlockingBondsSats:     uint64Field(bsq, "unlocking_bonds_balance"),
+		}
+	}
+	return out, nil
+}
+
+// GetTransactions returns the bisq wallet's known bitcoin transaction summaries.
+// The wallet must be unlocked (see UnlockWallet) when it is encrypted.
+func (c *Client) GetTransactions(ctx context.Context) ([]WalletTransaction, error) {
+	req := newMessage("GetTransactionsRequest")
+	resp := newMessage("GetTransactionsReply")
+	if err := c.invoke(ctx, "/io.bisq.protobuffer.Wallets/GetTransactions", req, resp); err != nil {
+		return nil, err
+	}
+
+	list := resp.Get(resp.Descriptor().Fields().ByName("tx_info")).List()
+	out := make([]WalletTransaction, 0, list.Len())
+	for i := 0; i < list.Len(); i++ {
+		out = append(out, walletTransactionFromMessage(list.Get(i).Message()))
+	}
+	return out, nil
+}
+
+// SendBtc withdraws amountBTC (decimal BTC string, e.g. "0.00500000") to address and
+// returns the resulting transaction summary. txFeeRate (sats/byte) and memo are optional.
+// The wallet must be unlocked (see UnlockWallet) when it is encrypted.
+func (c *Client) SendBtc(ctx context.Context, address, amountBTC, txFeeRate, memo string) (*WalletTransaction, error) {
+	req := newMessage("SendBtcRequest")
+	setString(req, "address", address)
+	setString(req, "amount", amountBTC)
+	setString(req, "tx_fee_rate", txFeeRate)
+	setString(req, "memo", memo)
+	resp := newMessage("SendBtcReply")
+	if err := c.invoke(ctx, "/io.bisq.protobuffer.Wallets/SendBtc", req, resp); err != nil {
+		return nil, err
+	}
+
+	txField := resp.Descriptor().Fields().ByName("tx_info")
+	if !resp.Has(txField) {
+		return nil, errors.New("bisq: send btc returned no transaction")
+	}
+	tx := walletTransactionFromMessage(resp.Get(txField).Message())
+	return &tx, nil
+}
+
+// UnlockWallet unlocks an encrypted bisq wallet for timeoutSeconds so wallet-sensitive
+// RPCs (GetBalances, SendBtc, …) can run. No-op on unencrypted wallets.
+func (c *Client) UnlockWallet(ctx context.Context, password string, timeoutSeconds uint64) error {
+	req := newMessage("UnlockWalletRequest")
+	setString(req, "password", password)
+	setUint64(req, "timeout", timeoutSeconds)
+	resp := newMessage("UnlockWalletReply")
+	return c.invoke(ctx, "/io.bisq.protobuffer.Wallets/UnlockWallet", req, resp)
+}
+
+// RemoveWalletPassword permanently decrypts an encrypted bisq wallet. The wallet must
+// be unlocked or the password must match the current encryption password.
+func (c *Client) RemoveWalletPassword(ctx context.Context, password string) error {
+	req := newMessage("RemoveWalletPasswordRequest")
+	setString(req, "password", password)
+	resp := newMessage("RemoveWalletPasswordReply")
+	return c.invoke(ctx, "/io.bisq.protobuffer.Wallets/RemoveWalletPassword", req, resp)
+}
+
+// EnsureWalletUnencrypted enforces the deployment policy that the bisq daemon wallet
+// stays unencrypted: encryption only adds failure modes for automated trading, and the
+// headless daemon has no UI to re-enter it. It probes the wallet with UnlockWallet —
+// the daemon answers "wallet is not encrypted with a password" when already clean —
+// and permanently strips the encryption via RemoveWalletPassword when the password
+// unlocks it. Returns removed=true when encryption was found and removed.
+func (c *Client) EnsureWalletUnencrypted(ctx context.Context, password string) (bool, error) {
+	err := c.UnlockWallet(ctx, password, 10)
+	if err == nil {
+		if err := c.RemoveWalletPassword(ctx, password); err != nil {
+			return true, fmt.Errorf("remove wallet password: %w", err)
+		}
+		return true, nil
+	}
+	if strings.Contains(err.Error(), "wallet is not encrypted") {
+		return false, nil
+	}
+	return false, err
+}
+
+
+func walletTransactionFromMessage(msg protoreflect.Message) WalletTransaction {
+	return WalletTransaction{
+		TxID:          stringField(msg, "tx_id"),
+		InputSumSats:  uint64Field(msg, "input_sum"),
+		OutputSumSats: uint64Field(msg, "output_sum"),
+		FeeSats:       uint64Field(msg, "fee"),
+		SizeBytes:     int64Field(msg, "size"),
+		IsPending:     boolField(msg, "is_pending"),
+		Memo:          stringField(msg, "memo"),
+	}
+}
+
 func (c *Client) invoke(ctx context.Context, method string, req, resp *dynamicpb.Message) error {
 	conn, err := c.connection(ctx)
 	if err != nil {
@@ -905,6 +1077,61 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 			message("GetFundingAddressesReply", []*descriptorpb.FieldDescriptorProto{
 				repeatedMessageField("address_balance_info", 1, ".io.bisq.protobuffer.AddressBalanceInfo"),
 			}),
+			message("TxInfo", []*descriptorpb.FieldDescriptorProto{
+				field("tx_id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("input_sum", 2, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("output_sum", 3, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("fee", 4, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("size", 5, descriptorpb.FieldDescriptorProto_TYPE_INT32),
+				field("is_pending", 6, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
+				field("memo", 7, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}),
+			message("GetBalancesRequest", []*descriptorpb.FieldDescriptorProto{
+				field("currency_code", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}),
+			message("GetBalancesReply", []*descriptorpb.FieldDescriptorProto{
+				messageField("balances", 1, ".io.bisq.protobuffer.BalancesInfo"),
+			}),
+			message("BalancesInfo", []*descriptorpb.FieldDescriptorProto{
+				messageField("bsq", 1, ".io.bisq.protobuffer.BsqBalanceInfo"),
+				messageField("btc", 2, ".io.bisq.protobuffer.BtcBalanceInfo"),
+			}),
+			message("BsqBalanceInfo", []*descriptorpb.FieldDescriptorProto{
+				field("available_confirmed_balance", 1, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("unverified_balance", 2, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("unconfirmed_change_balance", 3, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("locked_for_voting_balance", 4, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("lockup_bonds_balance", 5, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("unlocking_bonds_balance", 6, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+			}),
+			message("BtcBalanceInfo", []*descriptorpb.FieldDescriptorProto{
+				field("available_balance", 1, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("reserved_balance", 2, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("total_available_balance", 3, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("locked_balance", 4, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+			}),
+			message("GetTransactionsRequest", nil),
+			message("GetTransactionsReply", []*descriptorpb.FieldDescriptorProto{
+				repeatedMessageField("tx_info", 1, ".io.bisq.protobuffer.TxInfo"),
+			}),
+			message("SendBtcRequest", []*descriptorpb.FieldDescriptorProto{
+				field("address", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("amount", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("tx_fee_rate", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("memo", 4, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}),
+			message("SendBtcReply", []*descriptorpb.FieldDescriptorProto{
+				messageField("tx_info", 1, ".io.bisq.protobuffer.TxInfo"),
+			}),
+			message("UnlockWalletRequest", []*descriptorpb.FieldDescriptorProto{
+				field("password", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("timeout", 2, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+			}),
+			message("UnlockWalletReply", nil),
+			message("RemoveWalletPasswordRequest", []*descriptorpb.FieldDescriptorProto{
+				field("password", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}),
+			message("RemoveWalletPasswordReply", nil),
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
@@ -943,6 +1170,11 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 			{
 				Name: strptr("Wallets"),
 				Method: []*descriptorpb.MethodDescriptorProto{
+					method("GetBalances", ".io.bisq.protobuffer.GetBalancesRequest", ".io.bisq.protobuffer.GetBalancesReply"),
+					method("GetTransactions", ".io.bisq.protobuffer.GetTransactionsRequest", ".io.bisq.protobuffer.GetTransactionsReply"),
+					method("SendBtc", ".io.bisq.protobuffer.SendBtcRequest", ".io.bisq.protobuffer.SendBtcReply"),
+					method("UnlockWallet", ".io.bisq.protobuffer.UnlockWalletRequest", ".io.bisq.protobuffer.UnlockWalletReply"),
+					method("RemoveWalletPassword", ".io.bisq.protobuffer.RemoveWalletPasswordRequest", ".io.bisq.protobuffer.RemoveWalletPasswordReply"),
 					method("GetFundingAddresses", ".io.bisq.protobuffer.GetFundingAddressesRequest", ".io.bisq.protobuffer.GetFundingAddressesReply"),
 				},
 			},

@@ -66,6 +66,10 @@ type Server struct {
 	// disabled, in which case the payment-account routes answer 503.
 	bisqPayments bisqPaymentClient
 
+	// bisqWallet is the wallet subset of the same bisq1 gRPC client backing the
+	// /api/bisq/wallet/* management routes, set via WithBisqWallet. Nil → 503.
+	bisqWallet bisqWalletClient
+
 	// telegramRelay forwards operator Telegram replies into active DEX trade chats.
 	telegramRelay *telegram.ChatRelay
 
@@ -240,6 +244,12 @@ func (s *Server) WithBisqPayments(client bisqPaymentClient) *Server {
 	return s
 }
 
+// WithBisqWallet attaches the wallet client used by the /api/bisq/wallet/* routes.
+func (s *Server) WithBisqWallet(client bisqWalletClient) *Server {
+	s.bisqWallet = client
+	return s
+}
+
 // WithInternalSecret sets the shared secret required on X-Internal-Secret for
 // all API and WS routes (webhooks and health/metrics excepted).
 func (s *Server) WithInternalSecret(secret string) *Server {
@@ -352,6 +362,11 @@ func (s *Server) registerLegacyRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/bisq/payment-methods/{id}/form", s.handleBisqPaymentAccountForm)
 	mux.HandleFunc("POST /api/bisq/payment-accounts", s.handleBisqCreatePaymentAccount)
 	mux.HandleFunc("DELETE /api/bisq/payment-accounts/{id}", s.handleBisqDeletePaymentAccount)
+	mux.HandleFunc("GET /api/bisq/wallet/balances", s.handleBisqWalletBalances)
+	mux.HandleFunc("GET /api/bisq/wallet/addresses", s.handleBisqWalletAddresses)
+	mux.HandleFunc("GET /api/bisq/wallet/transactions", s.handleBisqWalletTransactions)
+	mux.HandleFunc("POST /api/bisq/wallet/withdraw", s.handleBisqWalletWithdraw)
+	mux.HandleFunc("POST /api/bisq/wallet/unlock", s.handleBisqWalletUnlock)
 	mux.HandleFunc("GET /ws/cex/hedge-stream", s.handleCexHedgeStream)
 }
 
