@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"dexMmController/internal/db"
 	"dexMmController/internal/exchangeconnectors/dex/bisq"
@@ -67,6 +68,23 @@ type ReleaseResult struct {
 	Raw map[string]any
 }
 
+// SecurityDepositReturnInput identifies the post-release collateral return for
+// a hedgeless bid. Memo is stable across retries and acts as the Bisq wallet
+// idempotency key.
+type SecurityDepositReturnInput struct {
+	Exchange    string
+	ContractID  string
+	PoolAddress string
+	Memo        string
+}
+
+// SecurityDepositReturnResult records how a venue returned the collateral.
+// RoboSats unlocks it in-place, while Bisq exposes a separate on-chain tx.
+type SecurityDepositReturnResult struct {
+	Method string
+	TxID   string
+}
+
 // Release releases the escrowed BTC to the buyer on the given DEX.
 func (r *Releaser) Release(ctx context.Context, in ReleaseInput) (*ReleaseResult, error) {
 	contractID := strings.TrimSpace(in.ContractID)
@@ -83,6 +101,56 @@ func (r *Releaser) Release(ctx context.Context, in ReleaseInput) (*ReleaseResult
 		return r.releaseRoboSats(ctx, contractID)
 	default:
 		return nil, fmt.Errorf("dexaccount: release not supported for exchange %q", in.Exchange)
+	}
+}
+
+// ReturnSecurityDeposit moves or unlocks hedgeless collateral after the DEX
+// release. HodlHodl currently has no security deposit and is therefore a no-op.
+func (r *Releaser) ReturnSecurityDeposit(ctx context.Context, in SecurityDepositReturnInput) (*SecurityDepositReturnResult, error) {
+	contractID := strings.TrimSpace(in.ContractID)
+	if contractID == "" {
+		return nil, fmt.Errorf("dexaccount: contract_id is required to return security deposit")
+	}
+	switch db.DexPlatformFromSlug(in.Exchange) {
+	case db.DexBisq:
+		if r.bisq == nil {
+			return nil, fmt.Errorf("bisq client is not configured")
+		}
+		address, memo := strings.TrimSpace(in.PoolAddress), strings.TrimSpace(in.Memo)
+		if address == "" || memo == "" {
+			return nil, fmt.Errorf("bisq pool address and stable memo are required")
+		}
+		if existing, err := r.bisq.TransactionByMemo(ctx, memo); err != nil {
+			return nil, fmt.Errorf("find prior Bisq deposit return: %w", err)
+		} else if existing != nil {
+			return &SecurityDepositReturnResult{Method: "bisq_withdraw_funds", TxID: existing.TxID}, nil
+		}
+		if err := r.bisq.WithdrawFunds(ctx, contractID, address, memo); err != nil {
+			// A lost RPC response is ambiguous. Re-read wallet history before
+			// allowing the caller to retry the trade-specific withdrawal.
+			if existing, lookupErr := r.bisq.TransactionByMemo(ctx, memo); lookupErr == nil && existing != nil {
+				return &SecurityDepositReturnResult{Method: "bisq_withdraw_funds", TxID: existing.TxID}, nil
+			}
+			return nil, fmt.Errorf("withdraw Bisq trade funds: %w", err)
+		}
+		for attempt := 0; attempt < 10; attempt++ {
+			existing, err := r.bisq.TransactionByMemo(ctx, memo)
+			if err == nil && existing != nil {
+				return &SecurityDepositReturnResult{Method: "bisq_withdraw_funds", TxID: existing.TxID}, nil
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+		return nil, fmt.Errorf("Bisq deposit-return transaction was not observable by memo %q", memo)
+	case db.DexRoboSats:
+		return &SecurityDepositReturnResult{Method: "robosats_automatic_bond_unlock"}, nil
+	case db.DexHodlHodl:
+		return &SecurityDepositReturnResult{Method: "not_required"}, nil
+	default:
+		return nil, fmt.Errorf("dexaccount: security-deposit return not supported for exchange %q", in.Exchange)
 	}
 }
 

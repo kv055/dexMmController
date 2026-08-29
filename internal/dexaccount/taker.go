@@ -86,7 +86,9 @@ func (t *Taker) Take(ctx context.Context, in OfferInput) (*TakeResult, error) {
 	}
 }
 
-// ResolveDeposit polls trade/position APIs until an on-chain address or LN invoice is available.
+// ResolveDeposit polls non-direct venue APIs until an on-chain address or LN
+// invoice is available. Bisq is pre-funded through its integrated wallet and
+// therefore has no per-trade destination to resolve.
 func (t *Taker) ResolveDeposit(ctx context.Context, exchange string, execution map[string]any) (address, invoice string, err error) {
 	if execution == nil {
 		return "", "", fmt.Errorf("dexaccount: execution payload is required")
@@ -100,6 +102,13 @@ func (t *Taker) ResolveDeposit(ctx context.Context, exchange string, execution m
 	if inv := StringField(execution, "invoice"); inv != "" {
 		return "", inv, nil
 	}
+	platform := db.DexPlatformFromSlug(exchange)
+	if platform == db.DexBisq {
+		return "", "", nil
+	}
+	if platform != db.DexRoboSats {
+		return "", "", nil
+	}
 
 	deadline := time.Now().Add(depositPollTimeout)
 	for time.Now().Before(deadline) {
@@ -107,14 +116,7 @@ func (t *Taker) ResolveDeposit(ctx context.Context, exchange string, execution m
 			return "", "", ctx.Err()
 		}
 
-		switch db.DexPlatformFromSlug(exchange) {
-		case db.DexRoboSats:
-			address, invoice, err = t.pollRoboSatsDeposit(ctx, execution)
-		case db.DexBisq:
-			address, invoice, err = t.pollBisqDeposit(ctx, execution)
-		default:
-			return "", "", nil
-		}
+		address, invoice, err = t.pollRoboSatsDeposit(ctx, execution)
 		if err != nil {
 			return "", "", err
 		}
@@ -217,19 +219,6 @@ func (t *Taker) pollRoboSatsDeposit(ctx context.Context, execution map[string]an
 	}
 	addr, inv := extractRoboSatsDeposit(position)
 	return addr, inv, nil
-}
-
-func (t *Taker) pollBisqDeposit(ctx context.Context, execution map[string]any) (string, string, error) {
-	tradeID := StringField(execution, "trade_id")
-	if tradeID == "" {
-		return "", "", fmt.Errorf("bisq: trade_id missing from execution")
-	}
-	trade, err := t.bisq.GetPosition(ctx, tradeID)
-	if err != nil {
-		return "", "", err
-	}
-	_ = trade
-	return "", "", nil
 }
 
 func (t *Taker) latestRoboSatsToken(ctx context.Context) (string, error) {

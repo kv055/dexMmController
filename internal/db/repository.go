@@ -531,7 +531,7 @@ func (r *TransactionRepository) GetTransactionsByDirection(direction string) ([]
 
 func (r *TransactionRepository) applyTransactionFilters(query *gorm.DB, filters TransactionFilters) *gorm.DB {
 	if filters.IncompleteOnly {
-		query = query.Where("status != ?", StatusDexPositionReleased)
+		query = query.Where("transaction_complete = ?", false)
 	}
 	if status := strings.TrimSpace(filters.Status); status != "" {
 		query = query.Where("status = ?", status)
@@ -577,11 +577,25 @@ func (r *TransactionRepository) DeleteTransaction(id uint) error {
 	return nil
 }
 
-// GetIncompleteTransactions retrieves all transactions that have not yet reached DexPositionReleased
+// GetIncompleteTransactions retrieves transactions that still require automated
+// or operator lifecycle work.
 func (r *TransactionRepository) GetIncompleteTransactions() ([]Transaction, error) {
 	var transactions []Transaction
-	if err := r.db.Where("status != ?", StatusDexPositionReleased).Order("created_at ASC").Find(&transactions).Error; err != nil {
+	if err := r.db.Where("transaction_complete = ?", false).Order("created_at ASC").Find(&transactions).Error; err != nil {
 		return nil, fmt.Errorf("failed to get incomplete transactions: %w", err)
+	}
+	return transactions, nil
+}
+
+// GetTransactionsForHealthcheck returns every row that still requires automated
+// or operator lifecycle work, including released-but-unverified rows.
+func (r *TransactionRepository) GetTransactionsForHealthcheck() ([]Transaction, error) {
+	var transactions []Transaction
+	if err := r.db.
+		Where("transaction_complete = ?", false).
+		Order("created_at ASC").
+		Find(&transactions).Error; err != nil {
+		return nil, fmt.Errorf("failed to get transactions for healthcheck: %w", err)
 	}
 	return transactions, nil
 }

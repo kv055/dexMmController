@@ -9,24 +9,89 @@ import (
 	"testing"
 )
 
-func TestLegacyStrictServerRejectsContractViolation(t *testing.T) {
-	server, err := newLegacyStrictServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("null"))
-	}))
-	if err != nil {
-		t.Fatalf("newLegacyStrictServer() error = %v", err)
+func TestLegacyStrictServerRejectsContractViolationForEveryJSONSuccess(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		status int
+	}{
+		{name: "postApiAccountsHealthCheck", method: "POST", path: "/api/accounts/health_check", status: 200},
+		{name: "getApiBisqPaymentAccounts", method: "GET", path: "/api/bisq/payment-accounts", status: 200},
+		{name: "postApiBisqPaymentAccounts", method: "POST", path: "/api/bisq/payment-accounts", status: 200},
+		{name: "deleteApiBisqPaymentAccountsId", method: "DELETE", path: "/api/bisq/payment-accounts/1", status: 200},
+		{name: "getApiBisqPaymentMethods", method: "GET", path: "/api/bisq/payment-methods", status: 200},
+		{name: "getApiBisqPaymentMethodsIdForm", method: "GET", path: "/api/bisq/payment-methods/1/form", status: 200},
+		{name: "getApiBisqWalletBalances", method: "GET", path: "/api/bisq/wallet/balances", status: 200},
+		{name: "getApiBisqWalletAddresses", method: "GET", path: "/api/bisq/wallet/addresses", status: 200},
+		{name: "getApiBisqWalletTransactions", method: "GET", path: "/api/bisq/wallet/transactions", status: 200},
+		{name: "postApiBisqWalletWithdraw", method: "POST", path: "/api/bisq/wallet/withdraw", status: 200},
+		{name: "postApiBisqWalletUnlock", method: "POST", path: "/api/bisq/wallet/unlock", status: 200},
+		{name: "getApiCexBalances", method: "GET", path: "/api/cex/balances", status: 200},
+		{name: "getApiCexDepositAddresses", method: "GET", path: "/api/cex/deposit-addresses", status: 200},
+		{name: "getApiCexHedgePositions", method: "GET", path: "/api/cex/hedge-positions", status: 200},
+		{name: "runCexPreTradeCheck", method: "POST", path: "/api/cex/pre-trade-check", status: 200},
+		{name: "getApiCexSpotTrades", method: "GET", path: "/api/cex/spot-trades", status: 200},
+		{name: "startCexTradeflow", method: "POST", path: "/api/cex/tradeflow", status: 200},
+		{name: "getApiCexWithdrawalAddresses", method: "GET", path: "/api/cex/withdrawal-addresses", status: 200},
+		{name: "trackCexWithdrawal", method: "GET", path: "/api/cex/withdrawal-track", status: 200},
+		{name: "postApiLndAddresses", method: "POST", path: "/api/lnd/addresses", status: 200},
+		{name: "getApiLndChannelPresets", method: "GET", path: "/api/lnd/channel-presets", status: 200},
+		{name: "postApiLndChannelsClose", method: "POST", path: "/api/lnd/channels/close", status: 200},
+		{name: "postApiLndChannelsOpen", method: "POST", path: "/api/lnd/channels/open", status: 200},
+		{name: "getApiLndLspChannel", method: "GET", path: "/api/lnd/lsp-channel", status: 200},
+		{name: "putApiLndLspChannel", method: "PUT", path: "/api/lnd/lsp-channel", status: 200},
+		{name: "getApiLndLspChannelCandidates", method: "GET", path: "/api/lnd/lsp-channel/candidates", status: 200},
+		{name: "getApiLndLspChannelMagmaInfo", method: "GET", path: "/api/lnd/lsp-channel/magma/info", status: 200},
+		{name: "getApiLndLspChannelMagmaOffers", method: "GET", path: "/api/lnd/lsp-channel/magma/offers", status: 200},
+		{name: "getApiLndLspChannelMagmaOrders", method: "GET", path: "/api/lnd/lsp-channel/magma/orders", status: 200},
+		{name: "postApiLndLspChannelMagmaOrders", method: "POST", path: "/api/lnd/lsp-channel/magma/orders", status: 200},
+		{name: "getApiLndLspChannelMagmaOrdersId", method: "GET", path: "/api/lnd/lsp-channel/magma/orders/1", status: 200},
+		{name: "postApiLndLspChannelMagmaOrdersIdPay", method: "POST", path: "/api/lnd/lsp-channel/magma/orders/1/pay", status: 200},
+		{name: "getApiLndLspChannelStatus", method: "GET", path: "/api/lnd/lsp-channel/status", status: 200},
+		{name: "getApiLndSubmarineSwaps", method: "GET", path: "/api/lnd/submarine-swaps", status: 200},
+		{name: "getApiLndWallet", method: "GET", path: "/api/lnd/wallet", status: 200},
+		{name: "postApiLndWalletInit", method: "POST", path: "/api/lnd/wallet/init", status: 200},
+		{name: "getApiLndWalletState", method: "GET", path: "/api/lnd/wallet/state", status: 200},
+		{name: "getApiServiceVersions", method: "GET", path: "/api/service-versions", status: 200},
+		{name: "getApiStats", method: "GET", path: "/api/stats", status: 200},
+		{name: "getApiTelegramConfig", method: "GET", path: "/api/telegram/config", status: 200},
+		{name: "putApiTelegramConfig", method: "PUT", path: "/api/telegram/config", status: 200},
+		{name: "postApiTelegramPair", method: "POST", path: "/api/telegram/pair", status: 200},
+		{name: "postApiTelegramSetWebhook", method: "POST", path: "/api/telegram/set-webhook", status: 200},
+		{name: "postApiTelegramTest", method: "POST", path: "/api/telegram/test", status: 200},
+		{name: "getApiTransactionalLiquidity", method: "GET", path: "/api/transactional-liquidity", status: 200},
+		{name: "putApiTransactionalLiquidity", method: "PUT", path: "/api/transactional-liquidity", status: 200},
+		{name: "getApiTransactions", method: "GET", path: "/api/transactions", status: 200},
+		{name: "getApiTransactionsDexPendingLiquidity", method: "GET", path: "/api/transactions/dex-pending-liquidity", status: 200},
+		{name: "getTransaction", method: "GET", path: "/api/transactions/1", status: 200},
+		{name: "getApiTransactionsIdPaymentDetails", method: "GET", path: "/api/transactions/1/payment-details", status: 200},
+		{name: "postApiTransactionsIdPoolRefillReconcile", method: "POST", path: "/api/transactions/1/pool-refill/reconcile", status: 200},
+		{name: "getHealth", method: "GET", path: "/health", status: 200},
+		{name: "getLivez", method: "GET", path: "/livez", status: 200},
+		{name: "getReadyz", method: "GET", path: "/readyz", status: 200},
 	}
-	request := httptest.NewRequest("POST", "/api/accounts/health_check", nil)
-	response := httptest.NewRecorder()
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, err := newLegacyStrictServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte("null"))
+			}))
+			if err != nil {
+				t.Fatalf("newLegacyStrictServer() error = %v", err)
+			}
+			request := httptest.NewRequest(test.method, test.path, nil)
+			response := httptest.NewRecorder()
 
-	err = server.serveLegacy(response, &legacyRequest{request: request})
-	if err == nil || !strings.Contains(err.Error(), "violates generated OpenAPI contract") {
-		t.Fatalf("serveLegacy() error = %v, want contract violation", err)
-	}
-	if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "" {
-		t.Fatalf("invalid response leaked to client: headers = %v, body = %q", response.Header(), response.Body.String())
+			err = server.serveLegacy(response, &legacyRequest{request: request})
+			if err == nil || !strings.Contains(err.Error(), "violates generated OpenAPI contract") {
+				t.Fatalf("serveLegacy() error = %v, want contract violation", err)
+			}
+			if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "" {
+				t.Fatalf("invalid response leaked to client: headers = %v, body = %q", response.Header(), response.Body.String())
+			}
+		})
 	}
 }
 

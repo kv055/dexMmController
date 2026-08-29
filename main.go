@@ -34,7 +34,6 @@ import (
 	"dexMmController/internal/lsp"
 	"dexMmController/internal/magma"
 	mmmetrics "dexMmController/internal/metrics"
-	// "dexMmController/internal/premiumoffers" // Disabled: premium-offer watcher is not currently in use.
 	"dexMmController/internal/pretrade"
 	"dexMmController/internal/swap"
 	"dexMmController/internal/tradeflow"
@@ -86,10 +85,6 @@ func main() {
 	bisq2APIPassword := envOr("BISQ2_API_PASSWORD", "")
 	telegramCfg := telegram.LoadConfig("DEXMM")
 	torProxyURL := envOr("TOR_PROXY_URL", "")
-	// offerPremiumWSSURL := envOr("OFFER_PREMIUM_WSS_URL", "")
-	// Internal secret for the disabled premium-offer watcher. It formerly
-	// connected to unified-api's /internal/ws/live_offers route.
-	// offerPremiumWSSSecret := os.Getenv("INTERNAL_API_SECRET")
 	// The same secret gates every inbound API/WS route (except health, metrics
 	// and the self-authenticating webhooks). Running without it leaves wallet
 	// and trading endpoints open to anything on the Docker network, so refuse
@@ -110,6 +105,7 @@ func main() {
 	bitcoindRPCPass := envOr("LND_BITCOIND_RPCPASS", "")
 	accountHealthInterval := parseAccountHealthInterval(envOr("ACCOUNT_HEALTH_INTERVAL", ""))
 	healthcheckInterval := parseAccountHealthInterval(envOr("HEALTHCHECK_INTERVAL", "30s"))
+	bisqFiatEscalationDelay := parseDurationOr(envOr("BISQ_FIAT_ESCALATION_AFTER", "2h"), 2*time.Hour)
 	automatedTradeflowWorkers := strings.EqualFold(strings.TrimSpace(envOr("ENABLE_AUTOMATED_TRADEFLOW_WORKERS", "false")), "true")
 	lndBackupInterval := parseLNDBackupInterval(envOr("LND_BACKUP_INTERVAL", ""), accountHealthInterval)
 
@@ -454,6 +450,7 @@ func main() {
 		WithCapabilities(capabilityStore)
 	hc := healthcheck.NewHealthChecker(repo, btc, hh, tradeFlow).
 		WithRecoveryGracePeriod(parseAccountHealthInterval(envOr("TRADEFLOW_RECOVERY_GRACE", "3m"))).
+		WithBisqFiatEscalationDelay(bisqFiatEscalationDelay).
 		WithPaymentResolver(dexPaymentResolver).
 		WithTelegramRelay(telegramSvc, anomalyNotifier).
 		WithBisq(bq)
@@ -808,20 +805,6 @@ func main() {
 	// money-moving poll), so it runs unconditionally — unlike the team-gated dexrelay loop.
 	go dexReleaseWorker.Run(ctx)
 
-	// ── Offer Premium WSS Stream (disabled) ───────────────────────────────────
-	// The premium-offer watcher is intentionally not started at present.
-	//
-	// if offerPremiumWSSURL == "" {
-	// 	log.Println("OFFER_PREMIUM_WSS_URL is not set; API server will stay up without premium stream")
-	// 	<-ctx.Done()
-	// 	return
-	// }
-	//
-	// watcher := premiumoffers.NewWatcher(repo, bq, hh, rs, offerPremiumWSSURL, offerPremiumWSSSecret)
-	// if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
-	// 	log.Printf("premium-offer watcher failed: %v", err)
-	// }
-	log.Println("premium-offer watcher is disabled")
 	<-ctx.Done()
 }
 
@@ -1098,6 +1081,14 @@ func parseAccountHealthInterval(raw string) time.Duration {
 		return 10 * time.Minute
 	}
 	return interval
+}
+
+func parseDurationOr(raw string, fallback time.Duration) time.Duration {
+	d, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil {
+		return fallback
+	}
+	return d
 }
 
 func loadLNDInitConfig(

@@ -684,7 +684,7 @@ func hedgeFailedRow(t *testing.T, store *fakeStore, svc *fakeService) *db.Transa
 	if err := recordSpotBuy(store, id, svc.spotResult, 0.00999); err != nil {
 		t.Fatalf("recordSpotBuy: %v", err)
 	}
-	if err := markHedgeFailed(store, id, svc.spotResult); err != nil {
+	if err := markHedgeFailed(store, id, svc.spotResult, errors.New("hedge unavailable")); err != nil {
 		t.Fatalf("markHedgeFailed: %v", err)
 	}
 	tx, _ := store.GetTransaction(id)

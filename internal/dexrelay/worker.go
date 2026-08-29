@@ -3,6 +3,7 @@ package dexrelay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -43,6 +44,15 @@ type invoiceDecoder interface {
 type relayLiquidity interface {
 	PrepareOutbound(context.Context, string, uint, int64, int64) error
 	Release(context.Context, string) error
+}
+
+type potentiallyMoneyMovingError interface {
+	MayHaveMovedFunds() bool
+}
+
+func moneyMayHaveMoved(err error) bool {
+	var movement potentiallyMoneyMovingError
+	return errors.As(err, &movement) && movement.MayHaveMovedFunds()
 }
 
 // txStore is the transaction-row access the worker needs (satisfied by
@@ -177,7 +187,7 @@ func (w *Worker) confirmWithdrawal(ctx context.Context, tx *db.Transaction) erro
 		return err
 	}
 	tx.DexOfferCreation = raw
-	tx.Status = db.StatusCexCryptoWithdrawalArrived
+	tx.SetStatus(db.StatusCexCryptoWithdrawalArrived, "")
 	return w.repo.UpdateTransaction(tx)
 }
 
@@ -277,6 +287,12 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		}
 		reservationID := fmt.Sprintf("relay-trade-%d", tx.ID)
 		if err := w.liquidity.PrepareOutbound(ctx, reservationID, tx.ID, paymentSat, routingFeeSat); err != nil {
+			if moneyMayHaveMoved(err) {
+				tx.SetStatus(db.StatusLiquidityPreparationNeedsReview, err.Error())
+				if persistErr := w.repo.UpdateTransaction(tx); persistErr != nil {
+					return fmt.Errorf("prepare RoboSats outbound liquidity: %v; persist review status: %w", err, persistErr)
+				}
+			}
 			return fmt.Errorf("prepare RoboSats outbound liquidity: %w", err)
 		}
 		defer func() { _ = w.liquidity.Release(context.WithoutCancel(ctx), reservationID) }()
@@ -332,7 +348,7 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 
 	// Hub/Swap: we must forward from the LND hub. Resolve the per-trade target.
 	if w.lnd == nil {
-		return fmt.Errorf("LND client is not configured")
+		return w.parkTakenFundingReview(tx, fmt.Errorf("LND client is not configured"))
 	}
 	depositAddr := meta.EscrowOrDepositAddress()
 	invoice := meta.LNInvoice()
@@ -340,7 +356,7 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		var resolveErr error
 		depositAddr, invoice, resolveErr = w.taker.ResolveDeposit(ctx, exchange, meta.Execution)
 		if resolveErr != nil {
-			return resolveErr
+			return w.parkTakenFundingReview(tx, resolveErr)
 		}
 		if depositAddr != "" {
 			meta.Execution["deposit_address"] = depositAddr
@@ -351,14 +367,14 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	}
 
 	if relayDetails.AmountSat <= 0 {
-		return fmt.Errorf("invalid relay amount")
+		return w.parkTakenFundingReview(tx, fmt.Errorf("invalid relay amount"))
 	}
 
 	switch {
 	case depositAddr != "":
 		txid, sendErr := w.lnd.SendOnChain(ctx, depositAddr, relayDetails.AmountSat, w.satPerVb)
 		if sendErr != nil {
-			return fmt.Errorf("LND send on-chain: %w", sendErr)
+			return w.parkTakenFundingReview(tx, fmt.Errorf("LND send on-chain: %w", sendErr))
 		}
 		relayDetails.TxID = txid
 		relayDetails.DepositAddress = depositAddr
@@ -367,30 +383,24 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	case invoice != "":
 		decoder, ok := w.lnd.(invoiceDecoder)
 		if !ok {
-			tx.Status = db.StatusDexTakenFundingNeedsReview
-			_ = w.repo.UpdateTransaction(tx)
-			return fmt.Errorf("LND invoice decoder is not configured")
+			return w.parkTakenFundingReview(tx, fmt.Errorf("LND invoice decoder is not configured"))
 		}
 		decoded, decodeErr := decoder.DecodeInvoice(ctx, invoice)
 		if decodeErr != nil {
-			tx.Status = db.StatusDexTakenFundingNeedsReview
-			_ = w.repo.UpdateTransaction(tx)
-			return fmt.Errorf("decode RoboSats invoice: %w", decodeErr)
+			return w.parkTakenFundingReview(tx, fmt.Errorf("decode RoboSats invoice: %w", decodeErr))
 		}
 		if validationErr := validateInvoice(invoice, decoded, relayDetails.AmountSat, time.Now()); validationErr != nil {
-			tx.Status = db.StatusDexTakenFundingNeedsReview
-			_ = w.repo.UpdateTransaction(tx)
-			return validationErr
+			return w.parkTakenFundingReview(tx, validationErr)
 		}
 		_, payErr := w.lnd.PayInvoice(ctx, invoice, routingFeeSat)
 		if payErr != nil {
-			return fmt.Errorf("LND pay invoice: %w", payErr)
+			return w.parkTakenFundingReview(tx, fmt.Errorf("LND pay invoice: %w", payErr))
 		}
 		relayDetails.PaymentHash = decoded.PaymentHash
 		relayDetails.Invoice = invoice
 		relayDetails.PaymentMethod = "lightning"
 	default:
-		return fmt.Errorf("no deposit address or invoice available for relay")
+		return w.parkTakenFundingReview(tx, fmt.Errorf("no deposit address or invoice available for relay"))
 	}
 
 	return w.finishRelay(tx, meta, relayDetails)
@@ -472,7 +482,18 @@ func (w *Worker) populateCounterpartyPayment(ctx context.Context, tx *db.Transac
 	}
 }
 
-// finishRelay persists the relay outcome and advances the row to DexPositionOpen.
+func (w *Worker) parkTakenFundingReview(tx *db.Transaction, cause error) error {
+	if tx == nil {
+		return cause
+	}
+	tx.SetStatus(db.StatusDexTakenFundingNeedsReview, cause.Error())
+	if err := w.repo.UpdateTransaction(tx); err != nil {
+		return fmt.Errorf("%v; persist DexTakenFundingNeedsReview: %w", cause, err)
+	}
+	return cause
+}
+
+// finishRelay persists the relay outcome and advances the row to DexPositionTaken.
 func (w *Worker) finishRelay(tx *db.Transaction, meta db.DexOfferMeta, relayDetails db.CexToDexRelayDetails) error {
 	relayJSON, err := json.Marshal(relayDetails)
 	if err != nil {
@@ -485,7 +506,7 @@ func (w *Worker) finishRelay(tx *db.Transaction, meta db.DexOfferMeta, relayDeta
 
 	tx.CexToDexWithdrawalTxDetails = relayJSON
 	tx.DexOfferCreation = metaRaw
-	tx.Status = db.StatusDexPositionOpen
+	tx.SetStatus(db.StatusDexPositionTaken, "")
 	tx.DexOfferTaken = time.Now().UTC()
 	return w.repo.UpdateTransaction(tx)
 }

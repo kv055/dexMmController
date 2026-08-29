@@ -51,3 +51,20 @@ func TestReleaseHodlHodlRequiresEscrowSecrets(t *testing.T) {
 		t.Fatalf("want escrow-not-configured error, got %v", err)
 	}
 }
+
+func TestSecurityDepositReturnVenueSemantics(t *testing.T) {
+	r := NewReleaser(nil, nil, nil, nil, HodlHodlEscrowConfig{})
+	ctx := context.Background()
+
+	robo, err := r.ReturnSecurityDeposit(ctx, SecurityDepositReturnInput{Exchange: "robosats", ContractID: "R1"})
+	if err != nil || robo.Method != "robosats_automatic_bond_unlock" || robo.TxID != "" {
+		t.Fatalf("RoboSats return = %+v, %v", robo, err)
+	}
+	hodl, err := r.ReturnSecurityDeposit(ctx, SecurityDepositReturnInput{Exchange: "hodlhodl", ContractID: "H1"})
+	if err != nil || hodl.Method != "not_required" {
+		t.Fatalf("HodlHodl return = %+v, %v", hodl, err)
+	}
+	if _, err := r.ReturnSecurityDeposit(ctx, SecurityDepositReturnInput{Exchange: "bisq", ContractID: "B1", PoolAddress: "bc1qpool", Memo: "memo"}); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("Bisq without client error = %v", err)
+	}
+}

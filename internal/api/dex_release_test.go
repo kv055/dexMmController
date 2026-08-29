@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"dexMmController/internal/db"
 )
 
 type stubEnqueuer struct{ enqueued []uint }
@@ -18,6 +20,22 @@ func TestDexReleaseWebhookNotConfigured(t *testing.T) {
 	s.handleDexReleaseWebhook(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestHedgelessDepositReturnPending(t *testing.T) {
+	tx := &db.Transaction{TradeMode: "hedgeless_double_collateral", Status: db.StatusDexPositionReleased}
+	for _, status := range []string{"withdrawal_initiated", "awaiting_security_deposit"} {
+		tx.BTCPoolRefillStatus = status
+		if !hedgelessDepositReturnPending(tx) {
+			t.Fatalf("status %q should remain resumable", status)
+		}
+	}
+	for _, status := range []string{"restored", "needs_review", ""} {
+		tx.BTCPoolRefillStatus = status
+		if hedgelessDepositReturnPending(tx) {
+			t.Fatalf("status %q should not be automatically resumed", status)
+		}
 	}
 }
 

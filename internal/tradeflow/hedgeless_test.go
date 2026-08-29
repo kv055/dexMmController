@@ -2,7 +2,11 @@ package tradeflow
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"math"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,9 +19,19 @@ import (
 
 type hedgelessFakeService struct {
 	*fakeService
-	balances    []float64
-	refillCalls int
+	balances       []float64
+	refillCalls    int
+	refillAmounts  []float64
+	withdrawStatus *cexaccount.WithdrawalStatus
 }
+
+func (s *hedgelessFakeService) GetWithdrawalStatus(context.Context, string, string, string) (*cexaccount.WithdrawalStatus, error) {
+	return s.withdrawStatus, nil
+}
+
+type confirmedChain struct{}
+
+func (confirmedChain) TransactionConfirmations(context.Context, string) (int, error) { return 6, nil }
 
 func (s *hedgelessFakeService) LNDPoolBalanceBTC(context.Context, string) (float64, error) {
 	if len(s.balances) == 0 {
@@ -32,6 +46,7 @@ func (s *hedgelessFakeService) LNDPoolBalanceBTC(context.Context, string) (float
 
 func (s *hedgelessFakeService) MarketBuyBTCForRefill(_ context.Context, amount float64, _ pretrade.Params) (*cexaccount.SpotOrderResult, error) {
 	s.refillCalls++
+	s.refillAmounts = append(s.refillAmounts, amount)
 	return &cexaccount.SpotOrderResult{Provider: "binance", OrderID: "refill-1", Status: "filled", Execution: &cexaccount.ExecutionDetail{FilledBTC: amount}}, nil
 }
 
@@ -62,6 +77,22 @@ func (w *fakeHedgelessWallet) DecodeInvoice(context.Context, string) (*lnd.Decod
 	return &lnd.DecodedInvoice{Destination: "03destination", PaymentHash: "hash", NumSatoshis: "2000000", Timestamp: strconv.FormatInt(time.Now().Unix(), 10), Expiry: "86400"}, nil
 }
 
+type fakeLiquidityExecutor struct {
+	err          error
+	ensureCalls  int
+	releaseCalls int
+}
+
+func (f *fakeLiquidityExecutor) EnsureOutbound(context.Context, string, uint, *pretrade.Report) error {
+	f.ensureCalls++
+	return f.err
+}
+
+func (f *fakeLiquidityExecutor) Release(context.Context, string) error {
+	f.releaseCalls++
+	return nil
+}
+
 type fakeBisqResolver struct{ balanceCalls int }
 
 func (r *fakeBisqResolver) DirectDestination(context.Context, string) (string, error) {
@@ -89,12 +120,16 @@ func hedgelessService() *hedgelessFakeService {
 
 func TestRunHedgelessHodlHodlFundsBeforeRefillAndSkipsHedge(t *testing.T) {
 	svc := hedgelessService()
+	svc.balances = []float64{0.10, 0.082}
 	store := newFakeStore()
 	dex := &fakeHedgelessDEX{result: &dexaccount.TakeResult{Execution: map[string]any{"contract_id": "contract-1", "exchange": "hodlhodl"}, DepositAddress: "bc1qescrow"}}
 	wallet := &fakeHedgelessWallet{}
 	tf := New(svc, store).WithHedgelessExecution(dex, wallet)
 
-	result, err := tf.Run(context.Background(), hedgelessOrder("hodlhodl"))
+	order := hedgelessOrder("hodlhodl")
+	order.SecurityDepositBTC = 0
+	order.RequiredBTCLiquidity = order.BTCAmount
+	result, err := tf.Run(context.Background(), order)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -108,7 +143,7 @@ func TestRunHedgelessHodlHodlFundsBeforeRefillAndSkipsHedge(t *testing.T) {
 		t.Fatalf("hedge/refill/withdraw = %d/%d/%d", svc.hedgeCallCount, svc.refillCalls, svc.withdrawCallCount)
 	}
 	row := store.only(t)
-	if row.Status != "DexPositionOpen" || row.BTCPoolRefillStatus != refillWithdrawalInitiated || row.BTCPoolTargetBTC != 0.10 {
+	if row.Status != "DexPositionTaken" || row.BTCPoolRefillStatus != refillWithdrawalInitiated || row.BTCPoolTargetBTC != 0.10 {
 		t.Fatalf("row = %+v", row)
 	}
 }
@@ -124,6 +159,9 @@ func TestRunHedgelessRoboSatsPaysInvoice(t *testing.T) {
 	if wallet.payCalls != 1 || wallet.sendCalls != 0 {
 		t.Fatalf("pay/send = %d/%d", wallet.payCalls, wallet.sendCalls)
 	}
+	if got := svc.refillAmounts[0]; math.Abs(got-0.018) > 1e-12 {
+		t.Fatalf("initial refill = %.8f BTC, want traded amount 0.01800000 without the 0.002 bond", got)
+	}
 }
 
 func TestRunHedgelessBisqFundsIntegratedWalletBeforeTake(t *testing.T) {
@@ -137,6 +175,62 @@ func TestRunHedgelessBisqFundsIntegratedWalletBeforeTake(t *testing.T) {
 	}
 	if wallet.sendCalls != 1 || dex.takeCalls != 1 || resolver.balanceCalls < 2 {
 		t.Fatalf("send/take/balance = %d/%d/%d", wallet.sendCalls, dex.takeCalls, resolver.balanceCalls)
+	}
+}
+
+func TestRunHedgelessSafeLiquidityPreparationFailureIsTerminal(t *testing.T) {
+	svc := hedgelessService()
+	svc.preTradeReport.SwapRequired = true
+	svc.preTradeReport.SwapShortfallSat = 50_000
+	store := newFakeStore()
+	liquidity := &fakeLiquidityExecutor{err: preparationError("balance_check", false, errors.New("wallet unavailable"))}
+	tf := New(svc, store).
+		WithHedgelessExecution(&fakeHedgelessDEX{}, &fakeHedgelessWallet{}).
+		WithLiquidityExecutor(liquidity)
+
+	if _, err := tf.Run(context.Background(), hedgelessOrder("robosats")); err == nil {
+		t.Fatal("expected liquidity preparation failure")
+	}
+	row := store.only(t)
+	if row.Status != db.StatusHedgelessPreparationFailed || !row.TransactionComplete {
+		t.Fatalf("terminal preparation row = %+v", row)
+	}
+	if row.BTCPoolRefillStatus != refillRestored {
+		t.Fatalf("refill status = %q, want %q", row.BTCPoolRefillStatus, refillRestored)
+	}
+	if row.StatusReason == nil || !strings.Contains(*row.StatusReason, "wallet unavailable") {
+		t.Fatalf("status reason = %v", row.StatusReason)
+	}
+	if liquidity.releaseCalls != 1 {
+		t.Fatalf("release calls = %d, want 1", liquidity.releaseCalls)
+	}
+}
+
+func TestRunHedgelessRiskyLiquidityPreparationFailureNeedsReview(t *testing.T) {
+	svc := hedgelessService()
+	svc.preTradeReport.SwapRequired = true
+	svc.preTradeReport.SwapShortfallSat = 50_000
+	store := newFakeStore()
+	liquidity := &fakeLiquidityExecutor{err: preparationError("settlement", true, errors.New("swap settlement unknown"))}
+	tf := New(svc, store).
+		WithHedgelessExecution(&fakeHedgelessDEX{}, &fakeHedgelessWallet{}).
+		WithLiquidityExecutor(liquidity)
+
+	if _, err := tf.Run(context.Background(), hedgelessOrder("robosats")); err == nil {
+		t.Fatal("expected ambiguous liquidity preparation failure")
+	}
+	row := store.only(t)
+	if row.Status != db.StatusLiquidityPreparationNeedsReview || row.TransactionComplete {
+		t.Fatalf("review preparation row = %+v", row)
+	}
+	if row.BTCPoolRefillStatus != refillNeedsReview {
+		t.Fatalf("refill status = %q, want %q", row.BTCPoolRefillStatus, refillNeedsReview)
+	}
+	if row.StatusReason == nil || !strings.Contains(*row.StatusReason, "swap settlement unknown") {
+		t.Fatalf("status reason = %v", row.StatusReason)
+	}
+	if liquidity.releaseCalls != 0 {
+		t.Fatalf("ambiguous reservation was released %d times", liquidity.releaseCalls)
 	}
 }
 
@@ -163,8 +257,58 @@ func TestAdvanceRefillDoesNotReleaseAmbiguousFundingReservation(t *testing.T) {
 		t.Fatalf("advanceRefill: %v", err)
 	}
 	row := store.rows[9]
-	if row.Status != db.StatusHedgelessFundingNeedsReview || row.BTCPoolRefillStatus != refillNeedsReview {
+	if row.Status != db.StatusLiquidityPreparationNeedsReview || row.BTCPoolRefillStatus != refillNeedsReview {
 		t.Fatalf("ambiguous row was not parked: %+v", row)
+	}
+}
+
+func TestAdvanceRefillWaitsForDepositThenCorrectsReturnFee(t *testing.T) {
+	svc := hedgelessService()
+	store := newFakeStore()
+	dex := &fakeHedgelessDEX{result: &dexaccount.TakeResult{Execution: map[string]any{"trade_id": "trade-1", "exchange": "bisq"}}}
+	tf := New(svc, store).WithDirectDestinationResolver(&fakeBisqResolver{}).WithHedgelessExecution(dex, &fakeHedgelessWallet{}).WithChainConfirmationSource(confirmedChain{})
+	result, err := tf.Run(context.Background(), hedgelessOrder("bisq"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row := store.rows[result.TransactionID]
+	svc.withdrawStatus = &cexaccount.WithdrawalStatus{CexStatus: "completed", TxHash: "refill-tx"}
+	svc.balances = []float64{0.098, 0.098}
+	if err := tf.advanceRefill(context.Background(), row); err != nil {
+		t.Fatalf("advance initial refill: %v", err)
+	}
+	if row = store.rows[result.TransactionID]; row.BTCPoolRefillStatus != refillAwaitingDeposit {
+		t.Fatalf("pool status = %q, want %q", row.BTCPoolRefillStatus, refillAwaitingDeposit)
+	}
+	if svc.refillCalls != 1 {
+		t.Fatalf("refill calls before deposit return = %d, want 1", svc.refillCalls)
+	}
+
+	details := decodeRefillDetails(row.BTCPoolRefillDetails)
+	details.SecurityDepositReturn = &securityDepositReturnDetails{Status: "initiated", TxID: "deposit-return-tx"}
+	row.BTCPoolRefillDetails, _ = json.Marshal(details)
+	store.rows[row.ID] = row
+	svc.balances = []float64{0.0999}
+	if err := tf.advanceRefill(context.Background(), row); err != nil {
+		t.Fatalf("advance returned deposit: %v", err)
+	}
+	if svc.refillCalls != 2 {
+		t.Fatalf("refill calls after confirmed return fee = %d, want 2", svc.refillCalls)
+	}
+	if got := svc.refillAmounts[1]; math.Abs(got-0.0001) > 1e-12 {
+		t.Fatalf("corrective refill = %.8f, want 0.00010000", got)
+	}
+	row = store.rows[result.TransactionID]
+	svc.balances = []float64{0.10}
+	if err := tf.advanceRefill(context.Background(), row); err != nil {
+		t.Fatalf("complete corrected pool: %v", err)
+	}
+	row = store.rows[result.TransactionID]
+	if row.BTCPoolRefillStatus != refillRestored {
+		t.Fatalf("final pool status = %q", row.BTCPoolRefillStatus)
+	}
+	if audit := decodeRefillDetails(row.BTCPoolRefillDetails).SecurityDepositReturn; audit == nil || audit.Status != "returned" {
+		t.Fatalf("final deposit-return audit = %+v", audit)
 	}
 }
 

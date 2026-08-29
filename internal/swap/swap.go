@@ -9,6 +9,18 @@ import (
 
 const StrategySubmarineSwap = "submarine_swap"
 
+// ExecutionError identifies failures at or after an irreversible swap
+// boundary. Callers use FundsMayHaveMoved to choose between a terminal safe
+// failure and a manual-reconciliation state.
+type ExecutionError struct {
+	Stage             string
+	FundsMayHaveMoved bool
+	Err               error
+}
+
+func (e *ExecutionError) Error() string { return e.Err.Error() }
+func (e *ExecutionError) Unwrap() error { return e.Err }
+
 type Quote struct {
 	LightningOutputSat int64     `json:"lightning_output_sat"`
 	LockupAmountSat    int64     `json:"lockup_amount_sat"`

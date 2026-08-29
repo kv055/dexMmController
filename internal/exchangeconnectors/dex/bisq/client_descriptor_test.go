@@ -22,6 +22,43 @@ func TestFundingAddressDescriptor(t *testing.T) {
 	}
 }
 
+func TestWithdrawFundsDescriptor(t *testing.T) {
+	for _, name := range []string{"WithdrawFundsRequest", "WithdrawFundsReply"} {
+		if msg := newMessage(name); msg == nil {
+			t.Fatalf("descriptor missing message %s", name)
+		}
+	}
+	req := newMessage("WithdrawFundsRequest")
+	setString(req, "trade_id", "trade-1")
+	setString(req, "address", "bc1qpool")
+	setString(req, "memo", "hedgeless-deposit-return-42")
+	if got := stringField(req, "trade_id"); got != "trade-1" {
+		t.Fatalf("trade_id = %q", got)
+	}
+	if got := stringField(req, "address"); got != "bc1qpool" {
+		t.Fatalf("address = %q", got)
+	}
+}
+
+func TestTradeInfoPaymentStateDescriptor(t *testing.T) {
+	msg := newMessage("TradeInfo")
+	setString(msg, "phase", "FIAT_SENT")
+	setBool(msg, "is_payment_started_message_sent", true)
+	setBool(msg, "is_payment_received_message_sent", true)
+	setBool(msg, "is_payout_published", true)
+
+	trade := tradeFromMessage(msg)
+	if !trade.IsPaymentStartedMessageSent {
+		t.Fatal("payment-started signal was not decoded")
+	}
+	if !trade.IsPaymentReceivedMessageSent {
+		t.Fatal("payment-received signal was not decoded")
+	}
+	if !trade.IsPayoutPublished {
+		t.Fatal("payout-published signal was not decoded")
+	}
+}
+
 // TestPaymentAccountMutationDescriptor verifies the patched CreateSepaPaymentAccount /
 // DeletePaymentAccount messages resolve and their request fields are settable.
 func TestPaymentAccountMutationDescriptor(t *testing.T) {

@@ -54,9 +54,6 @@ nav:
           - client.go: internal/openclaw/client.md
           - mock_server.go: internal/openclaw/mock_server.md
           - protocol.go: internal/openclaw/protocol.md
-      - premiumoffers:
-          - Overview: internal/premiumoffers/README.md
-          - watcher.go: internal/premiumoffers/watcher.md
       - wallethub:
           - Overview: internal/wallethub/README.md
           - binance_bridge.go: internal/wallethub/binance_bridge.md

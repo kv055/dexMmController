@@ -142,24 +142,24 @@ func (c *Coordinator) Execute(ctx context.Context, reservationID string, tradeID
 	if err != nil {
 		_ = c.Store.SetState(context.WithoutCancel(ctx), prepared.ID, StateNeedsReview)
 		keepReservation = true
-		return rec, fmt.Errorf("fund Boltz lockup: %w", err)
+		return rec, &ExecutionError{Stage: "lockup_broadcast", FundsMayHaveMoved: true, Err: fmt.Errorf("fund Boltz lockup: %w", err)}
 	}
 	if err = c.Store.MarkFunded(ctx, prepared.ID, txid); err != nil {
 		keepReservation = true
-		return rec, err
+		return rec, &ExecutionError{Stage: "funding_receipt", FundsMayHaveMoved: true, Err: err}
 	}
 	rec.State = StateFunded
 	rec.LockupTxID = txid
 	keepReservation = true
 	if err = c.wait(ctx, &rec); err != nil {
-		return rec, err
+		return rec, &ExecutionError{Stage: "settlement", FundsMayHaveMoved: true, Err: err}
 	}
 	if rec.State == StateRefunded {
 		keepReservation = false
 		return rec, nil
 	}
 	if err = c.Store.FinalizeReservation(ctx, reservationID, time.Now().Add(15*time.Minute)); err != nil {
-		return rec, fmt.Errorf("finalize outbound reservation: %w", err)
+		return rec, &ExecutionError{Stage: "reservation_finalize", FundsMayHaveMoved: true, Err: fmt.Errorf("finalize outbound reservation: %w", err)}
 	}
 	keepReservation = true
 	return rec, nil

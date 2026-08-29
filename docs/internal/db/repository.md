@@ -123,9 +123,20 @@ Signature: `func (r *TransactionRepository) DeleteTransaction(id uint) error`
 
 ### `(*TransactionRepository).GetIncompleteTransactions`
 
-GetIncompleteTransactions retrieves all transactions that have not yet reached DexPositionReleased
+Returns every row with `TransactionComplete=false`, regardless of status. This
+includes review queues and released-but-unverified rows, while excluding the
+terminal `HedgelessPreparationFailed` audit rows whose completion flag is true.
 
 Signature: `func (r *TransactionRepository) GetIncompleteTransactions() ([]Transaction, error)`
+
+### `(*TransactionRepository).GetTransactionsForHealthcheck`
+
+Returns every row with `TransactionComplete=false`. The health checker then
+dispatches automated states and explicitly parks operator-review states. This
+keeps release submission visible until independent venue and chain checks
+finish without maintaining a second hard-coded status allowlist.
+
+Signature: `func (r *TransactionRepository) GetTransactionsForHealthcheck() ([]Transaction, error)`
 
 ### `(*TransactionRepository).GetTransactionCount`
 

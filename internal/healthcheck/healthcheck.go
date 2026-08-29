@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"dexMmController/internal/bitcoin"
@@ -18,7 +20,10 @@ import (
 // defaultRecoveryGracePeriod is how long a row must sit in an intermediate tradeflow
 // state before the recovery worker acts on it — long enough that a still-running
 // synchronous TradeFlow.Run cannot be mistaken for an abandoned row.
-const defaultRecoveryGracePeriod = 3 * time.Minute
+const (
+	defaultRecoveryGracePeriod     = 3 * time.Minute
+	defaultBisqFiatEscalationDelay = 2 * time.Hour
+)
 
 // TradeflowRecoverer drives stuck/failed tradeflow rows forward. Implemented by
 // *tradeflow.TradeFlow; declared here so healthcheck depends only on what it needs.
@@ -28,31 +33,80 @@ type TradeflowRecoverer interface {
 	RecoverHedge(ctx context.Context, tx *db.Transaction) error
 }
 
+type transactionStore interface {
+	GetTransactionsForHealthcheck() ([]db.Transaction, error)
+	UpdateTransaction(tx *db.Transaction) error
+}
+
+type bitcoinTransactionSource interface {
+	FetchTransaction(ctx context.Context, txid string) (*bitcoin.TxStatus, error)
+}
+
+type bisqPositionSource interface {
+	GetPosition(ctx context.Context, tradeID string) (*bisq.Trade, error)
+}
+
+type hodlPositionSource interface {
+	GetContract(ctx context.Context, contractID string) (*hodlhodl.Contract, error)
+	IsContractCompleted(ctx context.Context, contractID string) (bool, error)
+}
+
+type anomalyNotifier interface {
+	Enabled() bool
+	NotifyAnomaly(ctx context.Context, exchange, tradeID, reason, detail string) error
+}
+
+type bisqFiatEscalationState struct {
+	firstSeen time.Time
+	notifying bool
+	notified  bool
+}
+
+type anomalyDeliveryState struct {
+	notifying bool
+	notified  bool
+}
+
 // HealthChecker queries the DB for incomplete transactions and verifies their
 // actual state against external systems, advancing the status where appropriate.
 type HealthChecker struct {
-	repo                *db.TransactionRepository
-	btc                 *bitcoin.NetworkDataFetcher
-	hodlhodl            *hodlhodl.Client
-	bisq                *bisq.Client
-	resolver            *dexaccount.PaymentResolver
-	telegram            *dexnotify.Service
-	anomaly             *dexnotify.AnomalyNotifier
-	recoverer           TradeflowRecoverer
-	recoveryGracePeriod time.Duration
+	repo                    transactionStore
+	btc                     bitcoinTransactionSource
+	hodlhodl                hodlPositionSource
+	bisq                    bisqPositionSource
+	resolver                *dexaccount.PaymentResolver
+	telegram                *dexnotify.Service
+	anomaly                 anomalyNotifier
+	recoverer               TradeflowRecoverer
+	recoveryGracePeriod     time.Duration
+	bisqFiatEscalationDelay time.Duration
+	bisqFiatEscalationMu    sync.Mutex
+	bisqFiatEscalations     map[string]bisqFiatEscalationState
+	bisqReleaseAnomalyMu    sync.Mutex
+	bisqReleaseAnomalies    map[string]anomalyDeliveryState
+	now                     func() time.Time
 }
 
 // NewHealthChecker creates a health checker. recoverer drives recovery of stuck
 // tradeflow rows; it may be nil to disable tradeflow recovery (those states then
 // no-op rather than erroring).
 func NewHealthChecker(repo *db.TransactionRepository, btc *bitcoin.NetworkDataFetcher, hh *hodlhodl.Client, recoverer TradeflowRecoverer) *HealthChecker {
-	return &HealthChecker{
-		repo:                repo,
-		btc:                 btc,
-		hodlhodl:            hh,
-		recoverer:           recoverer,
-		recoveryGracePeriod: defaultRecoveryGracePeriod,
+	h := &HealthChecker{
+		hodlhodl:                hh,
+		recoverer:               recoverer,
+		recoveryGracePeriod:     defaultRecoveryGracePeriod,
+		bisqFiatEscalationDelay: defaultBisqFiatEscalationDelay,
+		bisqFiatEscalations:     make(map[string]bisqFiatEscalationState),
+		bisqReleaseAnomalies:    make(map[string]anomalyDeliveryState),
+		now:                     time.Now,
 	}
+	if repo != nil {
+		h.repo = repo
+	}
+	if btc != nil {
+		h.btc = btc
+	}
+	return h
 }
 
 // WithRecoveryGracePeriod overrides the default grace period (e.g. from env).
@@ -60,6 +114,13 @@ func (h *HealthChecker) WithRecoveryGracePeriod(d time.Duration) *HealthChecker 
 	if d > 0 {
 		h.recoveryGracePeriod = d
 	}
+	return h
+}
+
+// WithBisqFiatEscalationDelay configures how long a Bisq fiat-sent signal must
+// remain unmatched before alerting the operator. Zero or negative disables it.
+func (h *HealthChecker) WithBisqFiatEscalationDelay(d time.Duration) *HealthChecker {
+	h.bisqFiatEscalationDelay = d
 	return h
 }
 
@@ -74,13 +135,21 @@ func (h *HealthChecker) WithPaymentResolver(r *dexaccount.PaymentResolver) *Heal
 // WithTelegramRelay wires the trade-chat relay and anomaly notifier.
 func (h *HealthChecker) WithTelegramRelay(svc *dexnotify.Service, anomaly *dexnotify.AnomalyNotifier) *HealthChecker {
 	h.telegram = svc
-	h.anomaly = anomaly
+	if anomaly == nil {
+		h.anomaly = nil
+	} else {
+		h.anomaly = anomaly
+	}
 	return h
 }
 
 // WithBisq wires the bisq1 client used for structured-venue anomaly checks.
 func (h *HealthChecker) WithBisq(bq *bisq.Client) *HealthChecker {
-	h.bisq = bq
+	if bq == nil {
+		h.bisq = nil
+	} else {
+		h.bisq = bq
+	}
 	return h
 }
 
@@ -104,12 +173,12 @@ func (h *HealthChecker) RunPeriodic(ctx context.Context, interval time.Duration)
 	}
 }
 
-// Run finds all incomplete transactions and runs a status-specific verification
-// for each one.
+// Run finds all active and released-but-unverified transactions and runs a
+// status-specific verification for each one.
 func (h *HealthChecker) Run(ctx context.Context) error {
-	transactions, err := h.repo.GetIncompleteTransactions()
+	transactions, err := h.repo.GetTransactionsForHealthcheck()
 	if err != nil {
-		return fmt.Errorf("healthcheck: failed to fetch incomplete transactions: %w", err)
+		return fmt.Errorf("healthcheck: failed to fetch transactions for verification: %w", err)
 	}
 
 	for i := range transactions {
@@ -125,24 +194,26 @@ func (h *HealthChecker) Run(ctx context.Context) error {
 // verify dispatches to the appropriate scenario based on the current status.
 func (h *HealthChecker) verify(ctx context.Context, tx *db.Transaction) error {
 	switch tx.Status {
-	case db.StatusFiatToCexInitiated, db.StatusFiatToCexArrived:
-		return nil // bank-transfer progression is no longer managed by mm-controller.
+	case db.StatusTransactionNeedsReview:
+		return nil // Unclassifiable legacy rows require explicit operator reconciliation.
 	case db.StatusCexTradeflowStarted:
 		return h.verifyCexTradeflowStarted(ctx, tx)
 	case db.StatusHedgeFailedNeedsReview:
 		return h.verifyHedgeFailedNeedsReview(ctx, tx)
 	case db.StatusCexTradeflowNeedsReview:
 		return nil // alert already fired when the row entered this state; park it.
-	case db.StatusHedgelessTradeStarted, db.StatusHedgelessFundingInitiated, db.StatusHedgelessFundingNeedsReview:
+	case db.StatusHedgelessTradeStarted, db.StatusHedgelessFundingInitiated:
 		return nil // owned by tradeflow.RunRefillWorker; avoid competing money movement.
+	case db.StatusHedgelessPreparationFailed:
+		return nil // Terminal audit row; normally excluded by transaction_complete.
+	case db.StatusLiquidityPreparationNeedsReview, db.StatusHedgelessFundingNeedsReview, db.StatusDexTakenFundingNeedsReview:
+		return nil // Parked until durable external state is reconciled.
 	case db.StatusCexTradeSuccessful:
 		return h.verifyCexTradeSuccessful(ctx, tx)
 	case db.StatusCexCryptoWithdrawalInitiated:
 		return h.verifyCexCryptoWithdrawalInitiated(ctx, tx)
 	case db.StatusCexCryptoWithdrawalArrived:
 		return h.verifyCexCryptoWithdrawalArrived(ctx, tx)
-	case db.StatusDexPositionOpen:
-		return h.verifyDexPositionOpen(ctx, tx)
 	case db.StatusDexPositionTaken:
 		return h.verifyDexPositionTaken(ctx, tx)
 	case db.StatusDexFiatHasArrived:
@@ -223,44 +294,6 @@ func dexContractID(tx *db.Transaction) (string, error) {
 	return id, nil
 }
 
-// verifyDexPositionOpen confirms the DEX contract is active after LND→DEX relay.
-func (h *HealthChecker) verifyDexPositionOpen(ctx context.Context, tx *db.Transaction) error {
-	switch tx.Dex {
-	case db.DexHodlHodl:
-		if contractID, err := dexContractID(tx); err == nil && contractID != "" {
-			active, err := h.hodlhodl.ContractHasCounterparty(ctx, contractID)
-			if err != nil {
-				return fmt.Errorf("verifyDexPositionOpen: %w", err)
-			}
-			if active {
-				tx.Status = db.StatusDexPositionTaken
-				return h.repo.UpdateTransaction(tx)
-			}
-			return nil
-		}
-		offerID, err := dexOfferID(tx)
-		if err != nil {
-			return fmt.Errorf("verifyDexPositionOpen: %w", err)
-		}
-		live, err := h.hodlhodl.IsOfferLive(ctx, offerID)
-		if err != nil {
-			return fmt.Errorf("verifyDexPositionOpen: %w", err)
-		}
-		if !live {
-			tx.Status = db.StatusDexPositionTaken
-			return h.repo.UpdateTransaction(tx)
-		}
-	case db.DexRoboSats, db.DexBisq2:
-		// Chat venues: send the payment-details request once and capture the counterparty's reply.
-		return h.captureChatPayment(ctx, tx)
-	case db.DexBisq:
-		return h.checkBisqAnomaly(ctx, tx)
-	default:
-		return fmt.Errorf("verifyDexPositionOpen: unknown DEX %q", tx.Dex)
-	}
-	return nil
-}
-
 // captureChatPayment drives the chat-venue conversation for a row: send the templated
 // payment-details request once and store the counterparty's inbound reply on the row. The fiat
 // controller reads counterparty_payment_info to match and decide release vs dispute.
@@ -325,18 +358,122 @@ func (h *HealthChecker) checkBisqAnomaly(ctx context.Context, tx *db.Transaction
 	if trade == nil {
 		return nil
 	}
+	_, err = h.checkBisqTradeAnomaly(ctx, tx, tradeID, trade)
+	return err
+}
+
+func (h *HealthChecker) checkBisqTradeAnomaly(ctx context.Context, tx *db.Transaction, tradeID string, trade *bisq.Trade) (bool, error) {
 	if trade.HasFailed || trade.ErrorMessage != "" {
 		detail := trade.ErrorMessage
 		if detail == "" {
 			detail = "trade state=" + trade.State
 		}
-		return h.notifyAnomaly(ctx, string(tx.Dex), tradeID, "bisq trade failure", detail)
+		return true, h.notifyAnomaly(ctx, string(tx.Dex), tradeID, "bisq trade failure", detail)
 	}
-	return nil
+	return false, nil
 }
 
-// verifyDexPositionTaken confirms the trade is in progress on the DEX.
-// For HodlHodl, checks whether the buyer has marked the contract as paid (fiat sent).
+func (h *HealthChecker) verifyBisqPositionTaken(ctx context.Context, tx *db.Transaction) error {
+	if h.bisq == nil || h.anomaly == nil {
+		return nil
+	}
+	tradeID, err := dexContractID(tx)
+	if err != nil || tradeID == "" {
+		return nil
+	}
+	trade, err := h.bisq.GetPosition(ctx, tradeID)
+	if err != nil {
+		return fmt.Errorf("verifyBisqPositionTaken: %w", err)
+	}
+	if trade == nil {
+		return nil
+	}
+	failed, err := h.checkBisqTradeAnomaly(ctx, tx, tradeID, trade)
+	if err != nil || failed {
+		return err
+	}
+	return h.maybeEscalateBisqFiatSent(ctx, tx, tradeID, trade)
+}
+
+func (h *HealthChecker) maybeEscalateBisqFiatSent(ctx context.Context, tx *db.Transaction, tradeID string, trade *bisq.Trade) error {
+	if h.bisqFiatEscalationDelay <= 0 || !trade.FiatSent() {
+		return nil
+	}
+	now := time.Now()
+	if h.now != nil {
+		now = h.now()
+	}
+
+	h.bisqFiatEscalationMu.Lock()
+	if h.bisqFiatEscalations == nil {
+		h.bisqFiatEscalations = make(map[string]bisqFiatEscalationState)
+	}
+	state, observed := h.bisqFiatEscalations[tradeID]
+	if !observed {
+		h.bisqFiatEscalations[tradeID] = bisqFiatEscalationState{firstSeen: now}
+		h.bisqFiatEscalationMu.Unlock()
+		return nil
+	}
+	if state.notified || state.notifying || now.Sub(state.firstSeen) < h.bisqFiatEscalationDelay || !h.anomaly.Enabled() {
+		h.bisqFiatEscalationMu.Unlock()
+		return nil
+	}
+	state.notifying = true
+	h.bisqFiatEscalations[tradeID] = state
+	h.bisqFiatEscalationMu.Unlock()
+
+	waiting := now.Sub(state.firstSeen).Round(time.Minute)
+	detail := fmt.Sprintf("phase=%s state=%s fiat=%.2f %s fiat_sent_observed_for=%s",
+		trade.Phase, trade.State, tx.FiatAmount, tx.FiatCurrency, waiting)
+	err := h.notifyAnomaly(ctx, string(tx.Dex), tradeID,
+		"buyer marked fiat sent but no bank notification matched; verify receipt manually before release", detail)
+
+	h.bisqFiatEscalationMu.Lock()
+	state = h.bisqFiatEscalations[tradeID]
+	state.notifying = false
+	if err == nil {
+		state.notified = true
+	}
+	h.bisqFiatEscalations[tradeID] = state
+	h.bisqFiatEscalationMu.Unlock()
+	return err
+}
+
+func (h *HealthChecker) notifyBisqReleaseAnomalyOnce(ctx context.Context, tx *db.Transaction, tradeID, kind, reason, detail string) error {
+	if h.anomaly == nil {
+		return nil
+	}
+	key := tradeID + "\x00" + kind
+
+	h.bisqReleaseAnomalyMu.Lock()
+	if h.bisqReleaseAnomalies == nil {
+		h.bisqReleaseAnomalies = make(map[string]anomalyDeliveryState)
+	}
+	state := h.bisqReleaseAnomalies[key]
+	if state.notified || state.notifying || !h.anomaly.Enabled() {
+		h.bisqReleaseAnomalyMu.Unlock()
+		return nil
+	}
+	state.notifying = true
+	h.bisqReleaseAnomalies[key] = state
+	h.bisqReleaseAnomalyMu.Unlock()
+
+	err := h.notifyAnomaly(ctx, string(tx.Dex), tradeID, reason, detail)
+
+	h.bisqReleaseAnomalyMu.Lock()
+	state = h.bisqReleaseAnomalies[key]
+	state.notifying = false
+	if err == nil {
+		state.notified = true
+	}
+	h.bisqReleaseAnomalies[key] = state
+	h.bisqReleaseAnomalyMu.Unlock()
+	return err
+}
+
+// verifyDexPositionTaken monitors an already-taken, durably funded DEX trade.
+// Venue paid/sent flags are informational only: only bank-side evidence may
+// advance the row to DexFiatHasArrived and authorize BTC release.
 func (h *HealthChecker) verifyDexPositionTaken(ctx context.Context, tx *db.Transaction) error {
 	switch tx.Dex {
 	case db.DexHodlHodl:
@@ -351,18 +488,10 @@ func (h *HealthChecker) verifyDexPositionTaken(ctx context.Context, tx *db.Trans
 		if contract.Status == hodlhodl.ContractDisputed || contract.Status == hodlhodl.ContractCanceled {
 			_ = h.notifyAnomaly(ctx, string(tx.Dex), contractID, "contract status "+string(contract.Status), "")
 		}
-		paid, err := h.hodlhodl.ContractIsPaid(ctx, contractID)
-		if err != nil {
-			return fmt.Errorf("verifyDexPositionTaken: %w", err)
-		}
-		if paid {
-			tx.Status = db.StatusDexFiatHasArrived
-			return h.repo.UpdateTransaction(tx)
-		}
 	case db.DexBisq:
-		return h.checkBisqAnomaly(ctx, tx)
-	case db.DexRoboSats:
-		// TODO: implement RoboSats contract status check
+		return h.verifyBisqPositionTaken(ctx, tx)
+	case db.DexRoboSats, db.DexBisq2:
+		return h.captureChatPayment(ctx, tx)
 	default:
 		return fmt.Errorf("verifyDexPositionTaken: unknown DEX %q", tx.Dex)
 	}
@@ -372,6 +501,12 @@ func (h *HealthChecker) verifyDexPositionTaken(ctx context.Context, tx *db.Trans
 // verifyDexPositionReleased connects to the DEX specified in tx.Dex and checks
 // whether the BTC has actually been released to the buyer.
 func (h *HealthChecker) verifyDexPositionReleased(ctx context.Context, tx *db.Transaction) error {
+	// DEX release and hedgeless pool restoration are independent lifecycles.
+	// Do not mark the transaction complete while its security deposit is still
+	// returning (or needs operator reconciliation).
+	if tx.TradeMode == "hedgeless_double_collateral" && tx.BTCPoolRefillStatus != "restored" {
+		return nil
+	}
 	switch tx.Dex {
 	case db.DexHodlHodl:
 		contractID, err := dexContractID(tx)
@@ -383,14 +518,101 @@ func (h *HealthChecker) verifyDexPositionReleased(ctx context.Context, tx *db.Tr
 			return fmt.Errorf("verifyDexPositionReleased: %w", err)
 		}
 		if completed {
-			tx.Status = db.StatusDexPositionReleased
+			tx.SetStatus(db.StatusDexPositionReleased, "")
 			tx.TransactionComplete = true
 			return h.repo.UpdateTransaction(tx)
 		}
-	case db.DexBisq, db.DexRoboSats:
-		// TODO: implement Bisq / RoboSats release confirmation
+	case db.DexBisq:
+		return h.verifyBisqPositionReleased(ctx, tx)
+	case db.DexRoboSats:
+		// TODO: implement RoboSats release confirmation
 	default:
 		return fmt.Errorf("verifyDexPositionReleased: unknown DEX %q", tx.Dex)
+	}
+	return nil
+}
+
+func (h *HealthChecker) verifyBisqPositionReleased(ctx context.Context, tx *db.Transaction) error {
+	if tx.TransactionComplete {
+		return nil
+	}
+	if h.bisq == nil {
+		return fmt.Errorf("verifyBisqPositionReleased: bisq client is not configured")
+	}
+	tradeID, err := dexContractID(tx)
+	if err != nil {
+		return fmt.Errorf("verifyBisqPositionReleased: %w", err)
+	}
+	trade, err := h.bisq.GetPosition(ctx, tradeID)
+	if err != nil {
+		return fmt.Errorf("verifyBisqPositionReleased: get trade: %w", err)
+	}
+	if trade == nil {
+		return fmt.Errorf("verifyBisqPositionReleased: trade %s not found", tradeID)
+	}
+	if trade.HasFailed || strings.TrimSpace(trade.ErrorMessage) != "" {
+		detail := fmt.Sprintf("phase=%s state=%s error=%s", trade.Phase, trade.State, strings.TrimSpace(trade.ErrorMessage))
+		return h.notifyBisqReleaseAnomalyOnce(ctx, tx, tradeID, "trade_failure", "bisq payout verification failed", detail)
+	}
+	if !trade.PayoutPublished() {
+		return nil
+	}
+	payoutTxID := strings.TrimSpace(trade.PayoutTxID)
+	if payoutTxID == "" {
+		return nil
+	}
+
+	meta, err := db.ParseDexOfferCreation(tx.DexOfferCreation)
+	if err != nil {
+		return fmt.Errorf("verifyBisqPositionReleased: %w", err)
+	}
+	persistedTxID := dexaccount.StringField(meta.Execution, "release_tx_id")
+	if persistedTxID != "" && !strings.EqualFold(persistedTxID, payoutTxID) {
+		detail := fmt.Sprintf("persisted_release_tx_id=%s daemon_payout_tx_id=%s", persistedTxID, payoutTxID)
+		return h.notifyBisqReleaseAnomalyOnce(ctx, tx, tradeID, "payout_txid_mismatch", "bisq payout txid mismatch", detail)
+	}
+	if h.btc == nil {
+		return fmt.Errorf("verifyBisqPositionReleased: bitcoin transaction source is not configured")
+	}
+	chainTx, err := h.btc.FetchTransaction(ctx, payoutTxID)
+	if err != nil {
+		return fmt.Errorf("verifyBisqPositionReleased: fetch payout transaction: %w", err)
+	}
+	if chainTx == nil {
+		return nil
+	}
+	if returnedTxID := strings.TrimSpace(chainTx.TxID); returnedTxID != "" && !strings.EqualFold(returnedTxID, payoutTxID) {
+		detail := fmt.Sprintf("daemon_payout_tx_id=%s chain_result_tx_id=%s", payoutTxID, returnedTxID)
+		return h.notifyBisqReleaseAnomalyOnce(ctx, tx, tradeID, "chain_txid_mismatch", "bitcoin lookup returned a different payout txid", detail)
+	}
+	chainStatus := strings.ToLower(strings.TrimSpace(chainTx.StatusLabel))
+	if chainTx.Confirmed {
+		chainStatus = "confirmed"
+	}
+	if !chainTx.Confirmed && chainStatus != "mempool" && chainStatus != "confirmed" {
+		return nil
+	}
+
+	if meta.Execution == nil {
+		meta.Execution = make(map[string]any)
+	}
+	verifiedAt := time.Now().UTC()
+	if h.now != nil {
+		verifiedAt = h.now().UTC()
+	}
+	meta.Execution["release_tx_id"] = payoutTxID
+	meta.Execution["release_verified_at"] = verifiedAt.Format(time.RFC3339)
+	meta.Execution["release_chain_status"] = chainStatus
+	meta.Execution["release_confirmations"] = chainTx.Confirmations
+	raw, err := db.MarshalDexOfferCreation(meta)
+	if err != nil {
+		return fmt.Errorf("verifyBisqPositionReleased: marshal execution metadata: %w", err)
+	}
+	tx.DexOfferCreation = raw
+	tx.SetStatus(db.StatusDexPositionReleased, "")
+	tx.TransactionComplete = true
+	if err := h.repo.UpdateTransaction(tx); err != nil {
+		return fmt.Errorf("verifyBisqPositionReleased: persist verification: %w", err)
 	}
 	return nil
 }

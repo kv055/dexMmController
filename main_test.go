@@ -63,6 +63,24 @@ func TestParseAccountHealthInterval(t *testing.T) {
 	}
 }
 
+func TestParseDurationOr(t *testing.T) {
+	fallback := 2 * time.Hour
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{raw: "45m", want: 45 * time.Minute},
+		{raw: "0", want: 0},
+		{raw: "-1s", want: -time.Second},
+		{raw: "invalid", want: fallback},
+		{raw: "", want: fallback},
+	} {
+		if got := parseDurationOr(tc.raw, fallback); got != tc.want {
+			t.Fatalf("parseDurationOr(%q) = %s, want %s", tc.raw, got, tc.want)
+		}
+	}
+}
+
 // withEnv sets env vars for the duration of a subtest and returns a cleanup.
 // t.Setenv would be ideal, but resolveDatabaseURL reads several vars, so a
 // helper keeps the table-driven cases below readable.

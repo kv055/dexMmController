@@ -64,8 +64,11 @@ func (s *Server) handleDexReleaseWebhook(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Idempotent: already released → acknowledge without re-enqueuing.
-	if !tx.DexBtcRelease.IsZero() || tx.Status == db.StatusDexPositionReleased || tx.TransactionComplete {
+	depositReturnPending := hedgelessDepositReturnPending(tx)
+	// A released hedgeless transaction remains actionable until its security
+	// deposit has restored the pool. Repeated fiat-controller webhooks can safely
+	// resume that idempotent return step.
+	if (!tx.DexBtcRelease.IsZero() || tx.Status == db.StatusDexPositionReleased || tx.TransactionComplete) && !depositReturnPending {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "already_released", "transaction_id": tx.ID})
 		return
 	}
@@ -75,6 +78,11 @@ func (s *Server) handleDexReleaseWebhook(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "transaction_id": tx.ID})
+}
+
+func hedgelessDepositReturnPending(tx *db.Transaction) bool {
+	return tx != nil && tx.TradeMode == "hedgeless_double_collateral" &&
+		tx.BTCPoolRefillStatus != "" && tx.BTCPoolRefillStatus != "restored" && tx.BTCPoolRefillStatus != "needs_review"
 }
 
 // authorizeDexRelease checks the Authorization: Bearer <token> header against the configured

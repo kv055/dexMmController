@@ -22,7 +22,7 @@ const (
 	// after the DEX position is already open:
 	//
 	//   pending -> spot_buy_pending -> spot_bought
-	//           -> withdrawal_initiated -> restored
+	//           -> withdrawal_initiated -> awaiting_security_deposit -> restored
 	//
 	// Any state can be parked in needs_review when an external side effect may
 	// have happened but cannot be proven from persisted receipts. In particular,
@@ -32,6 +32,7 @@ const (
 	refillSpotBuyPending      = "spot_buy_pending"
 	refillSpotBought          = "spot_bought"
 	refillWithdrawalInitiated = "withdrawal_initiated"
+	refillAwaitingDeposit     = "awaiting_security_deposit"
 	refillRestored            = "restored"
 	refillNeedsReview         = "needs_review"
 	hedgelessSatPerVByte      = int64(2)
@@ -75,6 +76,22 @@ type refillDetails struct {
 	// whichever address the CEX account happens to whitelist later.
 	LNDAddress string          `json:"lnd_address"`
 	Attempts   []refillAttempt `json:"attempts"`
+	// SecurityDepositReturn is written by the fiat-received release worker and
+	// consumed here when deciding whether the original pool target can be
+	// restored without buying the DEX collateral a second time.
+	SecurityDepositReturn *securityDepositReturnDetails `json:"security_deposit_return,omitempty"`
+}
+
+type securityDepositReturnDetails struct {
+	Method      string    `json:"method,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	Destination string    `json:"destination,omitempty"`
+	AmountBTC   float64   `json:"amount_btc,omitempty"`
+	TxID        string    `json:"txid,omitempty"`
+	Memo        string    `json:"memo,omitempty"`
+	Attempts    int       `json:"attempts,omitempty"`
+	LastError   string    `json:"last_error,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at,omitempty"`
 }
 
 // runHedgelessBid executes the double-collateral order:
@@ -156,11 +173,16 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 	if report.SwapRequired {
 		reservationID := fmt.Sprintf("trade-%d", txID)
 		if tf.liquidity == nil {
-			_ = markDexTakenFundingNeedsReview(tf.store, txID)
+			_ = markHedgelessPreparationFailed(tf.store, txID, "submarine swap is required but execution is not configured")
 			return nil, fmt.Errorf("tradeflow: submarine swap is required but execution is not configured")
 		}
 		if err := tf.liquidity.EnsureOutbound(ctx, reservationID, txID, report); err != nil {
-			_ = markHedgelessNeedsReview(tf.store, txID, false)
+			if liquidityPreparationFundsMayHaveMoved(err) {
+				_ = markLiquidityPreparationNeedsReview(tf.store, txID, err.Error())
+			} else {
+				_ = tf.liquidity.Release(context.WithoutCancel(ctx), reservationID)
+				_ = markHedgelessPreparationFailed(tf.store, txID, err.Error())
+			}
 			return nil, fmt.Errorf("tradeflow: prepare RoboSats outbound liquidity: %w", err)
 		}
 		defer func() { _ = tf.liquidity.Release(context.WithoutCancel(ctx), reservationID) }()
@@ -184,21 +206,29 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 		// A just-submitted spend may not be reflected by every LND balance RPC yet.
 		// Never buy less than the BTC committed to this trade, even if the observed
 		// target-current deficit temporarily appears smaller.
-		minimumDeficit := order.RequiredBTCLiquidity
+		// The DEX security deposit is expected to return after fiat settlement.
+		// Replacing it here would buy that collateral twice. Restore only the
+		// non-returning position amount (plus any swap lockup overhead and fees)
+		// while retaining the original target as the final completion threshold.
+		interimTarget := hedgelessInterimTarget(poolTarget, order.SecurityDepositBTC)
+		minimumDeficit := math.Max(order.BTCAmount, order.RequiredBTCLiquidity-order.SecurityDepositBTC)
 		if report.SwapRequired && report.ExpectedLockupSat > report.SwapShortfallSat {
 			minimumDeficit += float64(report.ExpectedLockupSat+report.EstimatedFundingFeeSat-report.SwapShortfallSat) / 1e8
 		}
-		deficit := math.Max(poolTarget-current, minimumDeficit) + order.CEXWithdrawalFeeBTC
+		deficit := math.Max(interimTarget-current, minimumDeficit) + order.CEXWithdrawalFeeBTC
 		spot, withdrawal, err = tf.startRefill(ctx, txID, order, preTrade, report.LNDWithdrawAddress, deficit, 1)
 		return err
 	}
 	funding, execution, err := tf.fundHedgelessDEX(ctx, txID, order, onPoolSpent)
 	if err != nil {
-		_ = markHedgelessNeedsReview(tf.store, txID, true)
+		_ = markHedgelessExecutionNeedsReview(tf.store, txID, err.Error())
 		return nil, fmt.Errorf("tradeflow: hedgeless DEX funding needs review (transaction_id=%d): %w", txID, err)
 	}
-	if err := recordHedgelessDEXOpen(tf.store, txID, order, funding, execution); err != nil {
-		_ = markHedgelessNeedsReview(tf.store, txID, true)
+	if err := recordHedgelessDEXTaken(tf.store, txID, order, funding, execution); err != nil {
+		// Take and funding both returned receipts; only the durable write failed.
+		// Preserve that stronger safety fact even if the previous mutation did not
+		// make the execution metadata visible to a subsequent repository read.
+		_ = markDexTakenFundingNeedsReview(tf.store, txID, err.Error())
 		return nil, fmt.Errorf("tradeflow: persist hedgeless DEX funding (transaction_id=%d): %w", txID, err)
 	}
 
@@ -291,16 +321,16 @@ func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Orde
 	if invoice != "" {
 		decoder, ok := tf.hedgelessWallet.(invoiceDecoder)
 		if !ok {
-			_ = markDexTakenFundingNeedsReview(tf.store, txID)
+			_ = markDexTakenFundingNeedsReview(tf.store, txID, "RoboSats invoice decoder is not configured")
 			return nil, nil, fmt.Errorf("RoboSats invoice decoder is not configured")
 		}
 		decoded, decodeErr := decoder.DecodeInvoice(ctx, invoice)
 		if decodeErr != nil {
-			_ = markDexTakenFundingNeedsReview(tf.store, txID)
+			_ = markDexTakenFundingNeedsReview(tf.store, txID, decodeErr.Error())
 			return nil, nil, fmt.Errorf("decode RoboSats invoice: %w", decodeErr)
 		}
 		if err := validateRoboSatsInvoice(invoice, decoded, amountSat, time.Now()); err != nil {
-			_ = markDexTakenFundingNeedsReview(tf.store, txID)
+			_ = markDexTakenFundingNeedsReview(tf.store, txID, err.Error())
 			return nil, nil, err
 		}
 		_, err := tf.hedgelessWallet.PayInvoice(ctx, invoice, routingFeeLimit(order))
@@ -321,6 +351,10 @@ func routingFeeLimit(order Order) int64 {
 		return order.RoutingFeeAllowanceSat
 	}
 	return defaultRoutingFeeLimitSat
+}
+
+func hedgelessInterimTarget(poolTarget, securityDepositBTC float64) float64 {
+	return math.Max(0, poolTarget-math.Max(0, securityDepositBTC))
 }
 
 func validateRoboSatsInvoice(invoice string, decoded *lnd.DecodedInvoice, preparedSat int64, now time.Time) error {
@@ -355,8 +389,40 @@ func validateRoboSatsInvoice(invoice string, decoded *lnd.DecodedInvoice, prepar
 	return nil
 }
 
-func markDexTakenFundingNeedsReview(store transactionStore, id uint) error {
-	return mutateRow(store, id, func(tx *db.Transaction) { tx.Status = db.StatusDexTakenFundingNeedsReview })
+func markDexTakenFundingNeedsReview(store transactionStore, id uint, reason string) error {
+	return mutateRow(store, id, func(tx *db.Transaction) {
+		tx.SetStatus(db.StatusDexTakenFundingNeedsReview, reason)
+		tx.TransactionComplete = false
+	})
+}
+
+func markHedgelessPreparationFailed(store transactionStore, id uint, reason string) error {
+	return mutateRow(store, id, func(tx *db.Transaction) {
+		tx.SetStatus(db.StatusHedgelessPreparationFailed, reason)
+		tx.BTCPoolRefillStatus = refillRestored
+		tx.TransactionComplete = true
+	})
+}
+
+func markLiquidityPreparationNeedsReview(store transactionStore, id uint, reason string) error {
+	return mutateRow(store, id, func(tx *db.Transaction) {
+		tx.SetStatus(db.StatusLiquidityPreparationNeedsReview, reason)
+		tx.BTCPoolRefillStatus = refillNeedsReview
+		tx.TransactionComplete = false
+	})
+}
+
+func markHedgelessExecutionNeedsReview(store transactionStore, id uint, reason string) error {
+	return mutateRow(store, id, func(tx *db.Transaction) {
+		meta, _ := db.ParseDexOfferCreation(tx.DexOfferCreation)
+		if meta.Execution != nil || tx.Status == db.StatusDexTakenFundingNeedsReview {
+			tx.SetStatus(db.StatusDexTakenFundingNeedsReview, reason)
+		} else {
+			tx.SetStatus(db.StatusHedgelessFundingNeedsReview, reason)
+		}
+		tx.BTCPoolRefillStatus = refillNeedsReview
+		tx.TransactionComplete = false
+	})
 }
 
 func waitForBisqFunding(ctx context.Context, resolver directBalanceResolver, exchange, address string, wantBTC float64) error {
@@ -461,7 +527,7 @@ func persistHedgelessExecution(store transactionStore, id uint, execution map[st
 
 func markHedgelessFundingInitiated(store transactionStore, id uint, destination string) error {
 	return mutateRow(store, id, func(tx *db.Transaction) {
-		tx.Status = db.StatusHedgelessFundingInitiated
+		tx.SetStatus(db.StatusHedgelessFundingInitiated, "")
 		if strings.TrimSpace(destination) != "" {
 			tx.DestinationAddress = strings.TrimSpace(destination)
 		}
@@ -483,7 +549,7 @@ func recordHedgelessFundingReceipt(store transactionStore, id uint, funding *DEX
 	return mutateRow(store, id, func(tx *db.Transaction) { tx.CexToDexWithdrawalTxDetails = relay })
 }
 
-func recordHedgelessDEXOpen(store transactionStore, id uint, order Order, funding *DEXFundingResult, execution map[string]any) error {
+func recordHedgelessDEXTaken(store transactionStore, id uint, order Order, funding *DEXFundingResult, execution map[string]any) error {
 	relay, err := json.Marshal(db.CexToDexRelayDetails{TxID: funding.TxID, PaymentHash: funding.PaymentHash, AmountSat: dexaccount.BTCToSats(funding.AmountBTC), DepositAddress: funding.Destination, PaymentMethod: funding.Method, SentAt: time.Now().UTC()})
 	if err != nil {
 		return err
@@ -494,7 +560,7 @@ func recordHedgelessDEXOpen(store transactionStore, id uint, order Order, fundin
 		tx.DexOfferCreation, _ = db.MarshalDexOfferCreation(meta)
 		tx.CexToDexWithdrawalTxDetails = relay
 		tx.CexBitcoinAmount = order.BTCAmount
-		tx.Status = db.StatusDexPositionOpen
+		tx.SetStatus(db.StatusDexPositionTaken, "")
 		tx.DexOfferTaken = time.Now().UTC()
 	})
 }
@@ -505,7 +571,7 @@ func markHedgelessNeedsReview(store transactionStore, id uint, funding bool) err
 	// the trade because it is unclear whether the initial LND commitment succeeded.
 	return mutateRow(store, id, func(tx *db.Transaction) {
 		if funding {
-			tx.Status = db.StatusHedgelessFundingNeedsReview
+			tx.SetStatus(db.StatusHedgelessFundingNeedsReview, "funding outcome remained ambiguous after the recovery grace period")
 		}
 		tx.BTCPoolRefillStatus = refillNeedsReview
 	})
@@ -517,6 +583,19 @@ func decodeRefillDetails(raw json.RawMessage) refillDetails {
 	var details refillDetails
 	_ = json.Unmarshal(raw, &details)
 	return details
+}
+
+func markHedgelessPoolRestored(store transactionStore, id uint) error {
+	return mutateRow(store, id, func(tx *db.Transaction) {
+		tx.BTCPoolRefillStatus = refillRestored
+		details := decodeRefillDetails(tx.BTCPoolRefillDetails)
+		if details.SecurityDepositReturn != nil {
+			details.SecurityDepositReturn.Status = "returned"
+			details.SecurityDepositReturn.LastError = ""
+			details.SecurityDepositReturn.UpdatedAt = time.Now().UTC()
+			tx.BTCPoolRefillDetails, _ = json.Marshal(details)
+		}
+	})
 }
 
 func appendRefillAttempt(store transactionStore, id uint, address string, attempt refillAttempt, status string) error {
@@ -589,15 +668,21 @@ func (tf *TradeFlow) advanceRefill(ctx context.Context, tx *db.Transaction) erro
 		return nil
 	}
 	switch tx.Status {
-	case db.StatusHedgelessTradeStarted, db.StatusHedgelessFundingInitiated:
-		// These states straddle the initial LND side effect. After the grace
-		// period, absence of a receipt is ambiguous and must never trigger an
-		// automatic second payment.
+	case db.StatusHedgelessTradeStarted:
+		// A crash here may straddle liquidity preparation. Conservatively retain
+		// the reservation until its durable swap state is reconciled.
 		if time.Since(tx.UpdatedAt) >= refillRecoveryGrace {
-			return markHedgelessNeedsReview(tf.store, tx.ID, true)
+			return markLiquidityPreparationNeedsReview(tf.store, tx.ID, "liquidity preparation outcome remained ambiguous after the recovery grace period")
 		}
 		return nil
-	case db.StatusHedgelessFundingNeedsReview:
+	case db.StatusHedgelessFundingInitiated:
+		// This state straddles the initial DEX/LND funding side effect and must
+		// never be recovered by automatically issuing a second payment.
+		if time.Since(tx.UpdatedAt) >= refillRecoveryGrace {
+			return markHedgelessExecutionNeedsReview(tf.store, tx.ID, "DEX funding outcome remained ambiguous after the recovery grace period")
+		}
+		return nil
+	case db.StatusLiquidityPreparationNeedsReview, db.StatusHedgelessFundingNeedsReview, db.StatusDexTakenFundingNeedsReview:
 		return nil
 	}
 	if tx.BTCPoolRefillStatus == refillNeedsReview {
@@ -607,14 +692,56 @@ func (tf *TradeFlow) advanceRefill(ctx context.Context, tx *db.Transaction) erro
 	if err != nil {
 		return markHedgelessNeedsReview(tf.store, tx.ID, false)
 	}
+	securityDepositBTC := math.Max(0, rc.order.SecurityDepositBTC)
+	interimTarget := hedgelessInterimTarget(tx.BTCPoolTargetBTC, securityDepositBTC)
 	current, err := hc.LNDPoolBalanceBTC(ctx, rc.order.Dex)
 	if err != nil {
 		return err
 	}
-	if current+1e-8 >= tx.BTCPoolTargetBTC {
-		return mutateRow(tf.store, tx.ID, func(row *db.Transaction) { row.BTCPoolRefillStatus = refillRestored })
-	}
 	details := decodeRefillDetails(tx.BTCPoolRefillDetails)
+	refillTarget := interimTarget
+	depositReturnConfirmed := false
+	returned := details.SecurityDepositReturn
+	if returned != nil && !strings.EqualFold(rc.order.Dex, "robosats") && strings.TrimSpace(returned.TxID) != "" && tf.chainSource != nil {
+		confirmations, confirmErr := tf.chainSource.TransactionConfirmations(ctx, returned.TxID)
+		if confirmErr != nil {
+			return confirmErr
+		}
+		if db.WithdrawalConfirmationsMet(confirmations) {
+			depositReturnConfirmed = true
+			refillTarget = tx.BTCPoolTargetBTC
+		}
+	}
+	depositReturnObserved := securityDepositBTC <= 1e-12 || depositReturnConfirmed ||
+		(strings.EqualFold(rc.order.Dex, "robosats") && returned != nil && (returned.Status == "initiated" || returned.Status == "returned"))
+	if depositReturnObserved && current+1e-8 >= tx.BTCPoolTargetBTC {
+		return markHedgelessPoolRestored(tf.store, tx.ID)
+	}
+	if tx.BTCPoolRefillStatus == refillAwaitingDeposit {
+		if returned != nil && returned.Status == refillNeedsReview {
+			return markHedgelessNeedsReview(tf.store, tx.ID, false)
+		}
+		// RoboSats cancels the fidelity-bond hold payment back into this same
+		// LND wallet. Its aggregate pool balance is the authoritative receipt;
+		// do not issue a compensating buy while that asynchronous unlock is pending.
+		if strings.EqualFold(rc.order.Dex, "robosats") {
+			return nil
+		}
+		// Bisq returns the deposit with a separate on-chain withdrawal. Only
+		// correct a miner-fee shortfall after that return transaction is confirmed.
+		if !depositReturnConfirmed {
+			return nil
+		}
+		if len(details.Attempts) >= maxRefillAttempts {
+			return markHedgelessNeedsReview(tf.store, tx.ID, false)
+		}
+		deficit := refillTarget - current
+		_, _, err = tf.startRefill(ctx, tx.ID, rc.order, pretrade.Params{
+			Provider: rc.order.Provider, FiatCurrency: rc.order.FiatCurrency, RequiredCapital: rc.order.RequiredCapital,
+			TradeMode: rc.order.TradeMode, Dex: rc.order.Dex, PaymentMethod: rc.order.PaymentMethod,
+		}, details.LNDAddress, deficit, len(details.Attempts)+1)
+		return err
+	}
 	if tx.BTCPoolRefillStatus == refillSpotBuyPending {
 		// Unlike withdrawals, the supported spot market-buy APIs cannot be
 		// reconciled by our stable client id. Do not retry an unknown outcome.
@@ -628,10 +755,16 @@ func (tf *TradeFlow) advanceRefill(ctx context.Context, tx *db.Transaction) erro
 		// pending can survive a crash after DEX funding was recorded but before
 		// startRefill wrote its spot-buy intent. Only start it once the DEX status
 		// proves that spending the pool progressed far enough.
-		if tx.Status != db.StatusDexPositionOpen && tx.Status != db.StatusDexPositionTaken && tx.Status != db.StatusDexFiatHasArrived && tx.Status != db.StatusDexPositionReleased {
+		if tx.Status != db.StatusDexPositionTaken && tx.Status != db.StatusDexFiatHasArrived && tx.Status != db.StatusDexPositionReleased {
 			return nil
 		}
-		deficit := tx.BTCPoolTargetBTC - current
+		deficit := refillTarget - current
+		if deficit <= 1e-8 {
+			if securityDepositBTC > 0 {
+				return mutateRow(tf.store, tx.ID, func(row *db.Transaction) { row.BTCPoolRefillStatus = refillAwaitingDeposit })
+			}
+			return markHedgelessPoolRestored(tf.store, tx.ID)
+		}
 		_, _, err := tf.startRefill(ctx, tx.ID, rc.order, pretrade.Params{
 			Provider: rc.order.Provider, FiatCurrency: rc.order.FiatCurrency, RequiredCapital: rc.order.RequiredCapital,
 			TradeMode: rc.order.TradeMode, Dex: rc.order.Dex, PaymentMethod: rc.order.PaymentMethod,
@@ -702,15 +835,20 @@ func (tf *TradeFlow) advanceRefill(ctx context.Context, tx *db.Transaction) erro
 	if err != nil {
 		return err
 	}
-	if current+1e-8 >= tx.BTCPoolTargetBTC {
-		return mutateRow(tf.store, tx.ID, func(row *db.Transaction) { row.BTCPoolRefillStatus = refillRestored })
+	if current+1e-8 >= refillTarget {
+		if securityDepositBTC > 0 && !depositReturnConfirmed {
+			return mutateRow(tf.store, tx.ID, func(row *db.Transaction) {
+				row.BTCPoolRefillStatus = refillAwaitingDeposit
+			})
+		}
+		return markHedgelessPoolRestored(tf.store, tx.ID)
 	}
 	if len(details.Attempts) >= maxRefillAttempts {
 		return markHedgelessNeedsReview(tf.store, tx.ID, false)
 	}
 	// Fees or a partial fill can leave the pool slightly below its recorded
 	// target. Buy only the measured shortfall, and allow at most one correction.
-	deficit := tx.BTCPoolTargetBTC - current
+	deficit := refillTarget - current
 	_, _, err = tf.startRefill(ctx, tx.ID, rc.order, pretrade.Params{
 		Provider: rc.order.Provider, FiatCurrency: rc.order.FiatCurrency, RequiredCapital: rc.order.RequiredCapital,
 		TradeMode: rc.order.TradeMode, Dex: rc.order.Dex, PaymentMethod: rc.order.PaymentMethod,
@@ -752,7 +890,7 @@ func (tf *TradeFlow) ReconcilePoolRefill(ctx context.Context, transactionID uint
 	if current+1e-8 < tx.BTCPoolTargetBTC {
 		return nil, fmt.Errorf("tradeflow: LND pool is still below target: current %.8f, target %.8f", current, tx.BTCPoolTargetBTC)
 	}
-	if err := mutateRow(tf.store, tx.ID, func(row *db.Transaction) { row.BTCPoolRefillStatus = refillRestored }); err != nil {
+	if err := markHedgelessPoolRestored(tf.store, tx.ID); err != nil {
 		return nil, err
 	}
 	return tf.store.GetTransaction(tx.ID)

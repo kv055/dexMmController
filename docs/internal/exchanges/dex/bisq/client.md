@@ -1,343 +1,129 @@
-# `internal/exchanges/dex/bisq/client.go`
+# `client.go`
 
-Source package: `bisq`  
-Source lines: `685`
+## Purpose
 
-## Package Purpose
+`internal/exchangeconnectors/dex/bisq/client.go` is the Bisq v1 gRPC adapter. It
+normalizes daemon offers, trades, payment accounts, payment methods, and wallet
+data into controller-owned Go types so orchestration code does not depend on
+generated Bisq protobuf packages.
 
-This file contributes to the `bisq` package.
+## Runtime Role
 
-## File Role
+The client connects to `BISQ_GRPC_HOST` with the configured API password. It is
+used by pre-trade checks, direct Bisq wallet funding, offer taking, payment-detail
+resolution, payout release, wallet-management APIs, and periodic health checks.
 
-This file defines 7 type(s), implements 33 function or method entry point(s), declares 7 package value(s).
+Instead of generated stubs, the connector maintains a minimal dynamic protobuf
+descriptor in `buildFileDescriptor`. Field names, wire numbers, types, message
+names, and RPC paths must exactly match the daemon schema. A field omitted from
+this descriptor is silently unavailable to normalization even when the daemon
+sends it.
 
-## Runtime Behavior
-
-- Uses time windows, timestamps, or duration calculations.
-- Accepts context for cancellation, deadlines, or request scoping.
-- Communicates with a gRPC service.
-
-## Types
-
-### `Client`
-
-Client represents a client.
-
-Fields:
-
-- `host` `string`: Stores the host value for the client.
-- `password` `string`: Stores the password value for the client.
-- `conn` `*grpc.ClientConn`: Stores the conn value for the client.
-- `connErr` `error`: Stores the conn err value for the client.
-- `once` `sync.Once`: Stores the once value for the client.
-
-### `Offer`
-
-Offer is a normalized DEX offer used by this package.
-
-Fields:
-
-- `ID` `string`: ID identifies the offer.
-- `Direction` `string`: Direction is the direction value for the offer.
-- `Price` `string`: Price is the price value used by the offer.
-- `AmountSats` `uint64`: AmountSats is the amount in satoshis.
-- `MinAmountSats` `uint64`: MinAmountSats is the amount in satoshis.
-- `Volume` `string`: Volume is the volume value for the offer.
-- `MinVolume` `string`: MinVolume is the min volume value for the offer.
-- `PaymentAccountID` `string`: PaymentAccountID is the count associated with the offer.
-- `PaymentMethodID` `string`: PaymentMethodID is the payment method id value for the offer.
-- `PaymentMethodShortName` `string`: PaymentMethodShortName is the payment method short name value for the offer.
-- `State` `string`: State is the state value for the offer.
-- `IsActivated` `bool`: IsActivated reports whether the offer condition is true.
-- `IsMyOffer` `bool`: IsMyOffer reports whether the offer condition is true.
-
-### `PaymentAccount`
-
-PaymentAccount represents a payment account.
-
-Fields:
-
-- `ID` `string`: ID identifies the payment account.
-- `AccountName` `string`: AccountName is the count associated with the payment account.
-- `PaymentMethodID` `string`: PaymentMethodID is the payment method id value for the payment account.
-- `TradeCurrency` `string`: TradeCurrency names the asset or network for the payment account.
-
-### `Trade`
-
-Trade represents a trade.
-
-Fields:
-
-- `TradeID` `string`: TradeID is the trade id value for the trade.
-- `OfferID` `string`: OfferID is the offer id value for the trade.
-- `Role` `string`: Role is the role value for the trade.
-- `State` `string`: State is the state value for the trade.
-- `Phase` `string`: Phase is the phase value for the trade.
-- `TradePrice` `string`: TradePrice is the price value used by the trade.
-- `TradeVolume` `string`: TradeVolume is the trade volume value for the trade.
-- `TradeAmountSats` `uint64`: TradeAmountSats is the amount in satoshis.
-- `IsCompleted` `bool`: IsCompleted reports whether the trade condition is true.
-- `HasFailed` `bool`: HasFailed reports whether the trade condition is true.
-- `ErrorMessage` `string`: ErrorMessage carries a human-readable message for the trade.
-- `DepositTxID` `string`: DepositTxID is the deposit tx id value for the trade.
-- `PayoutTxID` `string`: PayoutTxID is the payout tx id value for the trade.
-- `CreatedAt` `time.Time`: CreatedAt records the relevant time for the trade.
-
-### `TakeOfferParams`
-
-TakeOfferParams represents a take offer params.
-
-Fields:
-
-- `PaymentAccountID` `string`: PaymentAccountID is the count associated with the take offer params.
-- `TakerFeeCurrencyCode` `string`: TakerFeeCurrencyCode names the asset or network for the take offer params.
-- `AmountSats` `uint64`: AmountSats is the amount in satoshis.
-
-### `CreatePositionParams`
-
-CreatePositionParams represents a create position params.
-
-Fields:
-
-- `CurrencyCode` `string`: CurrencyCode names the asset or network for the create position params.
-- `Direction` `string`: Direction is the direction value for the create position params.
-- `Price` `string`: Price is the price value used by the create position params.
-- `UseMarketBasedPrice` `bool`: UseMarketBasedPrice is the price value used by the create position params.
-- `MarketPriceMarginPct` `float64`: MarketPriceMarginPct is a percentage value.
-- `AmountSats` `uint64`: AmountSats is the amount in satoshis.
-- `MinAmountSats` `uint64`: MinAmountSats is the amount in satoshis.
-- `BuyerSecurityDepositPct` `float64`: BuyerSecurityDepositPct is a percentage value.
-- `TriggerPrice` `string`: TriggerPrice is the price value used by the create position params.
-- `PaymentAccountID` `string`: PaymentAccountID is the count associated with the create position params.
-- `MakerFeeCurrencyCode` `string`: MakerFeeCurrencyCode names the asset or network for the create position params.
-
-### `bisqCreds`
-
-Fields:
-
-- `password` `string`: Stores the password value for the bisq creds.
-
-## Functions and Methods
+## Function Map
 
 ### `NewClient`
 
-NewClient creates a client.
+```go
+func NewClient(host, password string) *Client
+```
 
-Signature: `func NewClient(host, password string) *Client`
+Creates a lazily connected client. The first RPC initializes and reuses the gRPC
+connection; connection errors are retained by the client.
 
-### `(*Client).GetMyOffers`
+### `TakeOffer`
 
-GetMyOffers retrieves a my offers.
+```go
+func (c *Client) TakeOffer(ctx context.Context, offerID string, params TakeOfferParams) (*Trade, error)
+```
 
-Signature: `func (c *Client) GetMyOffers(ctx context.Context, direction, currencyCode string) ([]Offer, error)`
+Calls `Trades/TakeOffer` with the selected payment account, fee currency, and
+amount. The returned `Trade` supplies the durable trade identifier persisted by
+the orchestration layer.
 
-### `(*Client).GetPaymentAccounts`
+### `GetPosition` and `GetOpenPositions`
 
-GetPaymentAccounts retrieves a payment accounts.
+```go
+func (c *Client) GetPosition(ctx context.Context, tradeID string) (*Trade, error)
+func (c *Client) GetOpenPositions(ctx context.Context) ([]Trade, error)
+```
 
-Signature: `func (c *Client) GetPaymentAccounts(ctx context.Context) ([]PaymentAccount, error)`
+Normalize daemon `TradeInfo` messages. Besides identifiers, amounts, phase,
+state, transaction IDs, and failure details, the normalized `Trade` carries:
 
-### `(*Client).TakeOffer`
+- `IsPaymentStartedMessageSent`: the buyer marked fiat payment as sent;
+- `IsPaymentReceivedMessageSent`: the seller confirmed fiat receipt;
+- `IsPayoutPublished`: the payout transaction was published;
+- `ContractAsJSON`: the structured contract used to resolve counterparty
+  payment details.
 
-TakeOffer accepts an existing DEX offer.
+The three boolean fields use Bisq `TradeInfo` wire numbers 20, 21, and 22.
 
-Signature: `func (c *Client) TakeOffer(ctx context.Context, offerID string, params TakeOfferParams) (*Trade, error)`
+### `(*Trade).FiatSent`
 
-### `(*Client).GetOpenPositions`
+```go
+func (t *Trade) FiatSent() bool
+```
 
-GetOpenPositions retrieves an open positions.
+Implemented in `tradephase.go`, this helper reports whether the trade reached
+the buyer-fiat-sent stage. It prefers `IsPaymentStartedMessageSent`, then falls
+back to known Bisq phase and state ordering. Unknown future names are not
+guessed. Healthcheck uses this helper for manual escalation only; it is not
+evidence that fiat reached the bank and does not authorize release.
 
-Signature: `func (c *Client) GetOpenPositions(ctx context.Context) ([]Trade, error)`
+### `(*Trade).PayoutPublished`
 
-### `(*Client).GetPosition`
+```go
+func (t *Trade) PayoutPublished() bool
+```
 
-GetPosition retrieves a position.
+Reports whether Bisq reached payout publication. It prefers the daemon's
+`IsPayoutPublished` boolean and falls back to known payout-or-later phase and
+state names. `IsPaymentReceivedMessageSent` alone is deliberately insufficient.
+Healthcheck combines this signal with a nonempty payout txid and independent
+mempool/block visibility before marking a transaction complete.
 
-Signature: `func (c *Client) GetPosition(ctx context.Context, tradeID string) (*Trade, error)`
+### `ConfirmPaymentReceived`
 
-### `(*Client).CreatePosition`
+```go
+func (c *Client) ConfirmPaymentReceived(ctx context.Context, tradeID string) error
+```
 
-CreatePosition creates a position.
+As the BTC seller, confirms receipt to the Bisq daemon so it can publish the
+payout. The release layer performs a follow-up `GetPosition` to capture payout
+state and transaction ID. Callers must authorize fiat arrival before invoking
+this method.
 
-Signature: `func (c *Client) CreatePosition(ctx context.Context, params CreatePositionParams) (*Offer, error)`
+### `GetCounterpartyPayment`
 
-### `(*Client).invoke`
+```go
+func (c *Client) GetCounterpartyPayment(ctx context.Context, tradeID string) (json.RawMessage, error)
+```
 
-This function is part of the `bisq` package implementation.
+Fetches the trade contract and extracts the counterparty payment-account
+payload. This is the structured Bisq alternative to chat-based payment-detail
+capture.
 
-Signature: `func (c *Client) invoke(ctx context.Context, method string, req, resp *dynamicpb.Message) error`
+### Wallet operations
 
-### `(*Client).connection`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func (c *Client) connection(ctx context.Context) (*grpc.ClientConn, error)`
-
-### `(bisqCreds).GetRequestMetadata`
-
-GetRequestMetadata retrieves a request metadata.
-
-Signature: `func (c bisqCreds) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error)`
-
-### `(bisqCreds).RequireTransportSecurity`
-
-RequireTransportSecurity reports whether the credentials require transport security.
-
-Signature: `func (c bisqCreds) RequireTransportSecurity() bool`
-
-### `fileDescriptor`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func fileDescriptor() protoreflect.FileDescriptor`
-
-### `newMessage`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func newMessage(name string) *dynamicpb.Message`
-
-### `setString`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func setString(msg *dynamicpb.Message, fieldName string, value string)`
-
-### `setBool`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func setBool(msg *dynamicpb.Message, fieldName string, value bool)`
-
-### `setFloat64`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func setFloat64(msg *dynamicpb.Message, fieldName string, value float64)`
-
-### `setUint64`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func setUint64(msg *dynamicpb.Message, fieldName string, value uint64)`
-
-### `setEnum`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func setEnum(msg *dynamicpb.Message, fieldName string, value int32)`
-
-### `offerFromMessage`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func offerFromMessage(msg protoreflect.Message) Offer`
-
-### `paymentAccountFromMessage`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func paymentAccountFromMessage(msg protoreflect.Message) PaymentAccount`
-
-### `tradeFromMessage`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func tradeFromMessage(msg protoreflect.Message) Trade`
-
-### `stringField`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func stringField(msg protoreflect.Message, name string) string`
-
-### `boolField`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func boolField(msg protoreflect.Message, name string) bool`
-
-### `uint64Field`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func uint64Field(msg protoreflect.Message, name string) uint64`
+Funding address/balance, wallet balance, transaction, send, lock/unlock,
+password, and unencrypted-wallet policy methods expose the subset of Bisq
+wallet management needed by direct funding and controller APIs. Money-moving
+methods return daemon errors unchanged with operation context.
 
 ### `buildFileDescriptor`
 
-This function is part of the `bisq` package implementation.
+```go
+func buildFileDescriptor() *descriptorpb.FileDescriptorProto
+```
 
-Signature: `func buildFileDescriptor() *descriptorpb.FileDescriptorProto`
+Declares the minimal messages and services used by this connector. Descriptor
+tests construct dynamic messages to catch duplicate numbers, invalid types, or
+missing fields before runtime.
 
-### `message`
+## Failure Behavior
 
-This function is part of the `bisq` package implementation.
-
-Signature: `func message(name string, fields []*descriptorpb.FieldDescriptorProto, enums ...*descriptorpb.EnumDescriptorProto) *descriptorpb.DescriptorProto`
-
-### `field`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func field(name string, number int32, kind descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto`
-
-### `messageField`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func messageField(name string, number int32, typeName string) *descriptorpb.FieldDescriptorProto`
-
-### `repeatedMessageField`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func repeatedMessageField(name string, number int32, typeName string) *descriptorpb.FieldDescriptorProto`
-
-### `enumField`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func enumField(name string, number int32, typeName string) *descriptorpb.FieldDescriptorProto`
-
-### `method`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func method(name, input, output string) *descriptorpb.MethodDescriptorProto`
-
-### `strptr`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func strptr(v string) *string`
-
-### `int32ptr`
-
-This function is part of the `bisq` package implementation.
-
-Signature: `func int32ptr(v int32) *int32`
-
-## Constants and Variables
-
-- `defaultHost`: No inline declaration comment is present.
-- `defaultCurrencyCode`: No inline declaration comment is present.
-- `defaultTakerFeeCurrency`: No inline declaration comment is present.
-- `tradesCategoryOpen`: No inline declaration comment is present.
-- `bisqFileDesc`: No inline declaration comment is present.
-- `bisqFileDescOnce`: No inline declaration comment is present.
-- `bisqFileDescErr`: No inline declaration comment is present.
-
-## Key Dependencies
-
-- `context`
-- `errors`
-- `fmt`
-- `sync`
-- `time`
-- `google.golang.org/grpc`
-- `google.golang.org/grpc/credentials/insecure`
-- `google.golang.org/protobuf/reflect/protodesc`
-- `google.golang.org/protobuf/reflect/protoreflect`
-- `google.golang.org/protobuf/types/descriptorpb`
-- `google.golang.org/protobuf/types/dynamicpb`
-
+RPC methods honor context cancellation and wrap connection/invocation errors
+with the failed operation. Normalizers treat absent optional fields as zero
+values. Protocol enum values are exposed as strings; compatibility helpers such
+as `FiatSent` and `PayoutPublished` accept only names explicitly known to this
+connector.

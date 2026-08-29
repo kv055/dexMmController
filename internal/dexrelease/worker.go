@@ -6,8 +6,10 @@ package dexrelease
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -33,24 +35,33 @@ type releaser interface {
 	Release(ctx context.Context, in dexaccount.ReleaseInput) (*dexaccount.ReleaseResult, error)
 }
 
+type securityDepositReturner interface {
+	ReturnSecurityDeposit(ctx context.Context, in dexaccount.SecurityDepositReturnInput) (*dexaccount.SecurityDepositReturnResult, error)
+}
+
 // Worker drains a queue of transaction ids and releases each one's escrowed BTC. Jobs are
 // produced only by Enqueue (called by the webhook handler); a single goroutine consumes
 // them serially so concurrent signing can't race.
 type Worker struct {
 	repo       txStore
 	releaser   releaser
+	returner   securityDepositReturner
 	jobs       chan uint
 	maxRetries int
 }
 
 // NewWorker creates a release worker.
 func NewWorker(repo txStore, rel releaser) *Worker {
-	return &Worker{
+	w := &Worker{
 		repo:       repo,
 		releaser:   rel,
 		jobs:       make(chan uint, defaultQueueSize),
 		maxRetries: defaultMaxRetries,
 	}
+	if returner, ok := rel.(securityDepositReturner); ok {
+		w.returner = returner
+	}
+	return w
 }
 
 // Enqueue submits a transaction id for release. It is non-blocking; it returns false if the
@@ -78,8 +89,9 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// releaseWithRetry retries transient failures a few times; the row is left untouched on
-// persistent failure so a re-sent webhook can drive it again (release is idempotent).
+// releaseWithRetry retries transient failures a few times. A persistent
+// post-release collateral-return failure is parked for operator review; failures
+// before the DEX release leave the row retryable by a later webhook.
 func (w *Worker) releaseWithRetry(ctx context.Context, txID uint) error {
 	var lastErr error
 	for attempt := 1; attempt <= w.maxRetries; attempt++ {
@@ -97,6 +109,9 @@ func (w *Worker) releaseWithRetry(ctx context.Context, txID uint) error {
 		}
 		return nil
 	}
+	if err := w.markDepositReturnNeedsReview(txID, lastErr); err != nil {
+		return fmt.Errorf("%v; persist security-deposit review state: %w", lastErr, err)
+	}
 	return lastErr
 }
 
@@ -107,12 +122,17 @@ func (w *Worker) release(ctx context.Context, txID uint) error {
 		return fmt.Errorf("load transaction: %w", err)
 	}
 
-	// Idempotency: already released (timestamp set or status advanced) → nothing to do.
-	if !tx.DexBtcRelease.IsZero() || tx.Status == db.StatusDexPositionReleased || tx.TransactionComplete {
+	if tx.TransactionComplete {
+		return nil
+	}
+	securityDepositBTC := hedgelessSecurityDepositBTC(tx)
+	needsDepositReturn := tx.TradeMode == "hedgeless_double_collateral" && securityDepositBTC > 1e-12
+	releaseDone := !tx.DexBtcRelease.IsZero() || tx.Status == db.StatusDexPositionReleased
+	if releaseDone && (!needsDepositReturn || tx.BTCPoolRefillStatus == "restored" || tx.BTCPoolRefillStatus == "needs_review") {
 		return nil
 	}
 	// Only release once the fiat controller has advanced the row to fiat-arrived.
-	if tx.Status != db.StatusDexFiatHasArrived {
+	if !releaseDone && tx.Status != db.StatusDexFiatHasArrived {
 		return fmt.Errorf("transaction %d not releasable in status %q", txID, tx.Status)
 	}
 
@@ -126,29 +146,189 @@ func (w *Worker) release(ctx context.Context, txID uint) error {
 		return fmt.Errorf("transaction %d has no contract_id in execution", txID)
 	}
 
-	result, err := w.releaser.Release(ctx, dexaccount.ReleaseInput{Exchange: exchange, ContractID: contractID})
-	if err != nil {
-		return fmt.Errorf("release on %s: %w", exchange, err)
-	}
+	if !releaseDone {
+		result, err := w.releaser.Release(ctx, dexaccount.ReleaseInput{Exchange: exchange, ContractID: contractID})
+		if err != nil {
+			return fmt.Errorf("release on %s: %w", exchange, err)
+		}
 
-	// Record + advance. DexBtcRelease doubles as the idempotency guard above.
-	tx.DexBtcRelease = time.Now().UTC()
-	tx.Status = db.StatusDexPositionReleased
-	if meta.Execution == nil {
-		meta.Execution = map[string]any{}
+		// Persist the DEX release before initiating the separate collateral
+		// return. A retry can then resume without re-broadcasting the release.
+		latest, err := w.repo.GetTransaction(tx.ID)
+		if err != nil {
+			return fmt.Errorf("reload transaction after release: %w", err)
+		}
+		tx = latest
+		meta, err = db.ParseDexOfferCreation(tx.DexOfferCreation)
+		if err != nil {
+			return fmt.Errorf("parse latest DexOfferCreation: %w", err)
+		}
+		tx.DexBtcRelease = time.Now().UTC()
+		tx.SetStatus(db.StatusDexPositionReleased, "")
+		if meta.Execution == nil {
+			meta.Execution = map[string]any{}
+		}
+		if result != nil && result.ReleaseTxID != "" {
+			meta.Execution["release_tx_id"] = result.ReleaseTxID
+		}
+		meta.Execution["released_at"] = tx.DexBtcRelease.Format(time.RFC3339)
+		if raw, mErr := db.MarshalDexOfferCreation(meta); mErr == nil {
+			tx.DexOfferCreation = raw
+		}
+		if err := w.repo.UpdateTransaction(tx); err != nil {
+			return fmt.Errorf("persist release: %w", err)
+		}
+		releaseTxID := ""
+		if result != nil {
+			releaseTxID = result.ReleaseTxID
+		}
+		log.Printf("dexrelease: tx %d released on %s (release_tx=%s)", txID, exchange, releaseTxID)
 	}
-	if result.ReleaseTxID != "" {
-		meta.Execution["release_tx_id"] = result.ReleaseTxID
+	if !needsDepositReturn {
+		return nil
 	}
-	meta.Execution["released_at"] = tx.DexBtcRelease.Format(time.RFC3339)
-	if raw, mErr := db.MarshalDexOfferCreation(meta); mErr == nil {
-		tx.DexOfferCreation = raw
+	return w.returnSecurityDeposit(ctx, tx, exchange, contractID, securityDepositBTC)
+}
+
+type depositReturnAudit struct {
+	Method      string    `json:"method,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	Destination string    `json:"destination,omitempty"`
+	AmountBTC   float64   `json:"amount_btc,omitempty"`
+	TxID        string    `json:"txid,omitempty"`
+	Memo        string    `json:"memo,omitempty"`
+	Attempts    int       `json:"attempts,omitempty"`
+	LastError   string    `json:"last_error,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at,omitempty"`
+}
+
+func hedgelessSecurityDepositBTC(tx *db.Transaction) float64 {
+	if tx == nil {
+		return 0
+	}
+	return math.Max(0, tx.BTCRequiredLiquidity-tx.CexBitcoinAmount)
+}
+
+func updateDepositReturnAudit(tx *db.Transaction, mutate func(*depositReturnAudit)) error {
+	var details map[string]json.RawMessage
+	if len(tx.BTCPoolRefillDetails) > 0 {
+		if err := json.Unmarshal(tx.BTCPoolRefillDetails, &details); err != nil {
+			return err
+		}
+	}
+	if details == nil {
+		details = make(map[string]json.RawMessage)
+	}
+	var audit depositReturnAudit
+	if raw := details["security_deposit_return"]; len(raw) > 0 {
+		_ = json.Unmarshal(raw, &audit)
+	}
+	mutate(&audit)
+	raw, err := json.Marshal(audit)
+	if err != nil {
+		return err
+	}
+	details["security_deposit_return"] = raw
+	tx.BTCPoolRefillDetails, err = json.Marshal(details)
+	return err
+}
+
+func readDepositReturnAudit(tx *db.Transaction) depositReturnAudit {
+	var details struct {
+		SecurityDepositReturn depositReturnAudit `json:"security_deposit_return"`
+	}
+	_ = json.Unmarshal(tx.BTCPoolRefillDetails, &details)
+	return details.SecurityDepositReturn
+}
+
+func (w *Worker) returnSecurityDeposit(ctx context.Context, tx *db.Transaction, exchange, contractID string, amountBTC float64) error {
+	if w.returner == nil {
+		return fmt.Errorf("security-deposit return is not configured")
+	}
+	latest, err := w.repo.GetTransaction(tx.ID)
+	if err != nil {
+		return fmt.Errorf("reload transaction before security-deposit return: %w", err)
+	}
+	tx = latest
+	if audit := readDepositReturnAudit(tx); audit.Status == "initiated" || audit.Status == "returned" {
+		return nil
+	}
+	destination := strings.TrimSpace(tx.HubAddress)
+	if destination == "" {
+		meta, _ := db.ParseDexOfferCreation(tx.DexOfferCreation)
+		destination = strings.TrimSpace(meta.LNDReceiveAddress)
+	}
+	if destination == "" {
+		return fmt.Errorf("transaction %d has no LND pool address", tx.ID)
+	}
+	memo := fmt.Sprintf("hedgeless-deposit-return-%d", tx.ID)
+	if err := updateDepositReturnAudit(tx, func(a *depositReturnAudit) {
+		a.Status = "pending"
+		a.Destination = destination
+		a.AmountBTC = amountBTC
+		a.Memo = memo
+		a.Attempts++
+		a.LastError = ""
+		a.UpdatedAt = time.Now().UTC()
+	}); err != nil {
+		return err
 	}
 	if err := w.repo.UpdateTransaction(tx); err != nil {
-		return fmt.Errorf("persist release: %w", err)
+		return fmt.Errorf("persist security-deposit return intent: %w", err)
 	}
-	log.Printf("dexrelease: tx %d released on %s (release_tx=%s)", txID, exchange, result.ReleaseTxID)
+
+	result, err := w.returner.ReturnSecurityDeposit(ctx, dexaccount.SecurityDepositReturnInput{
+		Exchange: exchange, ContractID: contractID, PoolAddress: destination, Memo: memo,
+	})
+	if err != nil {
+		if latest, reloadErr := w.repo.GetTransaction(tx.ID); reloadErr == nil {
+			tx = latest
+		}
+		_ = updateDepositReturnAudit(tx, func(a *depositReturnAudit) {
+			a.LastError = err.Error()
+			a.UpdatedAt = time.Now().UTC()
+		})
+		_ = w.repo.UpdateTransaction(tx)
+		return fmt.Errorf("return security deposit on %s: %w", exchange, err)
+	}
+	latest, err = w.repo.GetTransaction(tx.ID)
+	if err != nil {
+		return fmt.Errorf("reload transaction after security-deposit return: %w", err)
+	}
+	tx = latest
+	if err := updateDepositReturnAudit(tx, func(a *depositReturnAudit) {
+		a.Status = "initiated"
+		a.LastError = ""
+		a.UpdatedAt = time.Now().UTC()
+		if result != nil {
+			a.Method = result.Method
+			a.TxID = result.TxID
+		}
+	}); err != nil {
+		return err
+	}
+	if err := w.repo.UpdateTransaction(tx); err != nil {
+		return fmt.Errorf("persist security-deposit return receipt: %w", err)
+	}
 	return nil
+}
+
+func (w *Worker) markDepositReturnNeedsReview(txID uint, cause error) error {
+	tx, err := w.repo.GetTransaction(txID)
+	if err != nil || tx == nil || tx.TradeMode != "hedgeless_double_collateral" || tx.DexBtcRelease.IsZero() {
+		return err
+	}
+	if err := updateDepositReturnAudit(tx, func(a *depositReturnAudit) {
+		a.Status = "needs_review"
+		if cause != nil {
+			a.LastError = cause.Error()
+		}
+		a.UpdatedAt = time.Now().UTC()
+	}); err != nil {
+		return err
+	}
+	tx.BTCPoolRefillStatus = "needs_review"
+	return w.repo.UpdateTransaction(tx)
 }
 
 // deriveExchange resolves the DEX venue slug from offer metadata, falling back to the

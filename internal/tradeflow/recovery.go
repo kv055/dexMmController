@@ -84,7 +84,7 @@ func (tf *TradeFlow) ResumeFromTradeflowStarted(ctx context.Context, tx *db.Tran
 		slog.Error("tradeflow recovery: spot-buy outcome unknown — parking for manual review",
 			"transaction_id", tx.ID, "provider", rc.order.Provider)
 		return mutateRow(tf.store, tx.ID, func(t *db.Transaction) {
-			t.Status = db.StatusCexTradeflowNeedsReview
+			t.SetStatus(db.StatusCexTradeflowNeedsReview, "spot-buy outcome is missing and cannot be retried safely")
 		})
 	}
 
@@ -95,7 +95,7 @@ func (tf *TradeFlow) ResumeFromTradeflowStarted(ctx context.Context, tx *db.Tran
 		if err != nil {
 			slog.Error("tradeflow recovery: hedge still failing — parking at HedgeFailedNeedsReview",
 				"transaction_id", tx.ID, "hedge_venue", rc.order.HedgeVenue, "err", err)
-			return markHedgeFailed(tf.store, tx.ID, rc.bundle.Spot)
+			return markHedgeFailed(tf.store, tx.ID, rc.bundle.Spot, err)
 		}
 	}
 	if err := recordHedge(tf.store, tx.ID, rc.order, rc.bundle.Spot, hedge); err != nil {

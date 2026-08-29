@@ -133,5 +133,4 @@ Signature: `func readSecretFile(path string) (string, error)`
 - `dexMmController/internal/healthcheck`
 - `dexMmController/internal/hummingbot`
 - `dexMmController/internal/openclaw`
-- `dexMmController/internal/premiumoffers`
 - `dexMmController/internal/wallethub`

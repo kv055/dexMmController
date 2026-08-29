@@ -3,6 +3,7 @@ package dexrelay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -20,14 +21,21 @@ func (fakeStore) GetTransactionsByStatuses([]db.TransactionStatus, string) ([]db
 }
 func (fakeStore) UpdateTransaction(*db.Transaction) error { return nil }
 
-type fakeLiquidity struct{ events *[]string }
+type fakeLiquidity struct {
+	events *[]string
+	err    error
+}
 
 func (f fakeLiquidity) PrepareOutbound(context.Context, string, uint, int64, int64) error {
 	if f.events != nil {
 		*f.events = append(*f.events, "prepare")
 	}
-	return nil
+	return f.err
 }
+
+type ambiguousLiquidityError struct{ error }
+
+func (ambiguousLiquidityError) MayHaveMovedFunds() bool { return true }
 func (f fakeLiquidity) Release(context.Context, string) error {
 	if f.events != nil {
 		*f.events = append(*f.events, "release")
@@ -179,8 +187,8 @@ func TestRelayToDEX_RoutesByMethod(t *testing.T) {
 			if c.wantDestAddr != "" && tx.DestinationAddress != c.wantDestAddr {
 				t.Errorf("DestinationAddress = %q, want %q", tx.DestinationAddress, c.wantDestAddr)
 			}
-			if tx.Status != db.StatusDexPositionOpen {
-				t.Errorf("status = %s, want %s", tx.Status, db.StatusDexPositionOpen)
+			if tx.Status != db.StatusDexPositionTaken {
+				t.Errorf("status = %s, want %s", tx.Status, db.StatusDexPositionTaken)
 			}
 
 			var relay db.CexToDexRelayDetails
@@ -225,5 +233,38 @@ func TestRelayToDEXPreparesBeforeTakeAndBlocksOversizedInvoice(t *testing.T) {
 		if events[i] != want[i] {
 			t.Fatalf("events=%v want=%v", events, want)
 		}
+	}
+}
+
+func TestRelayToDEXParksAmbiguousLiquidityPreparation(t *testing.T) {
+	events := []string{}
+	w := &Worker{
+		repo:  fakeStore{},
+		taker: fakeTaker{invoice: "lnbc1test", events: &events},
+		lnd:   &fakeLND{},
+		liquidity: fakeLiquidity{
+			events: &events,
+			err:    ambiguousLiquidityError{errors.New("swap settlement unknown")},
+		},
+	}
+	tx := &db.Transaction{
+		ID:               10,
+		Status:           db.StatusCexCryptoWithdrawalArrived,
+		Dex:              db.DexRoboSats,
+		CexBitcoinAmount: 0.01,
+		DexOfferCreation: metaFor("robosats"),
+	}
+
+	if err := w.relayToDEX(context.Background(), tx); err == nil {
+		t.Fatal("expected ambiguous liquidity preparation failure")
+	}
+	if tx.Status != db.StatusLiquidityPreparationNeedsReview {
+		t.Fatalf("status = %q, want %q", tx.Status, db.StatusLiquidityPreparationNeedsReview)
+	}
+	if tx.StatusReason == nil || *tx.StatusReason != "swap settlement unknown" {
+		t.Fatalf("status reason = %v", tx.StatusReason)
+	}
+	if len(events) != 1 || events[0] != "prepare" {
+		t.Fatalf("events = %v, want preparation only", events)
 	}
 }

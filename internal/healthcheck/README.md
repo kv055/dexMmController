@@ -1,163 +1,130 @@
 # healthcheck
 
-The `healthcheck` package is a periodic background worker that reconciles
-**incomplete transactions** against the outside world. Every tick it loads each
-unfinished `db.Transaction`, checks what *actually* happened on the relevant
-external system (the CEX, the Bitcoin network, the DEX, or the bank gateway), and
-advances the row's `Status` when reality says it should move forward.
+## Purpose
 
-It plays two roles:
+The `healthcheck` package periodically reconciles incomplete transaction rows
+with external systems. It advances lifecycle states when the venue provides a
+safe confirmation, recovers interrupted tradeflow steps, and alerts an operator
+when a structured DEX reports an anomalous or stalled trade.
 
-1. **Lifecycle progression** — pushing healthy trades through the DEX-side states
-   (counterparty joined → fiat paid → fiat arrived in bank → BTC released).
-2. **Tradeflow recovery** — finishing or flagging trades whose CEX "buy leg"
-   (`TradeFlow.Run`) failed or was interrupted, which is the focus of the recovery
-   logic described below.
+The worker does not own every incomplete state. Live tradeflow, `dexrelay`, the
+hedgeless refill worker, `dexFiatController`, and `dexrelease` retain ownership of
+their respective stages.
 
----
+## Main Flows
 
-## How it is wired into `main.go`
+### Periodic dispatch
 
-The checker is constructed once at startup and injected with everything it needs.
-It is intentionally built **after** `tradeFlow`, because it depends on it for
-recovery (no dependency cycle: `tradeFlow` needs `repo` + `cexAccountService`;
-`healthcheck` needs `tradeFlow`).
+`RunPeriodic` calls `Run` immediately and then on every
+`HEALTHCHECK_INTERVAL`. `Run` loads active transactions plus released rows that
+are not independently verified, then dispatches each row by status. An error on
+one row is logged without blocking the remaining rows.
+
+| Status | Healthcheck behavior |
+|---|---|
+| `FiatToCexInitiated`, `FiatToCexArrived` | No-op; bank-transfer progression is external. |
+| `CexTradeflowStarted` | After the recovery grace period, resume after a recorded spot fill or park an ambiguous fill for review. |
+| `HedgeFailedNeedsReview` | Re-query the hedge venue and advance only if the hedge is actually open. |
+| `CexTradeflowNeedsReview` | No-op; the row remains parked for an operator. |
+| Hedgeless funding/refill states | No-op; owned by the refill worker. |
+| `CexTradeSuccessful` | After the grace period, retry the withdrawal through the idempotent tradeflow recovery path. |
+| CEX withdrawal states | No-op; owned by `dexrelay`. |
+| `DexPositionOpen` | Check venue-specific take/chat state. Bisq failures are reported as anomalies. |
+| `DexPositionTaken` | HodlHodl may advance when paid. Bisq polls for failures and the fiat-sent escalation described below. |
+| `DexFiatHasArrived` | No-op; release is owned by `dexrelease`. |
+| `DexPositionReleased` | HodlHodl completion is verified. Bisq requires daemon payout publication plus mempool/block visibility. RoboSats remains TODO. |
+
+### Tradeflow recovery
+
+`TradeFlow.Run` persists the spot buy, hedge, and withdrawal stages. If the
+request dies between stages, healthcheck delegates recovery to the
+consumer-side `TradeflowRecoverer` interface instead of duplicating execution
+logic.
+
+`CexTradeflowStarted` and `CexTradeSuccessful` rows must be older than
+`TRADEFLOW_RECOVERY_GRACE` before recovery acts. This avoids racing a live
+request. The recovery methods add deeper venue checks and idempotency guards.
+`HedgeFailedNeedsReview` is already outside the live request and is checked
+without that grace period.
+
+### Bisq fiat-sent escalation
+
+For a Bisq row that remains in `DexPositionTaken`, healthcheck makes one
+`GetPosition` call per tick and checks both protocol failures and whether the
+buyer marked fiat payment as sent. `Trade.FiatSent()` recognizes the daemon's
+explicit payment-started boolean and compatible phase/state fallbacks.
+
+The escalation timer starts when this process first observes the fiat-sent
+signal. If the row is still pending after `BISQ_FIAT_ESCALATION_AFTER`, an
+enabled Telegram anomaly notifier sends one alert asking the operator to verify
+bank receipt manually. Successful alerts are deduplicated in memory. A restart
+forgets both the first-observed time and the dedupe marker, so it restarts the
+delay and may eventually produce one additional reminder.
+
+This safety net never changes `tx.Status` and never releases BTC. The normal
+`dexFiatController` evidence path remains responsible for advancing the row to
+`DexFiatHasArrived`; `dexrelease` remains responsible for payout.
+
+### Bisq payout verification
+
+`dexrelease` records `DexPositionReleased` after submitting
+`ConfirmPaymentReceived`; that status alone is not final verification.
+Healthcheck continues loading the row while `TransactionComplete=false` and
+requires all of the following before completing it:
+
+1. the Bisq daemon reports payout publication;
+2. the daemon exposes a payout txid that agrees with persisted metadata; and
+3. the exact txid is visible in mempool or a block through the Bitcoin source.
+
+Successful verification records the txid, verification time, chain status, and
+confirmation count in execution metadata, then sets `TransactionComplete=true`.
+Transitional states are retried. Bisq failures and txid conflicts alert the
+operator once per process and never trigger another release attempt.
+
+## Entry Points
+
+### `NewHealthChecker`
 
 ```go
-// main.go
-healthcheckInterval := parseAccountHealthInterval(envOr("HEALTHCHECK_INTERVAL", "30s"))
-// ...
-tradeFlow := tradeflow.New(cexAccountService, repo)
-
-hc := healthcheck.NewHealthChecker(repo, claw, btc, hh, tradeFlow).
-    WithRecoveryGracePeriod(parseAccountHealthInterval(envOr("TRADEFLOW_RECOVERY_GRACE", "3m")))
-// ...
-go hc.RunPeriodic(ctx, healthcheckInterval)   // currently commented out — see "Status" below
+func NewHealthChecker(
+    repo *db.TransactionRepository,
+    btc *bitcoin.NetworkDataFetcher,
+    hh *hodlhodl.Client,
+    recoverer TradeflowRecoverer,
+) *HealthChecker
 ```
 
-### Constructor dependencies
+The constructor sets a three-minute recovery grace period and a two-hour Bisq
+fiat escalation delay. Builder methods attach the payment resolver, Telegram
+relay/notifier, Bisq client, and configuration overrides.
 
-`NewHealthChecker(repo, oc, btc, hh, recoverer)`:
+### `RunPeriodic`
 
-| Param | Type | Used for |
-|-------|------|----------|
-| `repo` | `*db.TransactionRepository` | load incomplete transactions, persist status updates |
-| `oc` | `*openclaw.Client` | bank gateway — has fiat been sent to / arrived from the DEX |
-| `btc` | `*bitcoin.NetworkDataFetcher` | on-chain confirmation checks |
-| `hh` | `*hodlhodl.Client` | DEX contract state (taken / paid / released) |
-| `recoverer` | `TradeflowRecoverer` | drives recovery of stuck tradeflow rows; **may be `nil`** to disable recovery (those states then no-op instead of erroring) |
+```go
+func (h *HealthChecker) RunPeriodic(ctx context.Context, interval time.Duration)
+```
 
-`recoverer` is a small consumer-side interface declared in this package; it is
-satisfied by `*tradeflow.TradeFlow`. Declaring it here keeps healthcheck depending
-only on the three methods it actually calls.
+Runs until the context is canceled. In `main.go`, it starts only when
+`ENABLE_AUTOMATED_TRADEFLOW_WORKERS=true`.
 
-### Configuration (env)
+### `Run`
+
+```go
+func (h *HealthChecker) Run(ctx context.Context) error
+```
+
+Loads and verifies active and released-but-unverified rows once. This is also
+useful for a manual or test-triggered reconciliation pass.
+
+## Operational Notes
 
 | Variable | Default | Meaning |
-|----------|---------|---------|
-| `HEALTHCHECK_INTERVAL` | `30s` | how often the worker ticks |
-| `TRADEFLOW_RECOVERY_GRACE` | `3m` | how long a row must sit in an intermediate tradeflow state before recovery will touch it (see *Grace period*) |
+|---|---:|---|
+| `ENABLE_AUTOMATED_TRADEFLOW_WORKERS` | `false` | Starts healthcheck, DEX relay, and automated hedgeless workers when `true`. |
+| `HEALTHCHECK_INTERVAL` | `30s` | Poll interval for incomplete transactions. |
+| `TRADEFLOW_RECOVERY_GRACE` | `3m` | Minimum row age before interrupted live tradeflow recovery. |
+| `BISQ_FIAT_ESCALATION_AFTER` | `2h` | Time from first observed Bisq fiat-sent signal to a manual-verification alert. Set to `0` or a negative duration to disable. |
 
----
-
-## How it runs
-
-`RunPeriodic(ctx, interval)` is launched as a goroutine. It is a simple ticker loop
-that calls `Run(ctx)` immediately and then on every interval until `ctx` is
-cancelled:
-
-```
-RunPeriodic ── every interval ──▶ Run ──▶ GetIncompleteTransactions
-                                            └─ for each tx: verify(tx)
-```
-
-`Run` fetches all transactions that have not reached the terminal
-`DexPositionReleased` and calls `verify` on each. A failure on one transaction is
-**logged and skipped** — one bad row never blocks the others.
-
-`verify` is a `switch` on `tx.Status` that dispatches to a per-status handler:
-
-| Status | Handler | Action |
-|--------|---------|--------|
-| `FiatToCexInitiated` | `verifyFiatToCexInitiated` | ask openclaw if the fiat wire to the CEX was sent → `FiatToCexArrived` |
-| `FiatToCexArrived` | (no-op) | handed to the tradeflow orchestrator |
-| **`CexTradeflowStarted`** | `verifyCexTradeflowStarted` | **recovery** — resume from the hedge step, or park for review |
-| **`HedgeFailedNeedsReview`** | `verifyHedgeFailedNeedsReview` | **recovery** — re-check the venue; advance if the hedge is actually open |
-| **`CexTradeflowNeedsReview`** | (no-op) | alert already fired; parked for a human |
-| **`CexTradeSuccessful`** | `verifyCexTradeSuccessful` | **recovery** — retry the withdrawal idempotently |
-| `CexCryptoWithdrawalInitiated` | (no-op) | owned by the `dexrelay` worker |
-| `CexCryptoWithdrawalArrived` | (no-op) | owned by the `dexrelay` worker |
-| `DexPositionOpen` | `verifyDexPositionOpen` | DEX: counterparty joined → `DexPositionTaken` |
-| `DexPositionTaken` | `verifyDexPositionTaken` | DEX: buyer marked paid → `DexFiatHasArrived` |
-| `DexFiatHasArrived` | `verifyDexFiatHasArrived` | bank: confirm fiat arrived (gates BTC release) |
-| `DexPositionReleased` | `verifyDexPositionReleased` | DEX: BTC released → mark complete |
-
-An unknown status returns an error (logged, row skipped).
-
----
-
-## Tradeflow recovery (the three bold rows above)
-
-`TradeFlow.Run` performs the CEX buy leg **synchronously inside the HTTP request**
-(spot buy → open hedge → withdraw), persisting the row after each step. If a step
-fails or the process restarts mid-cycle, the row is simply left where it stopped.
-healthcheck is what comes back to finish or flag it.
-
-The handlers do **not** re-implement any CEX step; they delegate to recovery
-entrypoints on `tradeflow` (`internal/tradeflow/recovery.go`) so the idempotent
-withdrawal key, the guarded hedge open, and the persistence helpers stay in one
-place. healthcheck is the *scheduler*; tradeflow is the *executor*.
-
-| Stuck state | What it means | Recovery |
-|-------------|---------------|----------|
-| `CexTradeflowStarted` | row created; spot-buy outcome unknown | if the spot fill was recorded → resume from the hedge step; if unknown → move to `CexTradeflowNeedsReview` (never auto-buys — `MarketBuyBTC` has no idempotency key) |
-| `CexTradeSuccessful` | spot + hedge done, withdrawal never sent / failed | retry the withdrawal, guarded by a history match so it can't double-withdraw |
-| `HedgeFailedNeedsReview` | spot bought, hedge failed → holding unhedged BTC | re-query the venue; if the hedge is now open → `CexTradeSuccessful`, else leave for manual review |
-
-### Grace period — why recovery waits
-
-Because `Run` is synchronous and in-flight during a request, a recovery tick could
-otherwise race a run that is *about* to perform the same step (e.g. see
-`CexTradeSuccessful` and fire a withdrawal while the live run is also about to).
-`verifyCexTradeflowStarted` and `verifyCexTradeSuccessful` therefore skip any row
-whose `UpdatedAt` is newer than `recoveryGracePeriod` (`withinGrace`). A live run
-finishes in seconds, so a row stuck for minutes is almost certainly abandoned.
-
-`HedgeFailedNeedsReview` needs no grace period — `Run` has already returned by the
-time a row reaches it.
-
-The grace period is the *primary* defense; the recovery entrypoints also carry
-their own idempotency guards (withdrawal history-match, hedge live-position check)
-as a deeper net.
-
----
-
-## Ownership — no conflict with other workers
-
-After recovery was added, the three workers act on **disjoint** statuses, so they
-never fight over a row:
-
-- **tradeflow (live request):** drives the healthy path
-  `CexTradeflowStarted → CexTradeSuccessful → CexCryptoWithdrawalInitiated`.
-- **healthcheck (this package):** owns the tradeflow failure/stuck states and
-  re-drives `CexTradeSuccessful → CexCryptoWithdrawalInitiated` when the live run
-  didn't, plus the DEX-side lifecycle states.
-- **dexrelay:** owns `CexCryptoWithdrawalInitiated` / `CexCryptoWithdrawalArrived`
-  (withdrawal confirmation + LND→DEX relay).
-
----
-
-## Status: startup currently disabled
-
-The periodic workers (`healthcheck` and `dexrelay`) take automatic, money-moving
-corrective actions. While the tradeflow/recovery logic is being validated, their
-startup goroutines in `main.go` are **commented out** — the checker is fully
-constructed and wired, it just does not tick:
-
-```go
-// go hc.RunPeriodic(ctx, healthcheckInterval)
-// go dexRelayWorker.RunPeriodic(ctx, healthcheckInterval)
-```
-
-Re-enable by uncommenting those two lines (and removing the adjacent `_ =`
-keep-alive references).
+Bisq alerts also require a configured, enabled Telegram anomaly notifier. If
+Telegram is disabled or a send fails, the escalation is not consumed and will
+be retried on a later tick after notification becomes available.

@@ -419,7 +419,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	if err != nil {
 		metrics.HedgeFailures.WithLabelValues(order.HedgeVenue).Inc()
 		if persist {
-			if perr := markHedgeFailed(tf.store, txID, spot); perr != nil {
+			if perr := markHedgeFailed(tf.store, txID, spot, err); perr != nil {
 				slog.Error("tradeflow: failed to persist HedgeFailedNeedsReview", "transaction_id", txID, "err", perr)
 			}
 		}

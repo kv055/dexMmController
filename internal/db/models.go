@@ -146,10 +146,9 @@ const (
 type TransactionStatus string
 
 const (
-	// StatusFiatToCexInitiated is the status fiat to cex initiated value.
-	StatusFiatToCexInitiated TransactionStatus = "FiatToCexInitiated"
-	// StatusFiatToCexArrived is the status fiat to cex arrived value.
-	StatusFiatToCexArrived TransactionStatus = "FiatToCexArrived"
+	// StatusTransactionNeedsReview parks a legacy or otherwise unclassifiable row
+	// for operator reconciliation.
+	StatusTransactionNeedsReview TransactionStatus = "TransactionNeedsReview"
 	// StatusCexTradeflowStarted marks a bid tradeflow row created before the spot
 	// buy, so the irreversible CEX steps are recoverable rather than only existing
 	// in an in-flight request.
@@ -167,8 +166,14 @@ const (
 	// StatusHedgelessTradeStarted marks a hedgeless bid that has reserved the
 	// singleton liquidity pool but has not yet moved BTC to the DEX.
 	StatusHedgelessTradeStarted TransactionStatus = "HedgelessTradeStarted"
+	// StatusHedgelessPreparationFailed records a terminal attempt that stopped
+	// before any DEX take or external wallet payment occurred.
+	StatusHedgelessPreparationFailed TransactionStatus = "HedgelessPreparationFailed"
+	// StatusLiquidityPreparationNeedsReview parks a liquidity preparation whose
+	// swap lockup or reservation may contain funds and must be reconciled.
+	StatusLiquidityPreparationNeedsReview TransactionStatus = "LiquidityPreparationNeedsReview"
 	// StatusHedgelessFundingInitiated marks a hedgeless bid whose LND funding
-	// action has been submitted but whose DEX position is not yet open.
+	// action has been submitted but whose DEX position is not yet durably taken.
 	StatusHedgelessFundingInitiated TransactionStatus = "HedgelessFundingInitiated"
 	// StatusHedgelessFundingNeedsReview parks an ambiguous DEX/LND funding
 	// outcome while continuing to hold the singleton pool reservation.
@@ -176,21 +181,32 @@ const (
 	// StatusDexTakenFundingNeedsReview means the DEX offer is already taken but
 	// the actual invoice failed validation or exceeds prepared liquidity.
 	StatusDexTakenFundingNeedsReview TransactionStatus = "DexTakenFundingNeedsReview"
-	// StatusCexTradeSuccessful is the status cex trade successful value.
-	StatusCexTradeSuccessful TransactionStatus = "CexTradeSucessfull"
+	// StatusCexTradeSuccessful means the spot purchase and counter-hedge are
+	// durably recorded, but the BTC withdrawal is not yet recorded.
+	StatusCexTradeSuccessful TransactionStatus = "CexTradeSuccessful"
 	// StatusCexCryptoWithdrawalInitiated is the status cex crypto withdrawal initiated value.
 	StatusCexCryptoWithdrawalInitiated TransactionStatus = "CexCryptoWithdrawalInitiated"
 	// StatusCexCryptoWithdrawalArrived is the status cex crypto withdrawal arrived value.
 	StatusCexCryptoWithdrawalArrived TransactionStatus = "CexCryptoWithdrawalArrived"
-	// StatusDexPositionOpen is the status dex position open value.
-	StatusDexPositionOpen TransactionStatus = "DexPositionOpen"
-	// StatusDexPositionTaken is the status dex position taken value.
+	// StatusDexPositionTaken means Take succeeded and DEX funding is durably recorded.
 	StatusDexPositionTaken TransactionStatus = "DexPositionTaken"
 	// StatusDexFiatHasArrived is the status dex fiat has arrived value.
 	StatusDexFiatHasArrived TransactionStatus = "DexFiatHasArrived"
 	// StatusDexPositionReleased is the status dex position released value.
 	StatusDexPositionReleased TransactionStatus = "DexPositionReleased"
 )
+
+// SetStatus updates the lifecycle status and replaces any previous review
+// reason. Empty reasons are stored as NULL so happy-path rows stay compact.
+func (tx *Transaction) SetStatus(status TransactionStatus, reason string) {
+	tx.Status = status
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		tx.StatusReason = nil
+		return
+	}
+	tx.StatusReason = &reason
+}
 
 // Transaction represents a crypto trading transaction record
 type Transaction struct {
@@ -215,6 +231,8 @@ type Transaction struct {
 	Dex DexPlatform `gorm:"index" json:"dex"`
 	// Status is the current status of the transaction.
 	Status TransactionStatus `gorm:"index" json:"status"`
+	// StatusReason carries an operator-safe explanation for failed/review states.
+	StatusReason *string `json:"status_reason,omitempty"`
 	// TradeMode selects the execution lifecycle. Empty legacy rows are hedgefull.
 	TradeMode string `gorm:"column:trade_mode;index" json:"trade_mode,omitempty"`
 	// BTCPoolTargetBTC is the confirmed LND balance captured before hedgeless funding.

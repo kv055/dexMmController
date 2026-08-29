@@ -22,7 +22,6 @@ This documentation mirrors the production Go source tree. Each Markdown file des
 - [internal/openclaw/client.go](internal/openclaw/client.md) - package `openclaw`
 - [internal/openclaw/mock_server.go](internal/openclaw/mock_server.md) - package `openclaw`
 - [internal/openclaw/protocol.go](internal/openclaw/protocol.md) - package `openclaw`
-- [internal/premiumoffers/watcher.go](internal/premiumoffers/watcher.md) - package `premiumoffers`
 - [internal/wallethub/binance_bridge.go](internal/wallethub/binance_bridge.md) - package `lnd`
 - [internal/wallethub/exchange_bridge.go](internal/wallethub/exchange_bridge.md) - package `lnd`
 - [internal/wallethub/kraken_bridge.go](internal/wallethub/kraken_bridge.md) - package `lnd`

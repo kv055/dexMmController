@@ -129,6 +129,7 @@ Important variables:
 - `API_ADDR`
 - `OFFER_PREMIUM_WSS_URL`
 - `HEALTHCHECK_INTERVAL`
+- `BISQ_FIAT_ESCALATION_AFTER` (default `2h`; `0` disables the manual-verification alert)
 - `ENABLE_AUTOMATED_TRADEFLOW_WORKERS` (must be `true` for DEX relay,
   recovery, and hedgeless execution/refill; leave disabled until staging validation)
 - `ACCOUNT_HEALTH_INTERVAL`

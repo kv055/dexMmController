@@ -101,6 +101,12 @@ type Trade struct {
 	TradeVolume string
 	// TradeAmountSats is the amount in satoshis.
 	TradeAmountSats uint64
+	// IsPaymentStartedMessageSent reports whether the BTC buyer marked fiat payment as sent.
+	IsPaymentStartedMessageSent bool
+	// IsPaymentReceivedMessageSent reports whether the BTC seller confirmed fiat receipt.
+	IsPaymentReceivedMessageSent bool
+	// IsPayoutPublished reports whether the Bisq payout transaction was published.
+	IsPayoutPublished bool
 	// IsCompleted reports whether the trade condition is true.
 	IsCompleted bool
 	// HasFailed reports whether the trade condition is true.
@@ -472,6 +478,43 @@ func (c *Client) ConfirmPaymentReceived(ctx context.Context, tradeID string) err
 	return c.invoke(ctx, "/io.bisq.protobuffer.Trades/ConfirmPaymentReceived", req, resp)
 }
 
+// WithdrawFunds sends the completed trade's proceeds (the seller security
+// deposit in a bid/taker trade) to an external Bitcoin address. Bisq owns the
+// exact spend amount and subtracts its miner fee internally.
+func (c *Client) WithdrawFunds(ctx context.Context, tradeID, address, memo string) error {
+	if strings.TrimSpace(tradeID) == "" {
+		return errors.New("bisq: trade ID is required")
+	}
+	if strings.TrimSpace(address) == "" {
+		return errors.New("bisq: withdrawal address is required")
+	}
+	req := newMessage("WithdrawFundsRequest")
+	setString(req, "trade_id", tradeID)
+	setString(req, "address", address)
+	setString(req, "memo", memo)
+	resp := newMessage("WithdrawFundsReply")
+	return c.invoke(ctx, "/io.bisq.protobuffer.Trades/WithdrawFunds", req, resp)
+}
+
+// TransactionByMemo finds a wallet transaction written by WithdrawFunds. A
+// stable memo provides the idempotency receipt that the Bisq RPC itself omits.
+func (c *Client) TransactionByMemo(ctx context.Context, memo string) (*WalletTransaction, error) {
+	memo = strings.TrimSpace(memo)
+	if memo == "" {
+		return nil, errors.New("bisq: transaction memo is required")
+	}
+	txs, err := c.GetTransactions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range txs {
+		if strings.TrimSpace(txs[i].Memo) == memo {
+			return &txs[i], nil
+		}
+	}
+	return nil, nil
+}
+
 // GetCounterpartyPayment returns the maker's (our counterparty's) payment-account payload
 // for a taken trade, read from the trade contract. Bisq is the "structured" style: the daemon
 // exposes both parties' payment accounts inside contract_as_json once the trade is taken — no
@@ -706,7 +749,6 @@ func (c *Client) EnsureWalletUnencrypted(ctx context.Context, password string) (
 	return false, err
 }
 
-
 func walletTransactionFromMessage(msg protoreflect.Message) WalletTransaction {
 	return WalletTransaction{
 		TxID:          stringField(msg, "tx_id"),
@@ -852,19 +894,22 @@ func paymentAccountFromMessage(msg protoreflect.Message) PaymentAccount {
 
 func tradeFromMessage(msg protoreflect.Message) Trade {
 	out := Trade{
-		TradeID:         stringField(msg, "trade_id"),
-		Role:            stringField(msg, "role"),
-		State:           stringField(msg, "state"),
-		Phase:           stringField(msg, "phase"),
-		TradePrice:      stringField(msg, "trade_price"),
-		TradeVolume:     stringField(msg, "trade_volume"),
-		TradeAmountSats: uint64Field(msg, "trade_amount_as_long"),
-		IsCompleted:     boolField(msg, "is_completed"),
-		HasFailed:       boolField(msg, "has_failed"),
-		ErrorMessage:    stringField(msg, "error_message"),
-		DepositTxID:     stringField(msg, "deposit_tx_id"),
-		PayoutTxID:      stringField(msg, "payout_tx_id"),
-		ContractAsJSON:  stringField(msg, "contract_as_json"),
+		TradeID:                      stringField(msg, "trade_id"),
+		Role:                         stringField(msg, "role"),
+		State:                        stringField(msg, "state"),
+		Phase:                        stringField(msg, "phase"),
+		TradePrice:                   stringField(msg, "trade_price"),
+		TradeVolume:                  stringField(msg, "trade_volume"),
+		TradeAmountSats:              uint64Field(msg, "trade_amount_as_long"),
+		IsPaymentStartedMessageSent:  boolField(msg, "is_payment_started_message_sent"),
+		IsPaymentReceivedMessageSent: boolField(msg, "is_payment_received_message_sent"),
+		IsPayoutPublished:            boolField(msg, "is_payout_published"),
+		IsCompleted:                  boolField(msg, "is_completed"),
+		HasFailed:                    boolField(msg, "has_failed"),
+		ErrorMessage:                 stringField(msg, "error_message"),
+		DepositTxID:                  stringField(msg, "deposit_tx_id"),
+		PayoutTxID:                   stringField(msg, "payout_tx_id"),
+		ContractAsJSON:               stringField(msg, "contract_as_json"),
 	}
 	if ms := uint64Field(msg, "date"); ms > 0 {
 		out.CreatedAt = time.UnixMilli(int64(ms)).UTC()
@@ -1032,6 +1077,9 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 				field("trade_price", 13, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				field("state", 15, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				field("phase", 16, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("is_payment_started_message_sent", 20, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
+				field("is_payment_received_message_sent", 21, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
+				field("is_payout_published", 22, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
 				field("is_completed", 23, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
 				// contract_as_json (24) and contract (25) carry the trade contract once formed;
 				// field numbers match the modern bisq TradeInfo proto (consistent with the
@@ -1067,6 +1115,12 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 				field("trade_id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 			}),
 			message("ConfirmPaymentReceivedReply", nil),
+			message("WithdrawFundsRequest", []*descriptorpb.FieldDescriptorProto{
+				field("trade_id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("address", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("memo", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}),
+			message("WithdrawFundsReply", nil),
 			message("AddressBalanceInfo", []*descriptorpb.FieldDescriptorProto{
 				field("address", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				field("balance", 2, descriptorpb.FieldDescriptorProto_TYPE_INT64),
@@ -1165,6 +1219,7 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 					method("GetTrade", ".io.bisq.protobuffer.GetTradeRequest", ".io.bisq.protobuffer.GetTradeReply"),
 					method("GetTrades", ".io.bisq.protobuffer.GetTradesRequest", ".io.bisq.protobuffer.GetTradesReply"),
 					method("ConfirmPaymentReceived", ".io.bisq.protobuffer.ConfirmPaymentReceivedRequest", ".io.bisq.protobuffer.ConfirmPaymentReceivedReply"),
+					method("WithdrawFunds", ".io.bisq.protobuffer.WithdrawFundsRequest", ".io.bisq.protobuffer.WithdrawFundsReply"),
 				},
 			},
 			{

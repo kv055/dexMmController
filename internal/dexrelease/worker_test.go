@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -72,10 +73,23 @@ func (f *fakeStore) updateCount() int {
 
 // fakeReleaser records calls and returns a canned result/error.
 type fakeReleaser struct {
-	calls  int
-	last   dexaccount.ReleaseInput
-	result *dexaccount.ReleaseResult
-	err    error
+	calls        int
+	last         dexaccount.ReleaseInput
+	result       *dexaccount.ReleaseResult
+	err          error
+	returnCalls  int
+	lastReturn   dexaccount.SecurityDepositReturnInput
+	returnResult *dexaccount.SecurityDepositReturnResult
+	returnErr    error
+}
+
+func (f *fakeReleaser) ReturnSecurityDeposit(_ context.Context, in dexaccount.SecurityDepositReturnInput) (*dexaccount.SecurityDepositReturnResult, error) {
+	f.returnCalls++
+	f.lastReturn = in
+	if f.returnErr != nil {
+		return nil, f.returnErr
+	}
+	return f.returnResult, nil
 }
 
 func (f *fakeReleaser) Release(_ context.Context, in dexaccount.ReleaseInput) (*dexaccount.ReleaseResult, error) {
@@ -95,6 +109,16 @@ func fiatArrivedTx() *db.Transaction {
 		Dex:              db.DexHodlHodl,
 		Status:           db.StatusDexFiatHasArrived,
 		DexOfferCreation: raw,
+	}
+}
+
+func hedgelessBisqFiatArrivedTx() *db.Transaction {
+	meta := db.DexOfferMeta{Execution: map[string]any{"exchange": "bisq", "trade_id": "B123"}}
+	raw, _ := db.MarshalDexOfferCreation(meta)
+	return &db.Transaction{
+		ID: 42, Dex: db.DexBisq, Status: db.StatusDexFiatHasArrived,
+		TradeMode: "hedgeless_double_collateral", BTCRequiredLiquidity: 0.02, CexBitcoinAmount: 0.018,
+		HubAddress: "bc1qpool", BTCPoolRefillStatus: "withdrawal_initiated", DexOfferCreation: raw,
 	}
 }
 
@@ -141,6 +165,63 @@ func TestReleaseIdempotentWhenAlreadyReleased(t *testing.T) {
 	}
 	if store.updateCount() != 0 {
 		t.Fatalf("store updated %d times, want 0", store.updateCount())
+	}
+}
+
+func TestHedgelessReleaseReturnsDepositAfterPersistingRelease(t *testing.T) {
+	tx := hedgelessBisqFiatArrivedTx()
+	store := newFakeStore(tx)
+	rel := &fakeReleaser{
+		result:       &dexaccount.ReleaseResult{ReleaseTxID: "payout-tx"},
+		returnResult: &dexaccount.SecurityDepositReturnResult{Method: "bisq_withdraw_funds", TxID: "deposit-tx"},
+	}
+	w := NewWorker(store, rel)
+
+	if err := w.release(context.Background(), tx.ID); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if rel.calls != 1 || rel.returnCalls != 1 {
+		t.Fatalf("release/return calls = %d/%d, want 1/1", rel.calls, rel.returnCalls)
+	}
+	if rel.lastReturn.PoolAddress != "bc1qpool" || rel.lastReturn.Memo != "hedgeless-deposit-return-42" {
+		t.Fatalf("return input = %+v", rel.lastReturn)
+	}
+	got := store.snapshot()
+	if got.Status != db.StatusDexPositionReleased || got.DexBtcRelease.IsZero() {
+		t.Fatalf("DEX release was not persisted before return completion: %+v", got)
+	}
+	if got.BTCPoolRefillStatus != "withdrawal_initiated" {
+		t.Fatalf("deposit return overwrote in-flight refill status: %q", got.BTCPoolRefillStatus)
+	}
+	audit := readDepositReturnAudit(got)
+	if audit.Status != "initiated" || audit.TxID != "deposit-tx" || math.Abs(audit.AmountBTC-0.002) > 1e-12 {
+		t.Fatalf("deposit return audit = %+v", audit)
+	}
+
+	if err := w.release(context.Background(), tx.ID); err != nil {
+		t.Fatalf("idempotent resume: %v", err)
+	}
+	if rel.calls != 1 || rel.returnCalls != 1 {
+		t.Fatalf("idempotent release/return calls = %d/%d, want 1/1", rel.calls, rel.returnCalls)
+	}
+}
+
+func TestHedgelessDepositReturnFailureNeedsReview(t *testing.T) {
+	tx := hedgelessBisqFiatArrivedTx()
+	store := newFakeStore(tx)
+	rel := &fakeReleaser{result: &dexaccount.ReleaseResult{}, returnErr: fmt.Errorf("withdraw unavailable")}
+	w := NewWorker(store, rel)
+	w.maxRetries = 1
+
+	if err := w.releaseWithRetry(context.Background(), tx.ID); err == nil {
+		t.Fatal("expected return failure")
+	}
+	got := store.snapshot()
+	if got.Status != db.StatusDexPositionReleased || got.BTCPoolRefillStatus != "needs_review" {
+		t.Fatalf("failed return row = %+v", got)
+	}
+	if audit := readDepositReturnAudit(got); audit.Status != "needs_review" || audit.LastError == "" {
+		t.Fatalf("deposit return audit = %+v", audit)
 	}
 }
 

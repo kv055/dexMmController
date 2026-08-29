@@ -139,7 +139,7 @@ func recordHedge(store transactionStore, id uint, order Order, spot *cexaccount.
 		return fmt.Errorf("marshal hedge open details: %w", err)
 	}
 	return mutateRow(store, id, func(tx *db.Transaction) {
-		tx.Status = db.StatusCexTradeSuccessful
+		tx.SetStatus(db.StatusCexTradeSuccessful, "")
 		tx.CexHedgingPosition = db.CexExchangeFromProvider(hedgeVenueToCex(order.HedgeVenue))
 		tx.CexTransactionDetails = details
 		tx.CexCounterPositionOpenDetails = hedgeOpen
@@ -148,13 +148,17 @@ func recordHedge(store transactionStore, id uint, order Order, spot *cexaccount.
 
 // markHedgeFailed records that the spot filled but the hedge could not be opened or
 // confirmed after retries — the account holds unhedged BTC and needs manual review.
-func markHedgeFailed(store transactionStore, id uint, spot *cexaccount.SpotOrderResult) error {
+func markHedgeFailed(store transactionStore, id uint, spot *cexaccount.SpotOrderResult, cause error) error {
 	details, err := bundleCexDetails(spot, nil, nil)
 	if err != nil {
 		return err
 	}
 	return mutateRow(store, id, func(tx *db.Transaction) {
-		tx.Status = db.StatusHedgeFailedNeedsReview
+		reason := "counter-hedge could not be opened or confirmed"
+		if cause != nil {
+			reason = cause.Error()
+		}
+		tx.SetStatus(db.StatusHedgeFailedNeedsReview, reason)
 		tx.CexTransactionDetails = details
 	})
 }
@@ -210,7 +214,7 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 	}
 
 	return mutateRow(store, id, func(tx *db.Transaction) {
-		tx.Status = db.StatusCexCryptoWithdrawalInitiated
+		tx.SetStatus(db.StatusCexCryptoWithdrawalInitiated, "")
 		tx.CexTransactionDetails = details
 		tx.CexBitcoinAmount = result.Withdrawal.AmountBTC
 		tx.DexOfferCreation = dexOfferJSON
