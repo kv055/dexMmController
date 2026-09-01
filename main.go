@@ -301,17 +301,14 @@ func main() {
 		TorProxyURL:          torProxyURL,
 	})
 	cexAccountService := cexaccount.NewService(repo, cexaccount.Config{
-		HodlHodlBaseURL:            hhBaseURL,
-		BinanceBaseURL:             binanceBaseURL,
-		KrakenBaseURL:              krakenBaseURL,
-		KrakenFuturesBaseURL:       krakenFuturesBaseURL,
-		CoinbaseBaseURL:            coinbaseBaseURL,
-		CoinbaseINTXBaseURL:        envOr("COINBASE_INTX_API_BASE_URL", ""),
-		CoinbaseBeneficiaryName:    envOr("COINBASE_BENEFICIARY_NAME", ""),
-		CoinbaseBeneficiaryCountry: envOr("COINBASE_BENEFICIARY_COUNTRY", ""),
-		CoinbaseLNDWithdrawAddress: envOr("COINBASE_LND_WITHDRAW_ADDRESS", ""),
-		RobosatsBaseURL:            robosatsURL,
-		TorProxyURL:                torProxyURL,
+		HodlHodlBaseURL:      hhBaseURL,
+		BinanceBaseURL:       binanceBaseURL,
+		KrakenBaseURL:        krakenBaseURL,
+		KrakenFuturesBaseURL: krakenFuturesBaseURL,
+		CoinbaseBaseURL:      coinbaseBaseURL,
+		CoinbaseINTXBaseURL:  envOr("COINBASE_INTX_API_BASE_URL", ""),
+		RobosatsBaseURL:      robosatsURL,
+		TorProxyURL:          torProxyURL,
 	})
 	preTradeChecker := pretrade.NewPreTradeChecker(
 		pretrade.BalanceFetcherFunc(func(ctx context.Context, provider, currency string) (float64, error) {

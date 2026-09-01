@@ -17,6 +17,22 @@ type credentialRepo struct {
 	keysByProvider map[string][]db.APIKey
 }
 
+type coinbaseConfigRepo struct {
+	credentialRepo
+	name    string
+	country string
+	wallet  *db.WalletAddress
+	err     error
+}
+
+func (r coinbaseConfigRepo) GetWithdrawalBeneficiary(context.Context) (string, string, error) {
+	return r.name, r.country, r.err
+}
+
+func (r coinbaseConfigRepo) GetPrimaryWalletAddress() (*db.WalletAddress, error) {
+	return r.wallet, r.err
+}
+
 func (r credentialRepo) GetActiveAPIKeysForProvider(_ context.Context, provider string) ([]db.APIKey, error) {
 	return r.keysByProvider[provider], nil
 }
@@ -147,6 +163,21 @@ func TestCanonicalProvider(t *testing.T) {
 	}
 	if _, err := CanonicalProvider("Bisq"); !errors.Is(err, ErrUnsupportedProvider) {
 		t.Fatalf("CanonicalProvider(Bisq) error = %v, want ErrUnsupportedProvider", err)
+	}
+}
+
+func TestCoinbaseOperationalSettingsComeFromRepositories(t *testing.T) {
+	service := NewService(coinbaseConfigRepo{
+		credentialRepo: credentialRepo{}, name: "Operator Name", country: "DE",
+		wallet: &db.WalletAddress{Label: "Primary", Address: "bc1qprimary"},
+	}, Config{})
+	name, country, err := service.coinbaseBeneficiary(context.Background())
+	if err != nil || name != "Operator Name" || country != "DE" {
+		t.Fatalf("beneficiary = %q/%q, err=%v", name, country, err)
+	}
+	address, err := service.coinbasePrimaryWalletAddress()
+	if err != nil || address != "bc1qprimary" {
+		t.Fatalf("address = %q, err=%v", address, err)
 	}
 }
 

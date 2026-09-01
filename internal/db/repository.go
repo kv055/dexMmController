@@ -697,6 +697,40 @@ func (r *TransactionRepository) GetPrimaryWalletAddress() (*WalletAddress, error
 	return r.GetWalletAddressByLabel("Primary")
 }
 
+// GetWithdrawalBeneficiary returns the operator's legal name and country from
+// the highest-priority active bank account. The owner name is decrypted only at
+// this execution boundary and is never copied into deployment configuration.
+func (r *TransactionRepository) GetWithdrawalBeneficiary(ctx context.Context) (string, string, error) {
+	var row struct {
+		OwnerName string
+		Country   string
+	}
+	result := r.db.WithContext(ctx).Raw(`
+		SELECT ba.owner_name, COALESCE(ba.country, '') AS country
+		FROM bank_accounts ba
+		JOIN accounts a ON a.id = ba.account_id
+		WHERE ba.is_active AND a.is_active AND a.category = 'Bank'
+		ORDER BY a.payment_priority ASC NULLS LAST, ba.id ASC
+		LIMIT 1
+	`).Scan(&row)
+	if result.Error != nil {
+		return "", "", fmt.Errorf("load withdrawal beneficiary: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return "", "", fmt.Errorf("no active bank account is configured for the withdrawal beneficiary")
+	}
+	name, err := credentialcrypto.Decrypt(strings.TrimSpace(row.OwnerName))
+	if err != nil {
+		return "", "", fmt.Errorf("decrypt withdrawal beneficiary name: %w", err)
+	}
+	name = strings.TrimSpace(name)
+	country := strings.ToUpper(strings.TrimSpace(row.Country))
+	if name == "" || len(country) != 2 {
+		return "", "", fmt.Errorf("active bank account must have an owner name and ISO alpha-2 country for Coinbase withdrawals")
+	}
+	return name, country, nil
+}
+
 // ListWalletAddresses returns all stored wallet address records.
 func (r *TransactionRepository) ListWalletAddresses() ([]WalletAddress, error) {
 	var wallets []WalletAddress

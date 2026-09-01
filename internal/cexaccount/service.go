@@ -27,6 +27,14 @@ type Repository interface {
 	GetTransactionsByCEX(cexName string) ([]db.Transaction, error)
 }
 
+type coinbaseBeneficiaryRepository interface {
+	GetWithdrawalBeneficiary(ctx context.Context) (name, country string, err error)
+}
+
+type primaryWalletRepository interface {
+	GetPrimaryWalletAddress() (*db.WalletAddress, error)
+}
+
 // Service fetches live CEX account data for the trading UI.
 type Service struct {
 	repo            Repository
@@ -320,9 +328,9 @@ func (s *Service) WithdrawalAddresses(ctx context.Context, rawProvider string) (
 		}
 		return addresses, nil
 	case "coinbase":
-		address := strings.TrimSpace(s.cfg.CoinbaseLNDWithdrawAddress)
-		if address == "" {
-			return nil, fmt.Errorf("COINBASE_LND_WITHDRAW_ADDRESS is required")
+		address, err := s.coinbasePrimaryWalletAddress()
+		if err != nil {
+			return nil, err
 		}
 		return []WithdrawalAddress{{
 			Asset: "BTC", Network: "bitcoin", Address: address,
@@ -450,8 +458,8 @@ func (s *Service) PreTradeCheck(ctx context.Context, p PreTradeParams) (*Report,
 		return nil, fmt.Errorf("required_capital must be greater than zero")
 	}
 	if strings.EqualFold(strings.TrimSpace(p.Provider), "coinbase") && !strings.EqualFold(strings.TrimSpace(p.MarketSide), "ask") {
-		if strings.TrimSpace(s.cfg.CoinbaseBeneficiaryName) == "" || strings.TrimSpace(s.cfg.CoinbaseBeneficiaryCountry) == "" {
-			return nil, fmt.Errorf("Coinbase bid execution requires COINBASE_BENEFICIARY_NAME and COINBASE_BENEFICIARY_COUNTRY")
+		if _, _, err := s.coinbaseBeneficiary(ctx); err != nil {
+			return nil, fmt.Errorf("Coinbase bid execution beneficiary is not ready: %w", err)
 		}
 	}
 	report := s.preTradeChecker.Run(ctx, p)
@@ -1411,17 +1419,14 @@ func (s *Service) WhitelistedLNDWithdrawAddress(ctx context.Context, rawProvider
 		walletAddrs[i] = p.Address
 	}
 	if provider == "Coinbase" {
-		if strings.TrimSpace(s.cfg.CoinbaseBeneficiaryName) == "" || strings.TrimSpace(s.cfg.CoinbaseBeneficiaryCountry) == "" {
-			return "", fmt.Errorf("COINBASE_BENEFICIARY_NAME and COINBASE_BENEFICIARY_COUNTRY are required for Coinbase bid routes")
+		primary, err := s.coinbasePrimaryWalletAddress()
+		if err != nil {
+			return "", err
 		}
-		configured := strings.TrimSpace(s.cfg.CoinbaseLNDWithdrawAddress)
-		if configured == "" {
-			return "", fmt.Errorf("COINBASE_LND_WITHDRAW_ADDRESS is required for Coinbase bid routes")
+		if MatchWhitelistedLNDAddress(walletAddrs, []string{primary}) == "" {
+			return "", fmt.Errorf("stored Primary wallet address is not owned by the current LND wallet")
 		}
-		if MatchWhitelistedLNDAddress(walletAddrs, []string{configured}) == "" {
-			return "", fmt.Errorf("configured Coinbase LND withdrawal address is not owned by the current LND wallet")
-		}
-		return configured, nil
+		return primary, nil
 	}
 
 	addrs, err := s.WithdrawalAddresses(ctx, provider)
@@ -1508,10 +1513,9 @@ func (s *Service) WithdrawSpotToLND(ctx context.Context, rawProvider string, amo
 			AddressTag:      withdrawKey,
 		})
 	case "coinbase":
-		beneficiaryName := strings.TrimSpace(s.cfg.CoinbaseBeneficiaryName)
-		beneficiaryCountry := strings.TrimSpace(s.cfg.CoinbaseBeneficiaryCountry)
-		if beneficiaryName == "" || beneficiaryCountry == "" {
-			return nil, fmt.Errorf("coinbase: COINBASE_BENEFICIARY_NAME and COINBASE_BENEFICIARY_COUNTRY are required")
+		beneficiaryName, beneficiaryCountry, err := s.coinbaseBeneficiary(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("coinbase: withdrawal beneficiary: %w", err)
 		}
 		idem := coinbase.StableIdempotencyKey(clientRequestID)
 		client := coinbase.NewClient(s.cfg.CoinbaseBaseURL, key.APIKey, key.APISecret)
@@ -1529,6 +1533,29 @@ func (s *Service) WithdrawSpotToLND(ctx context.Context, rawProvider string, amo
 	default:
 		return nil, fmt.Errorf("CEX→LND withdrawal not yet supported for %s", provider)
 	}
+}
+
+func (s *Service) coinbaseBeneficiary(ctx context.Context) (string, string, error) {
+	repo, ok := s.repo.(coinbaseBeneficiaryRepository)
+	if !ok {
+		return "", "", fmt.Errorf("beneficiary repository is unavailable")
+	}
+	return repo.GetWithdrawalBeneficiary(ctx)
+}
+
+func (s *Service) coinbasePrimaryWalletAddress() (string, error) {
+	repo, ok := s.repo.(primaryWalletRepository)
+	if !ok {
+		return "", fmt.Errorf("primary wallet repository is unavailable")
+	}
+	wallet, err := repo.GetPrimaryWalletAddress()
+	if err != nil {
+		return "", fmt.Errorf("load stored Primary wallet address: %w", err)
+	}
+	if wallet == nil || strings.TrimSpace(wallet.Address) == "" {
+		return "", fmt.Errorf("stored Primary wallet address is missing")
+	}
+	return strings.TrimSpace(wallet.Address), nil
 }
 
 func krakenWithdrawKeyForAddress(rows []kraken.WithdrawAddress, lndAddress string) (string, error) {
