@@ -2,22 +2,19 @@ package coinbase
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"commons/coinbaseauth"
+	"github.com/google/uuid"
 )
 
 const (
@@ -68,6 +65,113 @@ type DepositAddress struct {
 	ID      string `json:"id"`
 	Address string `json:"address"`
 	Network string `json:"network"`
+}
+
+// Transaction is the subset of a Coinbase App transaction used for withdrawal
+// recovery and actual network-fee observation.
+type Transaction struct {
+	ID        string        `json:"id"`
+	Status    string        `json:"status"`
+	Type      string        `json:"type"`
+	CreatedAt string        `json:"created_at"`
+	UpdatedAt string        `json:"updated_at"`
+	Amount    AccountAmount `json:"amount"`
+	Idem      string        `json:"idem"`
+	To        struct {
+		Address string `json:"address"`
+	} `json:"to"`
+	Network struct {
+		Status         string        `json:"status"`
+		Hash           string        `json:"hash"`
+		TransactionFee AccountAmount `json:"transaction_fee"`
+	} `json:"network"`
+}
+
+// SendMoneyRequest describes a Coinbase App on-chain send to an owned wallet.
+type SendMoneyRequest struct {
+	To                 string
+	AmountBTC          string
+	IdempotencyKey     string
+	BeneficiaryName    string
+	BeneficiaryCountry string
+}
+
+// SendMoney submits an idempotent Bitcoin-network transfer from the primary BTC
+// account. The travel-rule declaration is deliberately fixed to the operator's
+// own self-hosted wallet; callers supply only the configured identity fields.
+func (c *Client) SendMoney(ctx context.Context, input SendMoneyRequest) (*Transaction, error) {
+	accountID, err := c.resolveBTCAccountID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(accountID) == "" {
+		return nil, fmt.Errorf("coinbase: BTC account not found")
+	}
+	idem := strings.TrimSpace(input.IdempotencyKey)
+	if _, err := uuid.Parse(idem); err != nil {
+		return nil, fmt.Errorf("coinbase: idempotency key must be a UUID: %w", err)
+	}
+	payload := map[string]any{
+		"type": "send", "to": strings.TrimSpace(input.To), "amount": input.AmountBTC,
+		"currency": "BTC", "idem": strings.ToLower(idem), "network": "bitcoin",
+		"travel_rule_data": map[string]string{
+			"beneficiary_name":        strings.TrimSpace(input.BeneficiaryName),
+			"beneficiary_wallet_type": "WALLET_TYPE_SELF_HOSTED",
+			"beneficiary_country":     strings.ToUpper(strings.TrimSpace(input.BeneficiaryCountry)),
+			"is_self":                 "IS_SELF_TRUE",
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("coinbase: encode send payload: %w", err)
+	}
+	var response struct {
+		Data Transaction `json:"data"`
+	}
+	path := "/v2/accounts/" + url.PathEscape(accountID) + "/transactions"
+	if err := c.getJSON(ctx, http.MethodPost, path, strings.NewReader(string(body)), &response); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(response.Data.ID) == "" {
+		return nil, fmt.Errorf("coinbase: send response did not contain a transaction id")
+	}
+	response.Data.Idem = strings.ToLower(idem)
+	return &response.Data, nil
+}
+
+// ShowTransaction fetches one Coinbase App transaction by exchange id.
+func (c *Client) ShowTransaction(ctx context.Context, transactionID string) (*Transaction, error) {
+	accountID, err := c.resolveBTCAccountID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var response struct {
+		Data Transaction `json:"data"`
+	}
+	path := "/v2/accounts/" + url.PathEscape(accountID) + "/transactions/" + url.PathEscape(strings.TrimSpace(transactionID))
+	if err := c.getJSON(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return nil, err
+	}
+	return &response.Data, nil
+}
+
+// ListTransactions returns at most limit recent BTC account transactions.
+func (c *Client) ListTransactions(ctx context.Context, limit int) ([]Transaction, error) {
+	accountID, err := c.resolveBTCAccountID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	var response struct {
+		Data []Transaction `json:"data"`
+	}
+	path := "/v2/accounts/" + url.PathEscape(accountID) + "/transactions?limit=" + strconv.Itoa(limit)
+	if err := c.getJSON(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return nil, err
+	}
+	return response.Data, nil
 }
 
 // KeyPermissions reports Coinbase CDP API key capabilities.
@@ -383,75 +487,15 @@ func (c *Client) getJSON(ctx context.Context, method, path string, body io.Reade
 }
 
 func (c *Client) buildJWT(method, path string) (string, error) {
-	key, err := parseECPrivateKey(c.privateKey)
-	if err != nil {
-		return "", err
-	}
-	now := time.Now().Unix()
-	uri := fmt.Sprintf("%s %s%s", method, requestHost, path)
-	header := map[string]any{
-		"alg":   "ES256",
-		"typ":   "JWT",
-		"kid":   c.keyName,
-		"nonce": randomHex(16),
-	}
-	payload := map[string]any{
-		"iss": "cdp",
-		"sub": c.keyName,
-		"nbf": now,
-		"exp": now + 120,
-		"uri": uri,
-	}
-	unsigned, err := encodeJWTParts(header, payload)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256([]byte(unsigned))
-	r, s, err := ecdsa.Sign(rand.Reader, key, sum[:])
-	if err != nil {
-		return "", fmt.Errorf("coinbase: sign jwt: %w", err)
-	}
-	signature := append(padBigInt(r, 32), padBigInt(s, 32)...)
-	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+	return coinbaseauth.BuildJWT(c.keyName, c.privateKey, method, requestHost, path)
 }
 
-func parseECPrivateKey(raw string) (*ecdsa.PrivateKey, error) {
-	normalized := strings.ReplaceAll(strings.TrimSpace(raw), `\n`, "\n")
-	block, _ := pem.Decode([]byte(normalized))
-	if block == nil {
-		return nil, fmt.Errorf("coinbase: decode EC private key PEM")
-	}
-	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
-		return key, nil
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("coinbase: parse EC private key: %w", err)
-	}
-	key, ok := parsed.(*ecdsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("coinbase: private key is not ECDSA")
-	}
-	return key, nil
-}
+var coinbaseWithdrawalNamespace = uuid.MustParse("a8c86aec-04cc-5c2f-955f-6fb39cc38535")
 
-func encodeJWTParts(header, payload any) (string, error) {
-	headerJSON, err := json.Marshal(header)
-	if err != nil {
-		return "", err
-	}
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(headerJSON) + "." + base64.RawURLEncoding.EncodeToString(payloadJSON), nil
-}
-
-func padBigInt(v *big.Int, size int) []byte {
-	out := make([]byte, size)
-	raw := v.Bytes()
-	copy(out[size-len(raw):], raw)
-	return out
+// StableIdempotencyKey maps a trade database identifier to Coinbase's required
+// UUID idempotency key. Repeating the same trade input produces the same UUID.
+func StableIdempotencyKey(tradeID string) string {
+	return uuid.NewSHA1(coinbaseWithdrawalNamespace, []byte(strings.TrimSpace(tradeID))).String()
 }
 
 func randomHex(size int) string {

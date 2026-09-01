@@ -9,6 +9,7 @@ import (
 
 	"dexMmController/internal/db"
 	"dexMmController/internal/exchangeconnectors/cex/binance"
+	"dexMmController/internal/exchangeconnectors/cex/coinbase"
 	"dexMmController/internal/exchangeconnectors/cex/kraken"
 	lnd "dexMmController/internal/wallethub"
 )
@@ -52,6 +53,8 @@ func (s *Service) GetWithdrawalStatus(ctx context.Context, rawProvider, withdraw
 		return s.binanceWithdrawalStatus(ctx, key, withdrawalID, clientRequestID)
 	case "kraken":
 		return s.krakenWithdrawalStatus(ctx, key, withdrawalID)
+	case "coinbase":
+		return s.coinbaseWithdrawalStatus(ctx, key, withdrawalID)
 	default:
 		return nil, fmt.Errorf("withdrawal status not supported for %s", provider)
 	}
@@ -79,8 +82,94 @@ func (s *Service) WithdrawalAlreadySent(ctx context.Context, rawProvider, client
 		return s.binanceWithdrawalAlreadySent(ctx, key, clientRequestID, amountBTC, address, within)
 	case "kraken":
 		return s.krakenWithdrawalAlreadySent(ctx, key, amountBTC, address, within)
+	case "coinbase":
+		return s.coinbaseWithdrawalAlreadySent(ctx, key, clientRequestID, amountBTC, address, within)
 	default:
 		return nil, fmt.Errorf("withdrawal lookup not supported for %s", provider)
+	}
+}
+
+func (s *Service) coinbaseWithdrawalStatus(ctx context.Context, key db.APIKey, withdrawalID string) (*WithdrawalStatus, error) {
+	client := coinbase.NewClient(s.cfg.CoinbaseBaseURL, key.APIKey, key.APISecret)
+	tx, err := client.ShowTransaction(ctx, withdrawalID)
+	if err != nil {
+		return nil, fmt.Errorf("coinbase: show withdrawal: %w", err)
+	}
+	return coinbaseWithdrawalStatusFromTransaction(tx), nil
+}
+
+func (s *Service) coinbaseWithdrawalAlreadySent(ctx context.Context, key db.APIKey, clientRequestID string, amountBTC float64, address string, within time.Duration) (*WithdrawalStatus, error) {
+	client := coinbase.NewClient(s.cfg.CoinbaseBaseURL, key.APIKey, key.APISecret)
+	rows, err := client.ListTransactions(ctx, 100)
+	if err != nil {
+		return nil, fmt.Errorf("coinbase: transaction history: %w", err)
+	}
+	wantIdem := coinbase.StableIdempotencyKey(clientRequestID)
+	cutoff := time.Now().Add(-within)
+	for i := range rows {
+		tx := &rows[i]
+		if !strings.EqualFold(tx.Type, "send") || coinbaseWithdrawFailed(tx.Status) {
+			continue
+		}
+		created, _ := time.Parse(time.RFC3339, tx.CreatedAt)
+		if !created.IsZero() && created.Before(cutoff) {
+			continue
+		}
+		amount := strings.TrimPrefix(strings.TrimSpace(tx.Amount.Value), "-")
+		if strings.EqualFold(strings.TrimSpace(tx.Idem), wantIdem) ||
+			(addressMatches(tx.To.Address, address) && amountMatches(amount, amountBTC)) {
+			return coinbaseWithdrawalStatusFromTransaction(tx), nil
+		}
+	}
+	return nil, nil
+}
+
+func coinbaseWithdrawalStatusFromTransaction(tx *coinbase.Transaction) *WithdrawalStatus {
+	if tx == nil {
+		return nil
+	}
+	status := strings.ToLower(strings.TrimSpace(tx.Status))
+	if network := strings.ToLower(strings.TrimSpace(tx.Network.Status)); network != "" {
+		status = network
+	}
+	statusCode := coinbaseWithdrawStatusCode(status)
+	if statusCode == 6 {
+		status = "completed"
+	} else if statusCode == 5 {
+		status = "failed"
+	}
+	updated := strings.TrimSpace(tx.UpdatedAt)
+	if updated == "" {
+		updated = strings.TrimSpace(tx.CreatedAt)
+	}
+	if updated == "" {
+		updated = time.Now().UTC().Format(time.RFC3339)
+	}
+	return &WithdrawalStatus{
+		Provider: "coinbase", WithdrawalID: tx.ID, CexStatus: status,
+		CexStatusCode: statusCode, TxHash: strings.TrimSpace(tx.Network.Hash),
+		Address: strings.TrimSpace(tx.To.Address), AmountBTC: strings.TrimPrefix(strings.TrimSpace(tx.Amount.Value), "-"),
+		FeeBTC: parseDecimal(tx.Network.TransactionFee.Value), UpdatedAt: updated,
+	}
+}
+
+func coinbaseWithdrawFailed(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "canceled", "cancelled", "expired":
+		return true
+	default:
+		return false
+	}
+}
+
+func coinbaseWithdrawStatusCode(status string) int {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "complete", "confirmed":
+		return 6
+	case "failed", "canceled", "cancelled", "expired":
+		return 5
+	default:
+		return 0
 	}
 }
 

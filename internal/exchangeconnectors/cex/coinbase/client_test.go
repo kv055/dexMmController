@@ -2,11 +2,11 @@ package coinbase
 
 import (
 	"context"
-	"encoding/json"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -244,6 +244,50 @@ func TestBuildJWTIncludesThreeParts(t *testing.T) {
 	}
 	if parts := strings.Split(token, "."); len(parts) != 3 {
 		t.Fatalf("jwt parts = %d, want 3", len(parts))
+	}
+}
+
+func TestSendMoneyUsesStableUUIDAndSelfHostedTravelRule(t *testing.T) {
+	var payload map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v3/brokerage/accounts":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"accounts": []any{map[string]any{"uuid": "btc-account", "currency": "BTC", "active": true}},
+				"has_next": false,
+			})
+		case r.URL.Path == "/v2/accounts/btc-account/transactions" && r.Method == http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "tx-123", "status": "pending", "type": "send"}})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.RequestURI())
+		}
+	}))
+	defer srv.Close()
+
+	idem := StableIdempotencyKey("tradeflow-42")
+	client := NewClient(srv.URL, "organizations/org/apiKeys/key", testECPrivateKeyPEM(t))
+	tx, err := client.SendMoney(context.Background(), SendMoneyRequest{
+		To: "bc1qmanaged", AmountBTC: "0.01000000", IdempotencyKey: idem,
+		BeneficiaryName: "Operator", BeneficiaryCountry: "de",
+	})
+	if err != nil {
+		t.Fatalf("SendMoney: %v", err)
+	}
+	if tx.ID != "tx-123" || tx.Idem != idem {
+		t.Fatalf("transaction = %#v", tx)
+	}
+	if payload["network"] != "bitcoin" || payload["idem"] != idem || payload["to"] != "bc1qmanaged" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	travel, _ := payload["travel_rule_data"].(map[string]any)
+	if travel["beneficiary_wallet_type"] != "WALLET_TYPE_SELF_HOSTED" || travel["is_self"] != "IS_SELF_TRUE" || travel["beneficiary_country"] != "DE" {
+		t.Fatalf("travel_rule_data = %#v", travel)
+	}
+	if StableIdempotencyKey("tradeflow-42") != idem || StableIdempotencyKey("tradeflow-43") == idem {
+		t.Fatal("StableIdempotencyKey is not deterministic and unique")
 	}
 }
 

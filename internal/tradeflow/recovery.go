@@ -179,21 +179,28 @@ func (tf *TradeFlow) ResumeWithdrawal(ctx context.Context, tx *db.Transaction) (
 	if filledBTC <= 0 {
 		return fmt.Errorf("tradeflow recovery: cannot determine filled BTC for row %d", tx.ID)
 	}
+	withdrawAmountBTC := filledBTC
+	if strings.EqualFold(rc.order.Provider, "coinbase") {
+		withdrawAmountBTC -= rc.order.CEXWithdrawalFeeBTC
+		if withdrawAmountBTC <= 0 {
+			return fmt.Errorf("tradeflow recovery: Coinbase fill does not cover withdrawal reserve for row %d", tx.ID)
+		}
+	}
 	clientReqID := fmt.Sprintf("tradeflow-%d", tx.ID)
 
 	// Guard: has a matching withdrawal already gone out?
-	if existing, err := tf.svc.WithdrawalAlreadySent(ctx, rc.order.Provider, clientReqID, filledBTC, rc.lndAddr, withdrawalLookback); err != nil {
+	if existing, err := tf.svc.WithdrawalAlreadySent(ctx, rc.order.Provider, clientReqID, withdrawAmountBTC, rc.lndAddr, withdrawalLookback); err != nil {
 		slog.Warn("tradeflow recovery: withdrawal history check failed; not issuing to avoid double-send",
 			"transaction_id", tx.ID, "err", err)
 		return err
 	} else if existing != nil {
 		slog.Warn("tradeflow recovery: withdrawal already exists on venue — recording, not resending",
 			"transaction_id", tx.ID, "withdrawal_id", existing.WithdrawalID)
-		result := withdrawalResultFrom(rc.order.Provider, existing, clientReqID, rc.lndAddr, filledBTC)
+		result := withdrawalResultFrom(rc.order.Provider, existing, clientReqID, rc.lndAddr, withdrawAmountBTC)
 		return recordWithdrawal(tf.store, tx.ID, rc.order, rc.bundle.Spot, rc.bundle.Hedge, result, rc.lndAddr, settlement)
 	}
 
-	wd, err := tf.svc.WithdrawSpotToLND(ctx, rc.order.Provider, filledBTC, rc.lndAddr, clientReqID)
+	wd, err := tf.svc.WithdrawSpotToLND(ctx, rc.order.Provider, withdrawAmountBTC, rc.lndAddr, clientReqID)
 	if err != nil {
 		return fmt.Errorf("tradeflow recovery: withdrawal failed: %w", err)
 	}
@@ -207,7 +214,7 @@ func (tf *TradeFlow) ResumeWithdrawal(ctx context.Context, tx *db.Transaction) (
 			WithdrawalID:    wd.WithdrawalID,
 			ClientRequestID: wd.ClientRequestID,
 			WalletAddress:   wd.WalletAddress,
-			AmountBTC:       filledBTC,
+			AmountBTC:       withdrawAmountBTC,
 			CexStatus:       "submitted",
 		},
 		TransactionID: tx.ID,

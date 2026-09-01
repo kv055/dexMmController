@@ -381,15 +381,22 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 		slog.Info("tradeflow: transaction row created", "transaction_id", txID, "status", "CexTradeflowStarted")
 	}
 
-	// Step 2: spot market buy. A swap route buys the DEX amount plus the same
-	// service/miner/withdrawal/headroom allowances priced during preparation.
+	// Step 2: spot market buy. Coinbase App does not provide a reliable preflight
+	// network-fee quote, so buy the intended withdrawal amount plus the persisted
+	// conservative reserve and send only the intended net amount.
 	spotAmountBTC := order.BTCAmount
 	if order.ResolvedRoute.UsesLightning() && order.RequiredBTCLiquidity > spotAmountBTC {
 		spotAmountBTC = order.RequiredBTCLiquidity
 	}
 	if report.SwapRequired {
 		swapOverhead := float64(report.ExpectedLockupSat+report.EstimatedFundingFeeSat-report.SwapShortfallSat) / 1e8
-		spotAmountBTC += swapOverhead + order.CEXWithdrawalFeeBTC + order.SwapSafetyHeadroomBTC
+		spotAmountBTC += swapOverhead + order.SwapSafetyHeadroomBTC
+	}
+	netWithdrawalBTC := spotAmountBTC
+	if strings.EqualFold(order.Provider, "coinbase") {
+		spotAmountBTC += order.CEXWithdrawalFeeBTC
+	} else if report.SwapRequired {
+		spotAmountBTC += order.CEXWithdrawalFeeBTC
 	}
 	spotStart := time.Now()
 	spot, err := tf.svc.MarketBuyBTC(ctx, spotAmountBTC, preTrade)
@@ -411,6 +418,15 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 		if err := recordSpotBuy(tf.store, txID, spot, filledBTC); err != nil {
 			return nil, fmt.Errorf("tradeflow: persist spot buy (order_id=%s): %w", spot.OrderID, err)
 		}
+	}
+	if strings.EqualFold(order.Provider, "coinbase") && filledBTC+1e-8 < netWithdrawalBTC+order.CEXWithdrawalFeeBTC {
+		shortFillErr := fmt.Errorf("Coinbase fill %.8f BTC is below net target plus withdrawal reserve %.8f BTC; hedge not opened", filledBTC, netWithdrawalBTC+order.CEXWithdrawalFeeBTC)
+		if persist {
+			if perr := markHedgeFailed(tf.store, txID, spot, shortFillErr); perr != nil {
+				return nil, fmt.Errorf("tradeflow: persist Coinbase short-fill review state: %w", perr)
+			}
+		}
+		return nil, fmt.Errorf("tradeflow: %w", shortFillErr)
 	}
 
 	// Step 3: open hedge with a guarded retry. From here on the spot is filled, so a
@@ -451,7 +467,11 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 		clientReqID = fmt.Sprintf("tradeflow-%d", txID)
 	}
 	wdStart := time.Now()
-	wd, err := tf.svc.WithdrawSpotToLND(ctx, order.Provider, filledBTC, target, clientReqID)
+	withdrawAmountBTC := filledBTC
+	if strings.EqualFold(order.Provider, "coinbase") {
+		withdrawAmountBTC = netWithdrawalBTC
+	}
+	wd, err := tf.svc.WithdrawSpotToLND(ctx, order.Provider, withdrawAmountBTC, target, clientReqID)
 	metrics.OrderDuration.WithLabelValues(order.Provider, "withdrawal").Observe(time.Since(wdStart).Seconds())
 	metrics.OrdersPlaced.WithLabelValues(order.Provider, "withdrawal", metrics.Result(err)).Inc()
 	if err != nil {
@@ -460,7 +480,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	slog.Info("tradeflow: withdrawal initiated",
 		"withdrawal_id", wd.WithdrawalID,
 		"wallet_address", wd.WalletAddress,
-		"amount_btc", filledBTC,
+		"amount_btc", withdrawAmountBTC,
 	)
 
 	result := &Result{
@@ -472,7 +492,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 			WithdrawalID:    wd.WithdrawalID,
 			ClientRequestID: wd.ClientRequestID,
 			WalletAddress:   wd.WalletAddress,
-			AmountBTC:       filledBTC,
+			AmountBTC:       withdrawAmountBTC,
 			CexStatus:       "submitted",
 		},
 		TransactionID: txID,
@@ -680,7 +700,7 @@ func validate(o Order) error {
 			return fmt.Errorf("tradeflow: hedgeless execution is not supported for dex %q", o.Dex)
 		}
 		switch strings.ToLower(strings.TrimSpace(o.Provider)) {
-		case "binance", "kraken":
+		case "binance", "kraken", "coinbase":
 		default:
 			return fmt.Errorf("tradeflow: hedgeless pool refill is not supported for CEX provider %q", o.Provider)
 		}

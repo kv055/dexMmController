@@ -36,11 +36,13 @@ type fakeService struct {
 
 	preTradeCallCount       int
 	spotCallCount           int
+	lastSpotAmount          float64
 	hedgeCallCount          int
 	withdrawCallCount       int
 	liveCallCount           int
 	alreadySentCallCount    int
 	lastWithdrawClientReqID string
+	lastWithdrawAmount      float64
 }
 
 func (f *fakeService) PreTradeCheck(_ context.Context, _ pretrade.Params) (*pretrade.Report, error) {
@@ -48,8 +50,9 @@ func (f *fakeService) PreTradeCheck(_ context.Context, _ pretrade.Params) (*pret
 	return f.preTradeReport, f.preTradeErr
 }
 
-func (f *fakeService) MarketBuyBTC(_ context.Context, _ float64, _ pretrade.Params) (*cexaccount.SpotOrderResult, error) {
+func (f *fakeService) MarketBuyBTC(_ context.Context, amount float64, _ pretrade.Params) (*cexaccount.SpotOrderResult, error) {
 	f.spotCallCount++
+	f.lastSpotAmount = amount
 	return f.spotResult, f.spotErr
 }
 
@@ -79,9 +82,10 @@ func (f *fakeService) LiveHedgePosition(_ context.Context, venue string) (*cexac
 	return &cexaccount.HedgeSnapshot{Venue: venue, Side: "flat"}, nil
 }
 
-func (f *fakeService) WithdrawSpotToLND(_ context.Context, _ string, _ float64, _, clientRequestID string) (*lnd.WithdrawFromExchangeResult, error) {
+func (f *fakeService) WithdrawSpotToLND(_ context.Context, _ string, amount float64, _, clientRequestID string) (*lnd.WithdrawFromExchangeResult, error) {
 	f.withdrawCallCount++
 	f.lastWithdrawClientReqID = clientRequestID
+	f.lastWithdrawAmount = amount
 	return f.withdrawResult, f.withdrawErr
 }
 
@@ -386,6 +390,68 @@ func TestRun_WithdrawUsesFilledBTC(t *testing.T) {
 	}
 	if result.Withdrawal.AmountBTC != 0.00987 {
 		t.Errorf("result.Withdrawal.AmountBTC: want 0.00987, got %f", result.Withdrawal.AmountBTC)
+	}
+}
+
+func TestRun_CoinbaseGrossesUpAndWithdrawsNetTarget(t *testing.T) {
+	svc := happyFake()
+	svc.spotResult.Execution.FilledBTC = 0.0101
+	o := validOrder()
+	o.Provider = "coinbase"
+	o.HedgeVenue = "coinbase_futures"
+	o.CEXWithdrawalFeeBTC = 0.0001
+	o.ResolvedRoute.Provider = "coinbase"
+	o.ResolvedRoute.HedgeVenue = "coinbase_futures"
+	o.ResolvedRoute.CEXWithdrawalFeeBTC = 0.0001
+	var withdrawn float64
+	result, err := New(&captureWithdrawService{fakeService: svc, capturedAmount: &withdrawn}, nil).Run(context.Background(), o)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if svc.lastSpotAmount != 0.0101 {
+		t.Fatalf("spot amount = %.8f, want 0.01010000", svc.lastSpotAmount)
+	}
+	if withdrawn != 0.01 || result.Withdrawal.AmountBTC != 0.01 {
+		t.Fatalf("withdrawn = %.8f, result = %.8f, want net 0.01000000", withdrawn, result.Withdrawal.AmountBTC)
+	}
+}
+
+func TestRun_CoinbaseShortFillAbortsBeforeHedge(t *testing.T) {
+	svc := happyFake()
+	svc.spotResult.Execution.FilledBTC = 0.01005
+	o := validOrder()
+	o.Provider = "coinbase"
+	o.HedgeVenue = "coinbase_futures"
+	o.CEXWithdrawalFeeBTC = 0.0001
+	o.ResolvedRoute.Provider = "coinbase"
+	o.ResolvedRoute.HedgeVenue = "coinbase_futures"
+	o.ResolvedRoute.CEXWithdrawalFeeBTC = 0.0001
+	_, err := New(svc, nil).Run(context.Background(), o)
+	if err == nil || !strings.Contains(err.Error(), "hedge not opened") {
+		t.Fatalf("error = %v", err)
+	}
+	if svc.hedgeCallCount != 0 || svc.withdrawCallCount != 0 {
+		t.Fatalf("hedge=%d withdraw=%d, want both zero", svc.hedgeCallCount, svc.withdrawCallCount)
+	}
+}
+
+func TestRun_PersistedCoinbaseShortFillIsParkedForReview(t *testing.T) {
+	svc := happyFake()
+	svc.spotResult.Execution.FilledBTC = 0.01005
+	o := persistOrder()
+	o.Provider = "coinbase"
+	o.HedgeVenue = "coinbase_futures"
+	o.CEXWithdrawalFeeBTC = 0.0001
+	o.ResolvedRoute.Provider = "coinbase"
+	o.ResolvedRoute.HedgeVenue = "coinbase_futures"
+	o.ResolvedRoute.CEXWithdrawalFeeBTC = 0.0001
+	store := newFakeStore()
+	_, err := New(svc, store).Run(context.Background(), o)
+	if err == nil {
+		t.Fatal("expected short-fill error")
+	}
+	if row := store.only(t); row.Status != db.StatusHedgeFailedNeedsReview {
+		t.Fatalf("status = %s, want %s", row.Status, db.StatusHedgeFailedNeedsReview)
 	}
 }
 

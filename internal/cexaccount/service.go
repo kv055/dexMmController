@@ -16,7 +16,6 @@ import (
 	"dexMmController/internal/exchangeconnectors/cex"
 	"dexMmController/internal/exchangeconnectors/cex/binance"
 	"dexMmController/internal/exchangeconnectors/cex/coinbase"
-	"dexMmController/internal/exchangeconnectors/cex/coinbaseexchange"
 	"dexMmController/internal/exchangeconnectors/cex/kraken"
 	"dexMmController/internal/pretrade"
 	lnd "dexMmController/internal/wallethub"
@@ -321,30 +320,14 @@ func (s *Service) WithdrawalAddresses(ctx context.Context, rawProvider string) (
 		}
 		return addresses, nil
 	case "coinbase":
-		_, key, err := s.firstActiveKeyWithPassphrase(ctx, rawProvider)
-		if err != nil {
-			return nil, err
+		address := strings.TrimSpace(s.cfg.CoinbaseLNDWithdrawAddress)
+		if address == "" {
+			return nil, fmt.Errorf("COINBASE_LND_WITHDRAW_ADDRESS is required")
 		}
-		client := coinbaseexchange.NewClient(s.cfg.CoinbaseExchangeBaseURL, key.APIKey, key.APISecret, key.Passphrase)
-		rows, err := client.AddressBook(ctx)
-		if err != nil {
-			return nil, err
-		}
-		addresses := make([]WithdrawalAddress, 0, len(rows))
-		for _, row := range rows {
-			if row.Address == "" || !isBitcoinAsset(row.Currency) {
-				continue
-			}
-			addresses = append(addresses, WithdrawalAddress{
-				Asset:       "BTC",
-				Network:     strings.TrimSpace(row.Network),
-				Address:     row.Address,
-				Tag:         row.DestinationTag,
-				Label:       row.Label,
-				Whitelisted: true,
-			})
-		}
-		return addresses, nil
+		return []WithdrawalAddress{{
+			Asset: "BTC", Network: "bitcoin", Address: address,
+			Label: "managed LND wallet", Whitelisted: true,
+		}}, nil
 	default:
 		return nil, fmt.Errorf("%s withdrawal addresses are not supported yet", provider)
 	}
@@ -465,6 +448,11 @@ func (s *Service) PreTradeCheck(ctx context.Context, p PreTradeParams) (*Report,
 	}
 	if p.RequiredCapital <= 0 {
 		return nil, fmt.Errorf("required_capital must be greater than zero")
+	}
+	if strings.EqualFold(strings.TrimSpace(p.Provider), "coinbase") && !strings.EqualFold(strings.TrimSpace(p.MarketSide), "ask") {
+		if strings.TrimSpace(s.cfg.CoinbaseBeneficiaryName) == "" || strings.TrimSpace(s.cfg.CoinbaseBeneficiaryCountry) == "" {
+			return nil, fmt.Errorf("Coinbase bid execution requires COINBASE_BENEFICIARY_NAME and COINBASE_BENEFICIARY_COUNTRY")
+		}
 	}
 	report := s.preTradeChecker.Run(ctx, p)
 	return &report, nil
@@ -1163,6 +1151,11 @@ func (s *Service) activeKeyPreferringPermissions(ctx context.Context, rawProvide
 		if skipKrakenFuturesOnly && provider == "Kraken" && isKrakenFuturesOnlyKey(key) {
 			continue
 		}
+		// Coinbase INTX credentials have a passphrase and cannot authenticate CDP
+		// App/Advanced Trade operations. Keep them independent from the retail key.
+		if skipKrakenFuturesOnly && provider == "Coinbase" && strings.TrimSpace(key.Passphrase) != "" {
+			continue
+		}
 		if !foundFallback {
 			fallback = key
 			foundFallback = true
@@ -1217,30 +1210,6 @@ func isKrakenFuturesOnlyKey(key db.APIKey) bool {
 		}
 	}
 	return true
-}
-
-// firstActiveKeyWithPassphrase returns the first active key that carries a passphrase.
-// Coinbase Exchange (address book) credentials are key+secret+passphrase, distinct from
-// the CDP/Advanced Trade keys (no passphrase) used for deposits and balances.
-func (s *Service) firstActiveKeyWithPassphrase(ctx context.Context, rawProvider string) (string, db.APIKey, error) {
-	provider, err := CanonicalProvider(rawProvider)
-	if err != nil {
-		return "", db.APIKey{}, err
-	}
-	keys, err := s.repo.GetActiveAPIKeysForProvider(ctx, provider)
-	if err != nil {
-		return "", db.APIKey{}, err
-	}
-	for _, key := range keys {
-		if strings.TrimSpace(key.APIKey) == "" || strings.TrimSpace(key.APISecret) == "" {
-			continue
-		}
-		if strings.TrimSpace(key.Passphrase) == "" {
-			continue
-		}
-		return provider, key, nil
-	}
-	return "", db.APIKey{}, fmt.Errorf("no Coinbase Exchange API key (key+secret+passphrase) configured for %s", provider)
 }
 
 func balancesFromBinance(balances []binance.SpotBalance) *BalancesResponse {
@@ -1441,6 +1410,19 @@ func (s *Service) WhitelistedLNDWithdrawAddress(ctx context.Context, rawProvider
 	for i, p := range walletProps {
 		walletAddrs[i] = p.Address
 	}
+	if provider == "Coinbase" {
+		if strings.TrimSpace(s.cfg.CoinbaseBeneficiaryName) == "" || strings.TrimSpace(s.cfg.CoinbaseBeneficiaryCountry) == "" {
+			return "", fmt.Errorf("COINBASE_BENEFICIARY_NAME and COINBASE_BENEFICIARY_COUNTRY are required for Coinbase bid routes")
+		}
+		configured := strings.TrimSpace(s.cfg.CoinbaseLNDWithdrawAddress)
+		if configured == "" {
+			return "", fmt.Errorf("COINBASE_LND_WITHDRAW_ADDRESS is required for Coinbase bid routes")
+		}
+		if MatchWhitelistedLNDAddress(walletAddrs, []string{configured}) == "" {
+			return "", fmt.Errorf("configured Coinbase LND withdrawal address is not owned by the current LND wallet")
+		}
+		return configured, nil
+	}
 
 	addrs, err := s.WithdrawalAddresses(ctx, provider)
 	if err != nil {
@@ -1525,6 +1507,25 @@ func (s *Service) WithdrawSpotToLND(ctx context.Context, rawProvider string, amo
 			ClientRequestID: clientRequestID,
 			AddressTag:      withdrawKey,
 		})
+	case "coinbase":
+		beneficiaryName := strings.TrimSpace(s.cfg.CoinbaseBeneficiaryName)
+		beneficiaryCountry := strings.TrimSpace(s.cfg.CoinbaseBeneficiaryCountry)
+		if beneficiaryName == "" || beneficiaryCountry == "" {
+			return nil, fmt.Errorf("coinbase: COINBASE_BENEFICIARY_NAME and COINBASE_BENEFICIARY_COUNTRY are required")
+		}
+		idem := coinbase.StableIdempotencyKey(clientRequestID)
+		client := coinbase.NewClient(s.cfg.CoinbaseBaseURL, key.APIKey, key.APISecret)
+		tx, err := client.SendMoney(ctx, coinbase.SendMoneyRequest{
+			To: lndAddress, AmountBTC: amount, IdempotencyKey: idem,
+			BeneficiaryName: beneficiaryName, BeneficiaryCountry: beneficiaryCountry,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &lnd.WithdrawFromExchangeResult{
+			Exchange: "coinbase", WithdrawalID: tx.ID, WalletAddress: lndAddress,
+			ClientRequestID: idem,
+		}, nil
 	default:
 		return nil, fmt.Errorf("CEX→LND withdrawal not yet supported for %s", provider)
 	}

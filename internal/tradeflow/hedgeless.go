@@ -215,7 +215,10 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 		if report.SwapRequired && report.ExpectedLockupSat > report.SwapShortfallSat {
 			minimumDeficit += float64(report.ExpectedLockupSat+report.EstimatedFundingFeeSat-report.SwapShortfallSat) / 1e8
 		}
-		deficit := math.Max(interimTarget-current, minimumDeficit) + order.CEXWithdrawalFeeBTC
+		deficit := math.Max(interimTarget-current, minimumDeficit)
+		if !strings.EqualFold(order.Provider, "coinbase") {
+			deficit += order.CEXWithdrawalFeeBTC
+		}
 		spot, withdrawal, err = tf.startRefill(ctx, txID, order, preTrade, report.LNDWithdrawAddress, deficit, 1)
 		return err
 	}
@@ -449,6 +452,10 @@ func waitForBisqFunding(ctx context.Context, resolver directBalanceResolver, exc
 
 func (tf *TradeFlow) startRefill(ctx context.Context, txID uint, order Order, preTrade pretrade.Params, lndAddress string, amountBTC float64, attempt int) (*cexaccount.SpotOrderResult, *WithdrawalResult, error) {
 	hc := tf.svc.(hedgelessCEX)
+	netWithdrawalBTC := amountBTC
+	if strings.EqualFold(order.Provider, "coinbase") {
+		amountBTC += order.CEXWithdrawalFeeBTC
+	}
 	entry := refillAttempt{Attempt: attempt, RequestedBTC: amountBTC, CreatedAt: time.Now().UTC()}
 	// Persist intent before the market order. Market buys have no portable
 	// idempotency guarantee, so a timeout in this state is routed to manual review
@@ -470,14 +477,21 @@ func (tf *TradeFlow) startRefill(ctx context.Context, txID uint, order Order, pr
 	if err := replaceLastRefillAttempt(tf.store, txID, lndAddress, entry, refillSpotBought); err != nil {
 		return nil, nil, err
 	}
+	if strings.EqualFold(order.Provider, "coinbase") && filled+1e-8 < amountBTC {
+		return spot, nil, fmt.Errorf("tradeflow: Coinbase refill %.8f BTC is below net target plus withdrawal reserve %.8f BTC", filled, amountBTC)
+	}
 	// The stable per-attempt id lets recovery distinguish a lost withdrawal
 	// response from a withdrawal that was never submitted.
 	clientID := fmt.Sprintf("pool-refill-%d-%d", txID, attempt)
-	wd, err := tf.svc.WithdrawSpotToLND(ctx, order.Provider, filled, lndAddress, clientID)
+	withdrawAmountBTC := filled
+	if strings.EqualFold(order.Provider, "coinbase") {
+		withdrawAmountBTC = netWithdrawalBTC
+	}
+	wd, err := tf.svc.WithdrawSpotToLND(ctx, order.Provider, withdrawAmountBTC, lndAddress, clientID)
 	if err != nil {
 		return spot, nil, err
 	}
-	withdrawal := &WithdrawalResult{Provider: order.Provider, WithdrawalID: wd.WithdrawalID, ClientRequestID: wd.ClientRequestID, WalletAddress: wd.WalletAddress, AmountBTC: filled, CexStatus: "submitted"}
+	withdrawal := &WithdrawalResult{Provider: order.Provider, WithdrawalID: wd.WithdrawalID, ClientRequestID: wd.ClientRequestID, WalletAddress: wd.WalletAddress, AmountBTC: withdrawAmountBTC, CexStatus: "submitted"}
 	entry.Withdrawal = withdrawal
 	if err := replaceLastRefillAttempt(tf.store, txID, lndAddress, entry, refillWithdrawalInitiated); err != nil {
 		return spot, withdrawal, err
@@ -787,20 +801,27 @@ func (tf *TradeFlow) advanceRefill(ctx context.Context, tx *db.Transaction) erro
 		if last.Spot.Execution != nil && last.Spot.Execution.FilledBTC > 0 {
 			filled = last.Spot.Execution.FilledBTC
 		}
+		withdrawAmountBTC := filled
+		if strings.EqualFold(rc.order.Provider, "coinbase") {
+			withdrawAmountBTC = last.RequestedBTC - rc.order.CEXWithdrawalFeeBTC
+			if withdrawAmountBTC <= 0 || filled+1e-8 < last.RequestedBTC {
+				return markHedgelessNeedsReview(tf.store, tx.ID, false)
+			}
+		}
 		clientID := fmt.Sprintf("pool-refill-%d-%d", tx.ID, last.Attempt)
-		existing, err := tf.svc.WithdrawalAlreadySent(ctx, rc.order.Provider, clientID, filled, details.LNDAddress, withdrawalLookback)
+		existing, err := tf.svc.WithdrawalAlreadySent(ctx, rc.order.Provider, clientID, withdrawAmountBTC, details.LNDAddress, withdrawalLookback)
 		if err != nil {
 			return err
 		}
 		if existing != nil {
-			last.Withdrawal = &WithdrawalResult{Provider: rc.order.Provider, WithdrawalID: existing.WithdrawalID, ClientRequestID: clientID, WalletAddress: details.LNDAddress, AmountBTC: filled, CexStatus: existing.CexStatus}
+			last.Withdrawal = &WithdrawalResult{Provider: rc.order.Provider, WithdrawalID: existing.WithdrawalID, ClientRequestID: clientID, WalletAddress: details.LNDAddress, AmountBTC: withdrawAmountBTC, CexStatus: existing.CexStatus}
 			return replaceLastRefillAttempt(tf.store, tx.ID, details.LNDAddress, last, refillWithdrawalInitiated)
 		}
-		wd, err := tf.svc.WithdrawSpotToLND(ctx, rc.order.Provider, filled, details.LNDAddress, clientID)
+		wd, err := tf.svc.WithdrawSpotToLND(ctx, rc.order.Provider, withdrawAmountBTC, details.LNDAddress, clientID)
 		if err != nil {
 			return err
 		}
-		last.Withdrawal = &WithdrawalResult{Provider: rc.order.Provider, WithdrawalID: wd.WithdrawalID, ClientRequestID: wd.ClientRequestID, WalletAddress: wd.WalletAddress, AmountBTC: filled, CexStatus: "submitted"}
+		last.Withdrawal = &WithdrawalResult{Provider: rc.order.Provider, WithdrawalID: wd.WithdrawalID, ClientRequestID: wd.ClientRequestID, WalletAddress: wd.WalletAddress, AmountBTC: withdrawAmountBTC, CexStatus: "submitted"}
 		return replaceLastRefillAttempt(tf.store, tx.ID, details.LNDAddress, last, refillWithdrawalInitiated)
 	}
 

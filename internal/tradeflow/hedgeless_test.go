@@ -148,6 +148,27 @@ func TestRunHedgelessHodlHodlFundsBeforeRefillAndSkipsHedge(t *testing.T) {
 	}
 }
 
+func TestRunHedgelessCoinbaseRefillGrossesUpAndWithdrawsNet(t *testing.T) {
+	svc := hedgelessService()
+	svc.balances = []float64{0.10, 0.082}
+	order := hedgelessOrder("hodlhodl")
+	order.Provider = "coinbase"
+	order.CEXWithdrawalFeeBTC = 0.0001
+	order.SecurityDepositBTC = 0
+	order.RequiredBTCLiquidity = order.BTCAmount
+	dex := &fakeHedgelessDEX{result: &dexaccount.TakeResult{Execution: map[string]any{"contract_id": "contract-1", "exchange": "hodlhodl"}, DepositAddress: "bc1qescrow"}}
+	_, err := New(svc, newFakeStore()).WithHedgelessExecution(dex, &fakeHedgelessWallet{}).Run(context.Background(), order)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(svc.refillAmounts) != 1 || math.Abs(svc.refillAmounts[0]-0.0181) > 1e-12 {
+		t.Fatalf("refill amounts = %v, want gross 0.01810000", svc.refillAmounts)
+	}
+	if math.Abs(svc.lastWithdrawAmount-0.018) > 1e-12 {
+		t.Fatalf("withdraw amount = %.8f, want net 0.01800000", svc.lastWithdrawAmount)
+	}
+}
+
 func TestRunHedgelessRoboSatsPaysInvoice(t *testing.T) {
 	svc := hedgelessService()
 	dex := &fakeHedgelessDEX{result: &dexaccount.TakeResult{Execution: map[string]any{"position_id": "p-1", "exchange": "robosats"}, LNInvoice: "lnbc1invoice"}}

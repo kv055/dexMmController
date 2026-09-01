@@ -74,7 +74,6 @@ func main() {
 	krakenBaseURL := envOr("KRAKEN_API_BASE_URL", "")
 	krakenFuturesBaseURL := envOr("KRAKEN_FUTURES_API_BASE_URL", "")
 	coinbaseBaseURL := envOr("COINBASE_API_BASE_URL", "")
-	coinbaseExchangeBaseURL := envOr("COINBASE_EXCHANGE_API_BASE_URL", "")
 	fiatControllerURL := envOr("FIAT_CONTROLLER_URL", "http://fiat-controller:8080")
 	fiatControllerHeartbeatSecret := envOr("FIAT_CONTROLLER_HEARTBEAT_SECRET", envOr("PUSHPUSH_HEARTBEAT_SECRET", ""))
 	bisqGRPCHost := envOr("BISQ_GRPC_HOST", "localhost:9998")
@@ -302,15 +301,17 @@ func main() {
 		TorProxyURL:          torProxyURL,
 	})
 	cexAccountService := cexaccount.NewService(repo, cexaccount.Config{
-		HodlHodlBaseURL:         hhBaseURL,
-		BinanceBaseURL:          binanceBaseURL,
-		KrakenBaseURL:           krakenBaseURL,
-		KrakenFuturesBaseURL:    krakenFuturesBaseURL,
-		CoinbaseBaseURL:         coinbaseBaseURL,
-		CoinbaseINTXBaseURL:     envOr("COINBASE_INTX_API_BASE_URL", ""),
-		CoinbaseExchangeBaseURL: coinbaseExchangeBaseURL,
-		RobosatsBaseURL:         robosatsURL,
-		TorProxyURL:             torProxyURL,
+		HodlHodlBaseURL:            hhBaseURL,
+		BinanceBaseURL:             binanceBaseURL,
+		KrakenBaseURL:              krakenBaseURL,
+		KrakenFuturesBaseURL:       krakenFuturesBaseURL,
+		CoinbaseBaseURL:            coinbaseBaseURL,
+		CoinbaseINTXBaseURL:        envOr("COINBASE_INTX_API_BASE_URL", ""),
+		CoinbaseBeneficiaryName:    envOr("COINBASE_BENEFICIARY_NAME", ""),
+		CoinbaseBeneficiaryCountry: envOr("COINBASE_BENEFICIARY_COUNTRY", ""),
+		CoinbaseLNDWithdrawAddress: envOr("COINBASE_LND_WITHDRAW_ADDRESS", ""),
+		RobosatsBaseURL:            robosatsURL,
+		TorProxyURL:                torProxyURL,
 	})
 	preTradeChecker := pretrade.NewPreTradeChecker(
 		pretrade.BalanceFetcherFunc(func(ctx context.Context, provider, currency string) (float64, error) {

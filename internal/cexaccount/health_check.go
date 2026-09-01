@@ -32,15 +32,17 @@ const (
 
 // Config holds base URLs for all exchange connectors.
 type Config struct {
-	HodlHodlBaseURL         string
-	BinanceBaseURL          string
-	KrakenBaseURL           string
-	KrakenFuturesBaseURL    string
-	CoinbaseBaseURL         string
-	CoinbaseINTXBaseURL     string
-	CoinbaseExchangeBaseURL string
-	RobosatsBaseURL         string
-	TorProxyURL             string
+	HodlHodlBaseURL            string
+	BinanceBaseURL             string
+	KrakenBaseURL              string
+	KrakenFuturesBaseURL       string
+	CoinbaseBaseURL            string
+	CoinbaseINTXBaseURL        string
+	CoinbaseBeneficiaryName    string
+	CoinbaseBeneficiaryCountry string
+	CoinbaseLNDWithdrawAddress string
+	RobosatsBaseURL            string
+	TorProxyURL                string
 }
 
 // CanonicalProvider maps provider aliases to their canonical names.
