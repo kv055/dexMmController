@@ -160,6 +160,28 @@ func TestHandleLNDWalletStatusReturnsDegradedResponseBeforeCallerDeadline(t *tes
 	}
 }
 
+func TestHandleServiceVersionsDoesNotBlockOnDegradedLND(t *testing.T) {
+	s := (&Server{}).
+		WithServiceVersions(func(context.Context) ServiceVersions {
+			return ServiceVersions{Bisq1: "1.10.6", Bisq2: "2.1.11", LND: "fallback"}
+		}).
+		WithLNDWallet(&blockingLNDWalletClient{})
+	req := httptest.NewRequest(http.MethodGet, "/api/service-versions", nil)
+	rec := httptest.NewRecorder()
+
+	started := time.Now()
+	s.handleServiceVersions(rec, req)
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("handler took %s", elapsed)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"lnd":"fallback"`) {
+		t.Fatalf("expected fallback version in response, got %s", body)
+	}
+}
+
 func TestShouldDisplayWalletAddress(t *testing.T) {
 	primary := "bc1qprimary"
 	for _, tc := range []struct {

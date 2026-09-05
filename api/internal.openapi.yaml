@@ -402,8 +402,7 @@ paths:
               schema:
                 type: array
                 items:
-                  type: object
-                  additionalProperties: true
+                  $ref: ../../commons/api/openapi/CexDepositAddress.yaml
         default:
           description: Error response
           content:
@@ -488,8 +487,7 @@ paths:
               schema:
                 type: array
                 items:
-                  type: object
-                  additionalProperties: true
+                  $ref: ../../commons/api/openapi/CexSpotTrade.yaml
         default:
           description: Error response
           content:
@@ -547,8 +545,7 @@ paths:
               schema:
                 type: array
                 items:
-                  type: object
-                  additionalProperties: true
+                  $ref: ../../commons/api/openapi/CexWithdrawalAddress.yaml
         default:
           description: Error response
           content:
@@ -808,8 +805,10 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
         default:
           description: Error response
           content:

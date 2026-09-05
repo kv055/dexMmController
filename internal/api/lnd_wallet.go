@@ -422,7 +422,11 @@ func (s *Server) handleServiceVersions(w http.ResponseWriter, r *http.Request) {
 		versions = s.serviceVersions(r.Context())
 	}
 	if client := s.currentLNDWallet(); client != nil {
-		if info, err := client.NodeInfo(r.Context()); err == nil {
+		// Version discovery is informational and must not make this endpoint
+		// exceed the dexMonitor proxy timeout when LND is degraded.
+		probeCtx, cancel := context.WithTimeout(r.Context(), time.Second)
+		defer cancel()
+		if info, err := client.NodeInfo(probeCtx); err == nil {
 			versions.LND = info.Version
 		}
 	}
