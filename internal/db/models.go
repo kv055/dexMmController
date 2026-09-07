@@ -140,6 +140,8 @@ const (
 	DexRoboSats DexPlatform = "robosats"
 	// DexPeachBitcoin is the dex peach bitcoin value (Hub route).
 	DexPeachBitcoin DexPlatform = "peachbitcoin"
+	// DexMostro is the Nostr Lightning P2P venue (snapshot-only, Swap route).
+	DexMostro DexPlatform = "mostro"
 )
 
 // TransactionStatus represents the lifecycle state of a transaction

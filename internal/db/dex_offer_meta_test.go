@@ -7,8 +7,7 @@ import (
 )
 
 func TestDexPlatformFromSlug(t *testing.T) {
-	// Covers all five supported DEX venues and casing/whitespace normalization.
-	// normalization; bisq2 and peachbitcoin are the ones the old 3-venue mapper missed.
+	// Covers the snapshot DEX venues and casing/whitespace normalization.
 	cases := map[string]DexPlatform{
 		"bisq":          DexBisq,
 		"bisq2":         DexBisq2,
@@ -16,6 +15,8 @@ func TestDexPlatformFromSlug(t *testing.T) {
 		"robosats":      DexRoboSats,
 		"peachbitcoin":  DexPeachBitcoin,
 		" PeachBitcoin": DexPeachBitcoin,
+		"mostro":        DexMostro,
+		" Mostro":       DexMostro,
 		"BISQ2":         DexBisq2,
 	}
 	for slug, want := range cases {
