@@ -282,7 +282,8 @@ func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Orde
 		if err := waitForBisqFunding(ctx, resolver, exchange, address, baseline+order.RequiredBTCLiquidity); err != nil {
 			return nil, nil, err
 		}
-		taken, err := tf.hedgelessDEX.Take(ctx, dexaccount.OfferInput{Exchange: exchange, OfferID: order.OfferID, BTCAmount: order.BTCAmount, FiatAmount: order.FiatAmount})
+		node, protocol := mostroOfferTransport(order.SelectedOffer)
+		taken, err := tf.hedgelessDEX.Take(ctx, dexaccount.OfferInput{Exchange: exchange, OfferID: order.OfferID, BTCAmount: order.BTCAmount, FiatAmount: order.FiatAmount, RequestID: uint64(txID), VenueNodePubKey: node, ProtocolVersion: protocol})
 		if err != nil {
 			return nil, nil, fmt.Errorf("take Bisq offer after wallet funding: %w", err)
 		}
@@ -291,7 +292,8 @@ func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Orde
 
 	// HodlHodl and RoboSats create their deposit destination while taking the
 	// offer, so their ordering is take offer -> resolve address/invoice -> fund.
-	taken, err := tf.hedgelessDEX.Take(ctx, dexaccount.OfferInput{Exchange: exchange, OfferID: order.OfferID, BTCAmount: order.BTCAmount, FiatAmount: order.FiatAmount})
+	node, protocol := mostroOfferTransport(order.SelectedOffer)
+	taken, err := tf.hedgelessDEX.Take(ctx, dexaccount.OfferInput{Exchange: exchange, OfferID: order.OfferID, BTCAmount: order.BTCAmount, FiatAmount: order.FiatAmount, RequestID: uint64(txID), VenueNodePubKey: node, ProtocolVersion: protocol})
 	if err != nil {
 		return nil, nil, fmt.Errorf("take %s offer: %w", exchange, err)
 	}
@@ -347,6 +349,19 @@ func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Orde
 		return funding, taken.Execution, nil
 	}
 	return nil, nil, fmt.Errorf("%s returned no funding destination", exchange)
+}
+
+func mostroOfferTransport(raw []byte) (string, int) {
+	protocol := 0
+	var offer map[string]any
+	if json.Unmarshal(raw, &offer) != nil {
+		return "", protocol
+	}
+	node, _ := offer["venue_node_pubkey"].(string)
+	if value, ok := offer["protocol_version"].(float64); ok && value > 0 {
+		protocol = int(value)
+	}
+	return strings.TrimSpace(node), protocol
 }
 
 func routingFeeLimit(order Order) int64 {

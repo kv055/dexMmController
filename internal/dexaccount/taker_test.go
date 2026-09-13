@@ -7,7 +7,7 @@ import (
 )
 
 func TestResolveDepositBisqIsImmediateNoOp(t *testing.T) {
-	taker := NewTaker(nil, nil, nil, nil)
+	taker := NewTaker(nil, nil, nil, nil, nil)
 	address, invoice, err := taker.ResolveDeposit(context.Background(), "bisq", map[string]any{"exchange": "bisq"})
 	if err != nil {
 		t.Fatalf("ResolveDeposit: %v", err)
@@ -18,7 +18,7 @@ func TestResolveDepositBisqIsImmediateNoOp(t *testing.T) {
 }
 
 func TestResolveDepositStillRejectsNilExecution(t *testing.T) {
-	taker := NewTaker(nil, nil, nil, nil)
+	taker := NewTaker(nil, nil, nil, nil, nil)
 	if _, _, err := taker.ResolveDeposit(context.Background(), "bisq", nil); err == nil {
 		t.Fatal("expected nil execution payload error")
 	}
@@ -27,7 +27,7 @@ func TestResolveDepositStillRejectsNilExecution(t *testing.T) {
 func TestResolveDepositRoboSatsHonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	taker := NewTaker(nil, nil, nil, nil)
+	taker := NewTaker(nil, nil, nil, nil, nil)
 	_, _, err := taker.ResolveDeposit(ctx, "robosats", map[string]any{"position_id": "position-1"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ResolveDeposit error = %v, want context.Canceled", err)

@@ -39,6 +39,8 @@ nav:
                   - Overview: internal/exchanges/dex/hodlhodl/README.md
                   - client.go: internal/exchanges/dex/hodlhodl/client.md
                   - models.go: internal/exchanges/dex/hodlhodl/models.md
+              - mostro:
+                  - Overview: internal/exchanges/dex/mostro/README.md
               - robosats:
                   - Overview: internal/exchanges/dex/robosats/README.md
                   - client.go: internal/exchanges/dex/robosats/client.md

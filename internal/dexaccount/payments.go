@@ -32,7 +32,7 @@ func styleFor(exchange string) paymentStyle {
 	switch db.DexPlatformFromSlug(exchange) {
 	case db.DexBisq:
 		return styleStructured
-	case db.DexRoboSats, db.DexBisq2:
+	case db.DexRoboSats, db.DexBisq2, db.DexMostro:
 		return styleChat
 	case db.DexHodlHodl:
 		// HodlHodl payment details live in the contract; chat is for operator relay only.
@@ -51,6 +51,7 @@ type ChatTemplateStore interface {
 // venues (Bisq, HodlHodl) read the trade contract in one shot; chat venues (Robosats, Bisq2)
 // run a short conversation: send one templated request and capture the counterparty's reply.
 type PaymentResolver struct {
+	mostro    TradeChat
 	repo      *db.TransactionRepository
 	templates ChatTemplateStore
 	bisq      *bisq.Client
@@ -76,6 +77,8 @@ func NewPaymentResolver(
 		robosats:  robosatsClient,
 	}
 }
+
+func (p *PaymentResolver) WithMostro(chat TradeChat) *PaymentResolver { p.mostro = chat; return p }
 
 // IsStructuredVenue reports whether a venue exposes details in the trade object (so the
 // one-shot FetchCounterparty applies) rather than via chat.
@@ -234,6 +237,11 @@ func captureFromChat(ctx context.Context, chat TradeChat, req ChatRequest, templ
 
 func (p *PaymentResolver) tradeChat(ctx context.Context, exchange string) (TradeChat, error) {
 	switch db.DexPlatformFromSlug(exchange) {
+	case db.DexMostro:
+		if p.mostro == nil {
+			return nil, fmt.Errorf("mostro chat is not configured")
+		}
+		return p.mostro, nil
 	case db.DexRoboSats:
 		if p.robosats == nil {
 			return nil, fmt.Errorf("robosats client is not configured")

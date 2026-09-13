@@ -9,14 +9,17 @@ require (
 	github.com/binance/binance-connector-go/clients/derivativestradingusdsfutures v1.14.0
 	github.com/binance/binance-connector-go/clients/spot v1.11.0
 	github.com/binance/binance-connector-go/clients/wallet v1.11.0
-	github.com/btcsuite/btcd/btcec/v2 v2.3.3
+	github.com/btcsuite/btcd/btcec/v2 v2.3.4
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
 	github.com/getkin/kin-openapi v0.147.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.5.5
 	github.com/krakenfx/api-go/v2 v2.0.0
+	github.com/nbd-wtf/go-nostr v0.42.3
 	github.com/oapi-codegen/runtime v1.7.0
 	github.com/prometheus/client_golang v1.20.5
+	github.com/tyler-smith/go-bip32 v1.0.0
+	github.com/tyler-smith/go-bip39 v1.1.0
 	golang.org/x/crypto v0.54.0
 	google.golang.org/grpc v1.79.1
 	google.golang.org/protobuf v1.36.11
@@ -26,6 +29,8 @@ require (
 )
 
 require (
+	github.com/FactomProject/basen v0.0.0-20150613233007-fe3947df716e // indirect
+	github.com/FactomProject/btcutilecc v0.0.0-20130527213604-d3a63a5752ec // indirect
 	github.com/aead/siphash v1.0.1 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
@@ -58,6 +63,9 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/jsonpointer v0.22.5 // indirect
 	github.com/go-openapi/swag/jsonname v0.25.5 // indirect
+	github.com/gobwas/httphead v0.1.0 // indirect
+	github.com/gobwas/pool v0.2.1 // indirect
+	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
@@ -67,9 +75,10 @@ require (
 	github.com/jessevdk/go-flags v1.5.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/josharian/intern v1.0.0 // indirect
 	github.com/jrick/logrotate v1.0.0 // indirect
 	github.com/kkdai/bstream v1.0.0 // indirect
-	github.com/klauspost/compress v1.17.9 // indirect
+	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf // indirect
 	github.com/lightninglabs/neutrino v0.16.1-0.20240425105051-602843d34ffd // indirect
 	github.com/lightninglabs/neutrino/cache v1.1.2 // indirect
@@ -80,6 +89,7 @@ require (
 	github.com/lightningnetwork/lnd/ticker v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/tlv v1.2.3 // indirect
 	github.com/lightningnetwork/lnd/tor v1.1.2 // indirect
+	github.com/mailru/easyjson v0.9.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/miekg/dns v1.1.50 // indirect
@@ -91,11 +101,14 @@ require (
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
+	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7 // indirect
-	github.com/tyler-smith/go-bip39 v1.1.0 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/vulpemventures/fastsha256 v0.0.0-20160815193821-637e65642941 // indirect
 	github.com/vulpemventures/go-elements v0.5.5 // indirect
 	github.com/vulpemventures/go-secp256k1-zkp v1.1.6 // indirect
@@ -124,3 +137,5 @@ require (
 )
 
 replace commons => ../commons
+
+replace github.com/btcsuite/btcd/btcec/v2 v2.3.4 => github.com/btcsuite/btcd/btcec/v2 v2.3.3

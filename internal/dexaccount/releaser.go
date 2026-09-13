@@ -12,6 +12,7 @@ import (
 	"dexMmController/internal/exchangeconnectors/dex/bisq"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl/escrow"
+	"dexMmController/internal/exchangeconnectors/dex/mostro"
 	"dexMmController/internal/exchangeconnectors/dex/robosats"
 )
 
@@ -31,6 +32,7 @@ type Releaser struct {
 	bisq     *bisq.Client
 	hodlhodl *hodlhodl.Client
 	robosats *robosats.Client
+	mostro   *mostro.Manager
 	hhEscrow HodlHodlEscrowConfig
 }
 
@@ -52,8 +54,11 @@ func NewReleaser(
 	}
 }
 
+func (r *Releaser) WithMostro(m *mostro.Manager) *Releaser { r.mostro = m; return r }
+
 // ReleaseInput identifies the trade to release.
 type ReleaseInput struct {
+	RequestID uint64
 	// Exchange is the DEX venue slug (e.g. "hodlhodl", "bisq", "robosats").
 	Exchange string
 	// ContractID is the venue-native contract/trade/order id taken from execution.
@@ -72,6 +77,7 @@ type ReleaseResult struct {
 // a hedgeless bid. Memo is stable across retries and acts as the Bisq wallet
 // idempotency key.
 type SecurityDepositReturnInput struct {
+	RequestID   uint64
 	Exchange    string
 	ContractID  string
 	PoolAddress string
@@ -93,6 +99,11 @@ func (r *Releaser) Release(ctx context.Context, in ReleaseInput) (*ReleaseResult
 	}
 
 	switch db.DexPlatformFromSlug(in.Exchange) {
+	case db.DexMostro:
+		if err := r.mostro.Release(ctx, in.RequestID, contractID); err != nil {
+			return nil, err
+		}
+		return &ReleaseResult{Raw: map[string]any{"exchange": "mostro", "order_id": contractID, "state": "released"}}, nil
 	case db.DexHodlHodl:
 		return r.releaseHodlHodl(ctx, contractID)
 	case db.DexBisq:
@@ -145,6 +156,11 @@ func (r *Releaser) ReturnSecurityDeposit(ctx context.Context, in SecurityDeposit
 			}
 		}
 		return nil, fmt.Errorf("Bisq deposit-return transaction was not observable by memo %q", memo)
+	case db.DexMostro:
+		if err := r.mostro.Release(ctx, in.RequestID, contractID); err != nil {
+			return nil, err
+		}
+		return &SecurityDepositReturnResult{Method: "mostro_bond_cancellation_verified"}, nil
 	case db.DexRoboSats:
 		return &SecurityDepositReturnResult{Method: "robosats_automatic_bond_unlock"}, nil
 	case db.DexHodlHodl:

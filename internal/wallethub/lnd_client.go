@@ -642,11 +642,12 @@ type PayInvoiceResponse struct {
 
 // DecodedInvoice is LND's decoded BOLT11 payment request.
 type DecodedInvoice struct {
-	Destination string `json:"destination"`
-	PaymentHash string `json:"payment_hash"`
-	NumSatoshis string `json:"num_satoshis"`
-	Timestamp   string `json:"timestamp"`
-	Expiry      string `json:"expiry"`
+	Destination  string `json:"destination"`
+	PaymentHash  string `json:"payment_hash"`
+	NumSatoshis  string `json:"num_satoshis"`
+	NumMSatoshis string `json:"num_msat"`
+	Timestamp    string `json:"timestamp"`
+	Expiry       string `json:"expiry"`
 }
 
 // ChannelBalanceResponse represents a channel balance response.

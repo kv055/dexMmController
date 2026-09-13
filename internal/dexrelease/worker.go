@@ -147,7 +147,7 @@ func (w *Worker) release(ctx context.Context, txID uint) error {
 	}
 
 	if !releaseDone {
-		result, err := w.releaser.Release(ctx, dexaccount.ReleaseInput{Exchange: exchange, ContractID: contractID})
+		result, err := w.releaser.Release(ctx, dexaccount.ReleaseInput{Exchange: exchange, ContractID: contractID, RequestID: uint64(tx.ID)})
 		if err != nil {
 			return fmt.Errorf("release on %s: %w", exchange, err)
 		}
@@ -278,7 +278,7 @@ func (w *Worker) returnSecurityDeposit(ctx context.Context, tx *db.Transaction, 
 	}
 
 	result, err := w.returner.ReturnSecurityDeposit(ctx, dexaccount.SecurityDepositReturnInput{
-		Exchange: exchange, ContractID: contractID, PoolAddress: destination, Memo: memo,
+		Exchange: exchange, ContractID: contractID, RequestID: uint64(tx.ID), PoolAddress: destination, Memo: memo,
 	})
 	if err != nil {
 		if latest, reloadErr := w.repo.GetTransaction(tx.ID); reloadErr == nil {

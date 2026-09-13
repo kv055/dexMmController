@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"dexMmController/internal/db"
 	"dexMmController/internal/exchangeconnectors/dex/bisq"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
+	"dexMmController/internal/exchangeconnectors/dex/mostro"
 	"dexMmController/internal/exchangeconnectors/dex/robosats"
 )
 
@@ -35,6 +37,13 @@ type Taker struct {
 	bisq     *bisq.Client
 	hodlhodl *hodlhodl.Client
 	robosats *robosats.Client
+	mostro   MostroTaker
+}
+
+type MostroTaker interface {
+	Take(context.Context, mostro.TakeRequest) (*mostro.TakeResult, error)
+	Ready() error
+	Check(context.Context, mostro.TakeRequest) error
 }
 
 // NewTaker creates a Taker backed by configured DEX clients.
@@ -43,21 +52,32 @@ func NewTaker(
 	bisqClient *bisq.Client,
 	hodlhodlClient *hodlhodl.Client,
 	robosatsClient *robosats.Client,
+	mostroClient MostroTaker,
 ) *Taker {
 	return &Taker{
 		repo:     repo,
 		bisq:     bisqClient,
 		hodlhodl: hodlhodlClient,
 		robosats: robosatsClient,
+		mostro:   mostroClient,
 	}
 }
 
 // OfferInput identifies an offer to take.
 type OfferInput struct {
-	Exchange   string
-	OfferID    string
-	FiatAmount float64
-	BTCAmount  float64
+	Exchange        string
+	OfferID         string
+	FiatAmount      float64
+	BTCAmount       float64
+	RequestID       uint64
+	VenueNodePubKey string
+	ProtocolVersion int
+	SourceEventID   string
+	FiatCurrency    string
+	PaymentMethod   string
+	MaxPaymentSat   int64
+	MaxBondSat      int64
+	RoutingFeeSat   int64
 }
 
 // TakeResult is the outcome of TakeOffer plus optional deposit destination.
@@ -81,15 +101,52 @@ func (t *Taker) Take(ctx context.Context, in OfferInput) (*TakeResult, error) {
 		return t.takeBisq(ctx, offerID, in.BTCAmount)
 	case db.DexRoboSats:
 		return t.takeRoboSats(ctx, offerID)
+	case db.DexMostro:
+		return t.takeMostro(ctx, in)
 	default:
 		return nil, fmt.Errorf("dexaccount: unsupported exchange %q", in.Exchange)
 	}
+}
+
+func (t *Taker) MostroReady() error {
+	if t.mostro == nil {
+		return fmt.Errorf("mostro client is not configured")
+	}
+	return t.mostro.Ready()
+}
+func (t *Taker) CheckMostro(ctx context.Context, in OfferInput) error {
+	if err := t.MostroReady(); err != nil {
+		return err
+	}
+	if math.IsNaN(in.FiatAmount) || math.IsInf(in.FiatAmount, 0) || in.FiatAmount <= 0 || in.FiatAmount >= float64(math.MaxInt64) || math.Trunc(in.FiatAmount) != in.FiatAmount {
+		return fmt.Errorf("mostro: fiat amount must be a positive integer")
+	}
+	return t.mostro.Check(ctx, mostro.TakeRequest{RequestID: 1, Node: in.VenueNodePubKey, OrderID: in.OfferID, SourceEventID: in.SourceEventID, Protocol: in.ProtocolVersion, FiatAmount: int64(in.FiatAmount), FiatCurrency: in.FiatCurrency, PaymentMethod: in.PaymentMethod, MaxEscrowSat: in.MaxPaymentSat, MaxBondSat: in.MaxBondSat, RoutingFeeSat: in.RoutingFeeSat})
+}
+func (t *Taker) takeMostro(ctx context.Context, in OfferInput) (*TakeResult, error) {
+	if err := t.MostroReady(); err != nil {
+		return nil, err
+	}
+	if math.IsNaN(in.FiatAmount) || math.IsInf(in.FiatAmount, 0) || in.FiatAmount <= 0 || in.FiatAmount >= float64(math.MaxInt64) || math.Trunc(in.FiatAmount) != in.FiatAmount {
+		return nil, fmt.Errorf("mostro: selected fiat amount must be a positive integer")
+	}
+	result, err := t.mostro.Take(ctx, mostro.TakeRequest{RequestID: in.RequestID, Node: in.VenueNodePubKey, OrderID: in.OfferID, SourceEventID: in.SourceEventID, Protocol: in.ProtocolVersion, FiatAmount: int64(in.FiatAmount), FiatCurrency: in.FiatCurrency, PaymentMethod: in.PaymentMethod, MaxEscrowSat: in.MaxPaymentSat, MaxBondSat: in.MaxBondSat, RoutingFeeSat: in.RoutingFeeSat})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || !result.Funded {
+		return nil, fmt.Errorf("mostro: escrow acceptance has not been confirmed")
+	}
+	return &TakeResult{Execution: map[string]any{"exchange": "mostro", "offer_id": in.OfferID, "request_id": in.RequestID, "mostro_session_id": result.SessionID, "mostro_trade_ref": fmt.Sprintf("%s:%s:%d", in.VenueNodePubKey, in.OfferID, in.RequestID), "mostro_funded": true, "payment_hash": result.PaymentHash, "amount_sat": result.AmountSat, "venue_node_pubkey": in.VenueNodePubKey}}, nil
 }
 
 // ResolveDeposit polls non-direct venue APIs until an on-chain address or LN
 // invoice is available. Bisq is pre-funded through its integrated wallet and
 // therefore has no per-trade destination to resolve.
 func (t *Taker) ResolveDeposit(ctx context.Context, exchange string, execution map[string]any) (address, invoice string, err error) {
+	if db.DexPlatformFromSlug(exchange) == db.DexMostro {
+		return "", "", fmt.Errorf("mostro: funding must be reconciled by the Mostro coordinator")
+	}
 	if execution == nil {
 		return "", "", fmt.Errorf("dexaccount: execution payload is required")
 	}

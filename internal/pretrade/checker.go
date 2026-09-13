@@ -826,7 +826,7 @@ func (c *BidChecker) checkMessageTemplate(ctx context.Context, dex, paymentMetho
 		return nil
 	}
 	platform := db.DexPlatformFromSlug(dex)
-	if platform != db.DexBisq2 && platform != db.DexRoboSats {
+	if platform != db.DexBisq2 && platform != db.DexRoboSats && platform != db.DexMostro {
 		return nil
 	}
 	if c.chatTemplates == nil {

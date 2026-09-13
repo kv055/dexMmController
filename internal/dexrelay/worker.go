@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -299,12 +300,22 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	}
 
 	// Take the offer (idempotent: only when no execution recorded yet).
-	if meta.Execution == nil {
+	if strings.EqualFold(exchange, "mostro") && meta.Execution != nil && meta.Execution["mostro_session_id"] == nil {
+		return w.parkTakenFundingReview(tx, fmt.Errorf("mostro: legacy execution needs manual recovery"))
+	}
+	if meta.Execution == nil || strings.EqualFold(exchange, "mostro") {
 		takeResult, takeErr := w.taker.Take(ctx, dexaccount.OfferInput{
-			Exchange:   exchange,
-			OfferID:    offerID,
-			FiatAmount: tx.FiatAmount,
-			BTCAmount:  float64(paymentSat) / 1e8,
+			Exchange:        exchange,
+			OfferID:         offerID,
+			FiatAmount:      tx.FiatAmount,
+			BTCAmount:       float64(paymentSat) / 1e8,
+			RequestID:       uint64(tx.ID),
+			VenueNodePubKey: strings.TrimSpace(stringFromSelectedOffer(meta.SelectedOffer, "venue_node_pubkey")),
+			ProtocolVersion: intFromSelectedOffer(meta.SelectedOffer, "protocol_version", 0),
+			SourceEventID:   strings.TrimSpace(stringFromSelectedOffer(meta.SelectedOffer, "source_event_id")),
+			FiatCurrency:    tx.FiatCurrency, PaymentMethod: tx.PaymentMethod,
+			MaxPaymentSat: paymentSat - int64(math.Round(meta.ResolvedRoute.SecurityDepositBTC*1e8)),
+			MaxBondSat:    int64(math.Round(meta.ResolvedRoute.SecurityDepositBTC * 1e8)), RoutingFeeSat: routingFeeSat,
 		})
 		if takeErr != nil {
 			return fmt.Errorf("take offer: %w", takeErr)
@@ -336,6 +347,16 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		AmountSat:   paymentSat,
 		SatPerVbyte: w.satPerVb,
 		SentAt:      time.Now().UTC(),
+	}
+
+	if strings.EqualFold(exchange, "mostro") {
+		// Take has reconciled the durable escrow and authenticated daemon acceptance.
+		relayDetails.PaymentMethod = "lightning"
+		relayDetails.PaymentHash = dexaccount.StringField(meta.Execution, "payment_hash")
+		if v, ok := meta.Execution["amount_sat"].(int64); ok {
+			relayDetails.AmountSat = v
+		}
+		return w.finishRelay(tx, meta, relayDetails)
 	}
 
 	// Direct route (bisq v1): the funds are already in our bisq wallet; the daemon funds
@@ -549,4 +570,22 @@ func stringFromSelectedOffer(raw json.RawMessage, field string) string {
 		return ""
 	}
 	return dexaccount.StringField(m, field)
+}
+
+func intFromSelectedOffer(raw json.RawMessage, field string, fallback int) int {
+	var offer map[string]any
+	if json.Unmarshal(raw, &offer) != nil {
+		return fallback
+	}
+	switch value := offer[field].(type) {
+	case float64:
+		if value > 0 {
+			return int(value)
+		}
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return fallback
 }

@@ -27,6 +27,7 @@ import (
 	"dexMmController/internal/exchangeconnectors/dex/bisq"
 	"dexMmController/internal/exchangeconnectors/dex/bisq2"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
+	"dexMmController/internal/exchangeconnectors/dex/mostro"
 	"dexMmController/internal/exchangeconnectors/dex/robosats"
 	"dexMmController/internal/healthcheck"
 	"dexMmController/internal/hedgestream"
@@ -63,12 +64,25 @@ func paymentMethodSnapshot(row *db.PaymentMethod) *pretrade.PaymentMethodSnapsho
 	}
 }
 
+func splitCSV(raw string) []string {
+	var values []string
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
 func main() {
 	// ── Config ────────────────────────────────────────────────────────────────
 	databaseURL := resolveDatabaseURL()
 	hhBaseURL := envOr("HODLHODL_URL", "")
 	hhEscrowSeed := envOr("HODLHODL_ESCROW_SEED", "")
 	hhEscrowPaymentPassword := envOr("HODLHODL_ESCROW_PAYMENT_PASSWORD", "")
+	mostroMnemonic := envOr("MOSTRO_MNEMONIC", "")
+	mostroIdentityLabel := envOr("MOSTRO_IDENTITY_LABEL", "default")
+	mostroRelays := splitCSV(envOr("MOSTRO_RELAYS", "wss://relay.mostro.network,wss://relay.mostro.services,wss://mostro-p2p.tech"))
 	dexReleaseToken := envOr("DEX_RELEASE_WEBHOOK_TOKEN", "")
 	binanceBaseURL := envOr("BINANCE_API_BASE_URL", "")
 	krakenBaseURL := envOr("KRAKEN_API_BASE_URL", "")
@@ -282,13 +296,29 @@ func main() {
 		}
 	}()
 
-	dexTaker := dexaccount.NewTaker(repo, bq, hh, rs)
+	var mostroManager *mostro.Manager
+	if strings.TrimSpace(mostroMnemonic) != "" || strings.EqualFold(envOr("MOSTRO_ENABLED", "false"), "true") {
+		encrypted, err := credentialcrypto.Encrypt(mostroMnemonic)
+		if err != nil {
+			log.Fatalf("encrypt Mostro mnemonic: %v", err)
+		}
+		mostroManager = &mostro.Manager{Mnemonic: mostroMnemonic, IdentityLabel: mostroIdentityLabel, EncryptedMnemonic: []byte(encrypted), Relays: mostroRelays, Store: repo, Enabled: strings.EqualFold(envOr("MOSTRO_ENABLED", "false"), "true"), AllowedNodes: splitCSV(envOr("MOSTRO_ALLOWED_NODES", "")), Privacy: strings.EqualFold(envOr("MOSTRO_PRIVACY_MODE", "false"), "true")}
+	}
+	var mostroTaker dexaccount.MostroTaker
+	if mostroManager != nil {
+		mostroTaker = mostroManager
+	}
+	dexTaker := dexaccount.NewTaker(repo, bq, hh, rs, mostroTaker)
 	// dexReleaser performs Stage-6 BTC release; dexReleaseWorker drains the webhook-fed
 	// queue and runs the (idempotent) releases in the background.
 	dexReleaser := dexaccount.NewReleaser(repo, bq, hh, rs, dexaccount.HodlHodlEscrowConfig{
 		EncryptedSeed:   hhEscrowSeed,
 		PaymentPassword: hhEscrowPaymentPassword,
 	})
+	dexReleaser.WithMostro(mostroManager)
+	if mostroManager != nil {
+		dexPaymentResolver.WithMostro(mostroManager)
+	}
 	dexReleaseWorker := dexrelease.NewWorker(repo, dexReleaser)
 	exchangeAccountHealth := accounthealth.NewChecker(repo, cexaccount.Config{
 		HodlHodlBaseURL:      hhBaseURL,
@@ -677,6 +707,9 @@ func main() {
 			return lndClient.HealthCheck(ctx)
 		}))
 		cexAccountService.WithLND(lndClient)
+		if mostroManager != nil {
+			mostroManager.Wallet = lndClient
+		}
 		dexRelayWorker.SetLND(dexrelay.LNDAdapter{Client: lndClient})
 
 		// The coordinator is embedded in mm-controller. It can reserve sufficient

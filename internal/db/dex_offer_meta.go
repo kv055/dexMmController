@@ -236,6 +236,12 @@ func (m DexOfferMeta) ContractID() string {
 	if id := stringFieldMap(m.Execution, "position_id"); id != "" {
 		return id
 	}
+	if stringFieldMap(m.Execution, "exchange") == "mostro" {
+		if ref := stringFieldMap(m.Execution, "mostro_trade_ref"); ref != "" {
+			return ref
+		}
+		return stringFieldMap(m.Execution, "offer_id")
+	}
 	contract, ok := m.Execution["contract"].(map[string]any)
 	if ok {
 		if id := stringFieldMap(contract, "id"); id != "" {

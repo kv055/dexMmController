@@ -261,7 +261,7 @@ func uniqueTexts(texts []string) []string {
 
 func requiresPaymentRequest(exchange string) bool {
 	switch db.DexPlatformFromSlug(exchange) {
-	case db.DexRoboSats, db.DexBisq2:
+	case db.DexRoboSats, db.DexBisq2, db.DexMostro:
 		return true
 	default:
 		return false

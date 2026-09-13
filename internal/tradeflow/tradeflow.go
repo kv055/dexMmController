@@ -2,8 +2,10 @@ package tradeflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -280,6 +282,30 @@ func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
 }
 
 func (tf *TradeFlow) requireCapabilities(ctx context.Context, order Order) error {
+	if strings.EqualFold(strings.TrimSpace(order.Dex), "mostro") {
+		checker, ok := tf.hedgelessDEX.(interface {
+			CheckMostro(context.Context, dexaccount.OfferInput) error
+		})
+		if !ok {
+			return fmt.Errorf("Mostro preflight is not configured")
+		}
+		var quote struct {
+			Node     string `json:"venue_node_pubkey"`
+			Event    string `json:"source_event_id"`
+			Protocol int    `json:"protocol_version"`
+		}
+		if err := json.Unmarshal(order.SelectedOffer, &quote); err != nil {
+			return fmt.Errorf("Mostro signed quote is required")
+		}
+		method := order.PaymentMethod
+		if method == "" && len(order.PaymentMethods) == 1 {
+			method = order.PaymentMethods[0]
+		}
+		if err := checker.CheckMostro(ctx, dexaccount.OfferInput{OfferID: order.OfferID, FiatAmount: order.FiatAmount, FiatCurrency: order.FiatCurrency, PaymentMethod: method, VenueNodePubKey: quote.Node, SourceEventID: quote.Event, ProtocolVersion: quote.Protocol, MaxPaymentSat: int64(math.Round((order.RequiredBTCLiquidity - order.SecurityDepositBTC) * 1e8)), MaxBondSat: int64(math.Round(order.SecurityDepositBTC * 1e8)), RoutingFeeSat: order.RoutingFeeAllowanceSat}); err != nil {
+			return err
+		}
+	}
+
 	if tf.capabilities == nil {
 		// Capability enforcement is an injected boundary so isolated unit tests and
 		// recovery-only tools do not need a database. Production wiring always sets it.
@@ -652,6 +678,10 @@ func (tf *TradeFlow) runAsk(_ context.Context, _ Order) (*Result, error) {
 }
 
 func validate(o Order) error {
+	if strings.EqualFold(strings.TrimSpace(o.Dex), "mostro") && (strings.ToLower(strings.TrimSpace(o.MarketSide)) != "bid" || o.ResolvedRoute == nil || !o.ResolvedRoute.UsesLightning()) {
+		return fmt.Errorf("tradeflow: Mostro requires a bid-side Lightning route")
+	}
+
 	if o.ResolvedRoute != nil && !o.ResolvedRoute.ValidForExecution() {
 		return fmt.Errorf("tradeflow: invalid resolved_route")
 	}
