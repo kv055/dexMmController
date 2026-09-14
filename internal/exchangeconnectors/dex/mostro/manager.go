@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -131,12 +132,7 @@ func (m *Manager) Take(ctx context.Context, req TakeRequest) (*TakeResult, error
 	if s.State == "needs_review" {
 		return nil, fmt.Errorf("mostro: trade requires review: %s", s.LastError)
 	}
-	if s.Funded {
-		if err := m.confirmFunding(ctx, s); err != nil {
-			return nil, err
-		}
-		return s.takeResult(), nil
-	}
+
 	err = m.run(ctx, s, "take-buy")
 	if err != nil {
 		return nil, err
@@ -235,7 +231,11 @@ func (m *Manager) preflight(ctx context.Context, r *TakeRequest) (bool, int, err
 		return false, 0, fmt.Errorf("mostro: invalid Lightning destination")
 	}
 	r.LightningNode = lnpub
-	bond := tag(*node, "bond_enabled") == "true" && tag(*node, "bond_apply_to") != "make"
+	policy := tag(*node, "bond_apply_to")
+	if tag(*node, "bond_enabled") == "true" && policy != "make" && policy != "take" && policy != "both" {
+		return false, 0, fmt.Errorf("mostro: unknown bond application policy")
+	}
+	bond := tag(*node, "bond_enabled") == "true" && policy != "make"
 	if v := tag(*node, "bond_enabled"); v != "" && v != "true" && v != "false" {
 		return false, 0, fmt.Errorf("mostro: unknown bond policy")
 	}
@@ -291,6 +291,9 @@ func (m *Manager) preflight(ctx context.Context, r *TakeRequest) (bool, int, err
 	if !method {
 		return false, 0, fmt.Errorf("mostro: payment method does not match the signed quote")
 	}
+	if err := checkBudgets(*node, *order, *r, bond); err != nil {
+		return false, 0, err
+	}
 	return bond, protocol, nil
 }
 func tag(e nostr.Event, key string) string {
@@ -333,6 +336,18 @@ func (m *Manager) run(ctx context.Context, s *Session, action string) error {
 		return err
 	}
 	defer conn.Close()
+	if err := m.replay(ctx, s, trade, conn.History()); err != nil {
+		return err
+	}
+	if err := m.drain(ctx, s, trade, conn); err != nil {
+		return err
+	}
+	if s.Released {
+		return m.confirmSettlement(ctx, s)
+	}
+	if action == "take-buy" && s.Funded {
+		return m.confirmFunding(ctx, s)
+	}
 	event, err := m.Store.MostroOutbox(ctx, s.ID, action, func() (nostr.Event, error) {
 		payload := json.RawMessage("null")
 		if action == "take-buy" {
@@ -347,6 +362,12 @@ func (m *Manager) run(ctx context.Context, s *Session, action string) error {
 	// but never issue a fresh take to replace an ambiguous expired request.
 	expiration, _ := strconv.ParseInt(tag(event, "expiration"), 10, 64)
 	if expiration > time.Now().Unix() {
+		if err := m.drain(ctx, s, trade, conn); err != nil {
+			return err
+		}
+		if s.Released {
+			return m.confirmSettlement(ctx, s)
+		}
 		if err = conn.Publish(ctx, event); err != nil {
 			return err
 		}
@@ -357,19 +378,19 @@ func (m *Manager) run(ctx context.Context, s *Session, action string) error {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
-		if s.State == "needs_review" {
-			return fmt.Errorf("mostro: %s", s.LastError)
+		if err := m.drain(ctx, s, trade, conn); err != nil {
+			return err
 		}
-		if action == "take-buy" {
-			if err = m.payRequested(ctx, s); err != nil {
-				return err
-			}
+		if s.Released {
+			return m.confirmSettlement(ctx, s)
 		}
 		if action == "take-buy" && s.Funded {
 			return m.confirmFunding(ctx, s)
 		}
-		if action == "release" && s.Released {
-			return m.confirmSettlement(ctx, s)
+		if action == "take-buy" {
+			if err = m.payRequested(ctx, s, func() error { return m.drain(ctx, s, trade, conn) }); err != nil {
+				return err
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -380,34 +401,102 @@ func (m *Manager) run(ctx context.Context, s *Session, action string) error {
 			if !ok {
 				return fmt.Errorf("mostro: response subscriptions closed")
 			}
-			if s.Seen[e.ID] || len(e.Content) > 65536 || e.CreatedAt > nostr.Now()+60 {
-				continue
-			}
-			response, err := DecodeResponse(e, s.Request.Node, trade, s.Request.Protocol)
-			if err != nil {
-				continue
-			}
-			msg := response.Message
-			if msg.ID != s.Request.OrderID {
-				if !(msg.ID == "" && msg.Action == "cant-do" && msg.RequestID != nil && *msg.RequestID == s.Request.RequestID) {
-					continue
-				}
-			}
-			if msg.RequestID != nil && *msg.RequestID != s.Request.RequestID {
-				continue
-			}
-			if err = m.apply(ctx, s, msg); err != nil {
-				s.State = "needs_review"
-				s.LastError = err.Error()
-			}
-			s.Seen[e.ID] = true
-			if err = m.Store.SaveMostroSession(ctx, s, &e); err != nil {
+			if err := m.receive(ctx, s, trade, e); err != nil {
 				return err
 			}
 		}
 	}
 }
+
+// receive checkpoints authenticated responses before any next side effect.
+func (m *Manager) receive(ctx context.Context, s *Session, trade string, e nostr.Event) error {
+	if s.Seen[e.ID] || len(e.Content) > 65536 || e.CreatedAt > nostr.Now()+60 {
+		return nil
+	}
+	res, err := DecodeResponse(e, s.Request.Node, trade, s.Request.Protocol)
+	if err != nil {
+		return nil
+	}
+	msg := res.Message
+	if msg.ID != s.Request.OrderID && !(msg.ID == "" && msg.Action == "cant-do" && msg.RequestID != nil && *msg.RequestID == s.Request.RequestID) {
+		return nil
+	}
+	if msg.RequestID != nil && *msg.RequestID != s.Request.RequestID {
+		return nil
+	}
+	if err = m.apply(ctx, s, msg); err != nil && s.State != "needs_review" {
+		s.State, s.LastError = "needs_review", err.Error()
+	}
+	s.Seen[e.ID] = true
+	return m.Store.SaveMostroSession(ctx, s, &e)
+}
+func reviewError(s *Session) error {
+	if s.State == "needs_review" {
+		return fmt.Errorf("mostro: trade requires review: %s", s.LastError)
+	}
+	return nil
+}
+func (m *Manager) replay(ctx context.Context, s *Session, trade string, events []nostr.Event) error {
+	// Relays send stored events newest first. Restore invoice prerequisites
+	// before acknowledgements, including v1 envelopes with randomized times.
+	rank := func(e nostr.Event) int {
+		r, err := DecodeResponse(e, s.Request.Node, trade, s.Request.Protocol)
+		if err != nil {
+			return 3
+		}
+		switch r.Message.Action {
+		case "pay-bond-invoice":
+			return 0
+		case "pay-invoice":
+			return 1
+		default:
+			return 2
+		}
+	}
+	ranks := make(map[string]int, len(events))
+	for _, e := range events {
+		ranks[e.ID] = rank(e)
+	}
+	sort.SliceStable(events, func(i, j int) bool {
+		if a, b := ranks[events[i].ID], ranks[events[j].ID]; a != b {
+			return a < b
+		}
+		return events[i].CreatedAt < events[j].CreatedAt
+	})
+	for _, e := range events {
+		if err := m.receive(ctx, s, trade, e); err != nil {
+			return err
+		}
+	}
+	return reviewError(s)
+}
+func (m *Manager) drain(ctx context.Context, s *Session, trade string, conn Connection) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case e, ok := <-conn.Events():
+			if !ok {
+				return fmt.Errorf("mostro: response subscriptions closed")
+			}
+			if err := m.receive(ctx, s, trade, e); err != nil {
+				return err
+			}
+		default:
+			return reviewError(s)
+		}
+	}
+}
 func (m *Manager) apply(ctx context.Context, s *Session, msg MessageKind) error {
+	if err := reviewError(s); err != nil {
+		return err
+	}
+	if s.Released || s.State == "released" {
+		switch msg.Action {
+		case "pay-invoice", "pay-bond-invoice", "hold-invoice-payment-accepted", "waiting-buyer-invoice", "buyer-invoice-accepted":
+			return nil // delayed progress must never reopen a settled trade
+		}
+	}
 	switch msg.Action {
 	case "pay-invoice", "pay-bond-invoice":
 		purpose := "escrow"
@@ -490,8 +579,16 @@ func paymentRequest(raw json.RawMessage) (string, error) {
 	}
 	return invoice, nil
 }
-func (m *Manager) payRequested(ctx context.Context, s *Session) error {
+func (m *Manager) payRequested(ctx context.Context, s *Session, beforePayment func() error) error {
 	for _, purpose := range []string{"bond", "escrow"} {
+		// A bond attempt can take time. Reconcile messages that arrived during
+		// it before initiating the separate escrow payment.
+		if err := beforePayment(); err != nil {
+			return err
+		}
+		if s.Released || s.Funded {
+			return nil
+		}
 		p := s.Payments[purpose]
 		if p == nil {
 			continue
@@ -562,12 +659,15 @@ func (m *Manager) Release(ctx context.Context, requestID uint64, orderID string)
 	if !s.Funded || s.State == "needs_review" {
 		return fmt.Errorf("mostro: session is not releasable")
 	}
-	if s.Released {
-		return m.confirmSettlement(ctx, s)
-	}
 	return m.run(ctx, s, "release")
 }
 func (m *Manager) confirmSettlement(ctx context.Context, s *Session) error {
+	if err := reviewError(s); err != nil {
+		return err
+	}
+	if s.BondRequired && s.Payments["bond"] == nil {
+		return fmt.Errorf("mostro: missing required bond payment")
+	}
 	escrow := s.Payments["escrow"]
 	if escrow == nil {
 		return fmt.Errorf("mostro: missing escrow payment")
@@ -616,8 +716,10 @@ func (m *Manager) confirmFunding(ctx context.Context, s *Session) error {
 }
 
 func (m *Manager) review(ctx context.Context, s *Session, cause error) error {
-	s.State = "needs_review"
-	s.LastError = cause.Error()
+	if s.State != "needs_review" {
+		s.State = "needs_review"
+		s.LastError = cause.Error()
+	}
 	if err := m.Store.SaveMostroSession(ctx, s, nil); err != nil {
 		return fmt.Errorf("%v; persist review: %w", cause, err)
 	}

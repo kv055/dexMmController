@@ -480,6 +480,7 @@ func main() {
 		WithRecoveryGracePeriod(parseAccountHealthInterval(envOr("TRADEFLOW_RECOVERY_GRACE", "3m"))).
 		WithBisqFiatEscalationDelay(bisqFiatEscalationDelay).
 		WithPaymentResolver(dexPaymentResolver).
+		WithMostro(mostroManager).
 		WithTelegramRelay(telegramSvc, anomalyNotifier).
 		WithBisq(bq)
 	apiServer = apiServer.WithRepository(repo).

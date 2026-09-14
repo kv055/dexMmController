@@ -179,28 +179,7 @@ func (m *Manager) poll(ctx context.Context, s *Session) error {
 	if err != nil {
 		return err
 	}
-	sort.Slice(events, func(i, j int) bool { return events[i].CreatedAt < events[j].CreatedAt })
-	for _, e := range events {
-		if s.Seen[e.ID] || e.CreatedAt > nostr.Now()+60 {
-			continue
-		}
-		res, err := DecodeResponse(e, s.Request.Node, trade, s.Request.Protocol)
-		if err != nil || res.Message.ID != s.Request.OrderID {
-			continue
-		}
-		if res.Message.RequestID != nil && *res.Message.RequestID != s.Request.RequestID {
-			continue
-		}
-		if err = m.apply(ctx, s, res.Message); err != nil {
-			s.State = "needs_review"
-			s.LastError = err.Error()
-		}
-		s.Seen[e.ID] = true
-		if err = m.Store.SaveMostroSession(ctx, s, &e); err != nil {
-			return err
-		}
-	}
-	return nil
+	return m.replay(ctx, s, trade, events)
 }
 
 // SendMessage is idempotent for the same text within a trade, so an ambiguous
@@ -227,7 +206,7 @@ func (m *Manager) SendMessage(ctx context.Context, ref, text string) error {
 		return err
 	}
 	since := nostr.Now()
-	c, err := m.transport().Open(ctx, nostr.Filter{Kinds: []int{14}, Authors: []string{k.author}, Tags: nostr.TagMap{"p": []string{k.address}}, Since: &since, Limit: 1})
+	c, err := m.transport().Open(ctx, nostr.Filter{Kinds: []int{14}, Authors: []string{k.author}, Tags: nostr.TagMap{"p": []string{k.address}}, Since: &since, Limit: 100})
 	if err != nil {
 		return err
 	}

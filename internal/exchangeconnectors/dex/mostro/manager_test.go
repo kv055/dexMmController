@@ -86,6 +86,8 @@ type simulatedNode struct {
 	failPublish bool
 	onPublish   func(nostr.Event)
 	closed      int
+	history     []nostr.Event
+	openError   error
 }
 type simulatedConnection struct {
 	node   *simulatedNode
@@ -96,12 +98,21 @@ func (n *simulatedNode) Query(_ context.Context, f nostr.Filter) ([]nostr.Event,
 	if f.Kinds[0] == 38385 {
 		return []nostr.Event{n.node}, nil
 	}
-	return []nostr.Event{n.order}, nil
+	if f.Kinds[0] == 38383 {
+		return []nostr.Event{n.order}, nil
+	}
+	return n.history, nil
 }
 func (n *simulatedNode) Open(context.Context, nostr.Filter) (Connection, error) {
+	if n.openError != nil {
+		return nil, n.openError
+	}
 	c := &simulatedConnection{node: n, events: make(chan nostr.Event, 30)}
 	n.conn = c
 	return c, nil
+}
+func (c *simulatedConnection) History() []nostr.Event {
+	return append([]nostr.Event(nil), c.node.history...)
 }
 func (c *simulatedConnection) Events() <-chan nostr.Event { return c.events }
 func (c *simulatedConnection) Close()                     { c.node.closed++ }
@@ -171,9 +182,9 @@ func fixture(t *testing.T, bond bool) (*Manager, *memoryStore, *simulatedNode, *
 	key := nostr.GeneratePrivateKey()
 	pub, _ := nostr.GetPublicKey(key)
 	orderID := "308e1272-d5f4-47e6-bd97-3504baea9c23"
-	node := nostr.Event{Kind: 38385, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"d", pub}, {"protocol_version", "2"}, {"y", "mostro"}, {"lnd_networks", "mainnet"}, {"lnd_node_pubkey", "02" + pub}, {"fee", "0.003"}, {"bond_enabled", fmt.Sprint(bond)}}}
+	node := nostr.Event{Kind: 38385, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"d", pub}, {"protocol_version", "2"}, {"y", "mostro"}, {"lnd_networks", "mainnet"}, {"lnd_node_pubkey", "02" + pub}, {"fee", "0.003"}, {"bond_enabled", fmt.Sprint(bond)}, {"bond_apply_to", "take"}, {"bond_amount_pct", "0.01"}, {"bond_base_amount_sats", "500"}}}
 	_ = node.Sign(key)
-	order := nostr.Event{Kind: 38383, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"d", orderID}, {"s", "pending"}, {"k", "buy"}, {"y", "mostro"}, {"network", "mainnet"}, {"layer", "lightning"}, {"f", "EUR"}, {"fa", "10", "100"}, {"pm", "SEPA"}}}
+	order := nostr.Event{Kind: 38383, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"d", orderID}, {"s", "pending"}, {"k", "buy"}, {"y", "mostro"}, {"network", "mainnet"}, {"layer", "lightning"}, {"f", "EUR"}, {"fa", "50"}, {"amt", "9985"}, {"pm", "SEPA"}}}
 	_ = order.Sign(key)
 	r := TakeRequest{RequestID: 42, Node: pub, OrderID: orderID, SourceEventID: order.ID, Protocol: 2, FiatAmount: 50, FiatCurrency: "EUR", PaymentMethod: "SEPA", MaxEscrowSat: 10000, MaxBondSat: 500, RoutingFeeSat: 20}
 	n := &simulatedNode{key: key, node: node, order: order}
@@ -252,7 +263,7 @@ func TestTakeAndReleaseReconcileBondAndEscrow(t *testing.T) {
 	if len(n.publishIDs) != before {
 		t.Fatal("settled release was republished")
 	}
-	if n.closed != 2 {
+	if n.closed != 3 {
 		t.Fatalf("connection cleanup count=%d", n.closed)
 	}
 }

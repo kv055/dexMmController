@@ -67,15 +67,25 @@ type anomalyDeliveryState struct {
 	notified  bool
 }
 
-// HealthChecker queries the DB for incomplete transactions and verifies their
-// actual state against external systems, advancing the status where appropriate.
+// mostroReconciler has no command or payment methods: health checks only observe.
+type mostroReconciler interface {
+	Reconcile(context.Context, uint64, string) (bool, error)
+}
+
+type tradeChatRegistrar interface {
+	RegisterTradeChat(context.Context, string, string) error
+}
+
+// HealthChecker queries incomplete transactions and verifies their actual state
+// against external systems, advancing their status where appropriate.
 type HealthChecker struct {
+	mostro                  mostroReconciler
 	repo                    transactionStore
 	btc                     bitcoinTransactionSource
 	hodlhodl                hodlPositionSource
 	bisq                    bisqPositionSource
 	resolver                *dexaccount.PaymentResolver
-	telegram                *dexnotify.Service
+	telegram                tradeChatRegistrar
 	anomaly                 anomalyNotifier
 	recoverer               TradeflowRecoverer
 	recoveryGracePeriod     time.Duration
@@ -132,9 +142,19 @@ func (h *HealthChecker) WithPaymentResolver(r *dexaccount.PaymentResolver) *Heal
 	return h
 }
 
+// WithMostro wires read-only daemon and wallet reconciliation.
+func (h *HealthChecker) WithMostro(m mostroReconciler) *HealthChecker {
+	h.mostro = m
+	return h
+}
+
 // WithTelegramRelay wires the trade-chat relay and anomaly notifier.
 func (h *HealthChecker) WithTelegramRelay(svc *dexnotify.Service, anomaly *dexnotify.AnomalyNotifier) *HealthChecker {
-	h.telegram = svc
+	if svc == nil {
+		h.telegram = nil
+	} else {
+		h.telegram = svc
+	}
 	if anomaly == nil {
 		h.anomaly = nil
 	} else {
@@ -490,6 +510,18 @@ func (h *HealthChecker) verifyDexPositionTaken(ctx context.Context, tx *db.Trans
 		}
 	case db.DexBisq:
 		return h.verifyBisqPositionTaken(ctx, tx)
+	case db.DexMostro:
+		complete, err := h.reconcileMostro(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if complete {
+			return fmt.Errorf("mostro: unexpected settlement before recorded fiat receipt")
+		}
+		if h.resolver == nil {
+			return fmt.Errorf("mostro: payment chat resolver is not configured")
+		}
+		return h.captureChatPayment(ctx, tx)
 	case db.DexRoboSats, db.DexBisq2:
 		return h.captureChatPayment(ctx, tx)
 	default:
@@ -524,12 +556,37 @@ func (h *HealthChecker) verifyDexPositionReleased(ctx context.Context, tx *db.Tr
 		}
 	case db.DexBisq:
 		return h.verifyBisqPositionReleased(ctx, tx)
+	case db.DexMostro:
+		complete, err := h.reconcileMostro(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if complete {
+			tx.TransactionComplete = true
+			return h.repo.UpdateTransaction(tx)
+		}
 	case db.DexRoboSats:
 		// TODO: implement RoboSats release confirmation
 	default:
 		return fmt.Errorf("verifyDexPositionReleased: unknown DEX %q", tx.Dex)
 	}
 	return nil
+}
+
+func (h *HealthChecker) reconcileMostro(ctx context.Context, tx *db.Transaction) (bool, error) {
+	if h.mostro == nil {
+		return false, fmt.Errorf("mostro: reconciliation is not configured")
+	}
+	ref, err := dexContractID(tx)
+	if err != nil {
+		return false, err
+	}
+	complete, err := h.mostro.Reconcile(ctx, uint64(tx.ID), ref)
+	if err != nil {
+		_ = h.notifyAnomaly(ctx, string(tx.Dex), ref, "mostro reconciliation failed", err.Error())
+		return false, err
+	}
+	return complete, nil
 }
 
 func (h *HealthChecker) verifyBisqPositionReleased(ctx context.Context, tx *db.Transaction) error {
