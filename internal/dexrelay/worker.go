@@ -70,6 +70,25 @@ type offerTaker interface {
 	ResolveDeposit(ctx context.Context, exchange string, execution map[string]any) (string, string, error)
 }
 
+type btcSentReporter interface {
+	ReportBtcSent(ctx context.Context, exchange, tradeID, proof string) error
+}
+
+func reportVenueBtcSent(ctx context.Context, taker offerTaker, exchange string, execution map[string]any, proof string) error {
+	if db.DexPlatformFromSlug(exchange) != db.DexBisq2 {
+		return nil
+	}
+	reporter, ok := taker.(btcSentReporter)
+	if !ok {
+		return nil
+	}
+	tradeID := dexaccount.StringField(execution, "trade_id")
+	if tradeID == "" {
+		return fmt.Errorf("bisq2: trade_id missing from execution")
+	}
+	return reporter.ReportBtcSent(ctx, exchange, tradeID, proof)
+}
+
 // paymentResolver fetches a structured venue's counterparty fiat details (satisfied by
 // *dexaccount.PaymentResolver). Chat venues (Robosats) are handled by the healthcheck, not here,
 // because their details arrive over a conversation rather than in the trade object. Optional: a
@@ -401,6 +420,9 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		relayDetails.DepositAddress = depositAddr
 		relayDetails.PaymentMethod = "onchain"
 		tx.DestinationAddress = depositAddr
+		if err := reportVenueBtcSent(ctx, w.taker, exchange, meta.Execution, txid); err != nil {
+			return w.parkTakenFundingReview(tx, err)
+		}
 	case invoice != "":
 		decoder, ok := w.lnd.(invoiceDecoder)
 		if !ok {
@@ -420,6 +442,9 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		relayDetails.PaymentHash = decoded.PaymentHash
 		relayDetails.Invoice = invoice
 		relayDetails.PaymentMethod = "lightning"
+		if err := reportVenueBtcSent(ctx, w.taker, exchange, meta.Execution, decoded.PaymentHash); err != nil {
+			return w.parkTakenFundingReview(tx, err)
+		}
 	default:
 		return w.parkTakenFundingReview(tx, fmt.Errorf("no deposit address or invoice available for relay"))
 	}
@@ -547,6 +572,8 @@ func deriveExchange(tx *db.Transaction, meta db.DexOfferMeta) string {
 		return "hodlhodl"
 	case db.DexBisq:
 		return "bisq"
+	case db.DexBisq2:
+		return "bisq2"
 	case db.DexRoboSats:
 		return "robosats"
 	default:

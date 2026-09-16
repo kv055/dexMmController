@@ -290,10 +290,20 @@ func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Orde
 		return funding, taken.Execution, nil
 	}
 
-	// HodlHodl and RoboSats create their deposit destination while taking the
-	// offer, so their ordering is take offer -> resolve address/invoice -> fund.
+	// HodlHodl, RoboSats, and Bisq Easy create their deposit destination while
+	// taking the offer, so their ordering is take offer -> resolve address/invoice -> fund.
 	node, protocol := mostroOfferTransport(order.SelectedOffer)
-	taken, err := tf.hedgelessDEX.Take(ctx, dexaccount.OfferInput{Exchange: exchange, OfferID: order.OfferID, BTCAmount: order.BTCAmount, FiatAmount: order.FiatAmount, RequestID: uint64(txID), VenueNodePubKey: node, ProtocolVersion: protocol})
+	taken, err := tf.hedgelessDEX.Take(ctx, dexaccount.OfferInput{
+		Exchange:        exchange,
+		OfferID:         order.OfferID,
+		BTCAmount:       order.BTCAmount,
+		FiatAmount:      order.FiatAmount,
+		RequestID:       uint64(txID),
+		VenueNodePubKey: node,
+		ProtocolVersion: protocol,
+		FiatCurrency:    order.FiatCurrency,
+		PaymentMethod:   order.PaymentMethod,
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("take %s offer: %w", exchange, err)
 	}
@@ -321,6 +331,9 @@ func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Orde
 		if err := onPoolSpent(funding); err != nil {
 			return nil, nil, fmt.Errorf("start pool refill after on-chain funding: %w", err)
 		}
+		if err := reportHedgelessBtcSent(ctx, tf.hedgelessDEX, exchange, taken.Execution, txid); err != nil {
+			return nil, nil, err
+		}
 		return funding, taken.Execution, nil
 	}
 	if invoice != "" {
@@ -346,9 +359,29 @@ func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Orde
 		if err := onPoolSpent(funding); err != nil {
 			return nil, nil, fmt.Errorf("start pool refill after Lightning funding: %w", err)
 		}
+		if err := reportHedgelessBtcSent(ctx, tf.hedgelessDEX, exchange, taken.Execution, decoded.PaymentHash); err != nil {
+			return nil, nil, err
+		}
 		return funding, taken.Execution, nil
 	}
 	return nil, nil, fmt.Errorf("%s returned no funding destination", exchange)
+}
+
+func reportHedgelessBtcSent(ctx context.Context, dex hedgelessDEX, exchange string, execution map[string]any, proof string) error {
+	if db.DexPlatformFromSlug(exchange) != db.DexBisq2 {
+		return nil
+	}
+	reporter, ok := dex.(interface {
+		ReportBtcSent(context.Context, string, string, string) error
+	})
+	if !ok {
+		return nil
+	}
+	tradeID := dexaccount.StringField(execution, "trade_id")
+	if tradeID == "" {
+		return fmt.Errorf("bisq2: trade_id missing from execution")
+	}
+	return reporter.ReportBtcSent(ctx, exchange, tradeID, proof)
 }
 
 func mostroOfferTransport(raw []byte) (string, int) {

@@ -342,6 +342,8 @@ func deriveExchange(tx *db.Transaction, meta db.DexOfferMeta) string {
 		return "hodlhodl"
 	case db.DexBisq:
 		return "bisq"
+	case db.DexBisq2:
+		return "bisq2"
 	case db.DexRoboSats:
 		return "robosats"
 	default:

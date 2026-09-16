@@ -10,6 +10,7 @@ import (
 
 	"dexMmController/internal/db"
 	"dexMmController/internal/exchangeconnectors/dex/bisq"
+	"dexMmController/internal/exchangeconnectors/dex/bisq2"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl/escrow"
 	"dexMmController/internal/exchangeconnectors/dex/mostro"
@@ -30,6 +31,7 @@ type HodlHodlEscrowConfig struct {
 type Releaser struct {
 	repo     *db.TransactionRepository
 	bisq     *bisq.Client
+	bisq2    *bisq2.Client
 	hodlhodl *hodlhodl.Client
 	robosats *robosats.Client
 	mostro   *mostro.Manager
@@ -55,6 +57,8 @@ func NewReleaser(
 }
 
 func (r *Releaser) WithMostro(m *mostro.Manager) *Releaser { r.mostro = m; return r }
+
+func (r *Releaser) WithBisq2(c *bisq2.Client) *Releaser { r.bisq2 = c; return r }
 
 // ReleaseInput identifies the trade to release.
 type ReleaseInput struct {
@@ -108,6 +112,8 @@ func (r *Releaser) Release(ctx context.Context, in ReleaseInput) (*ReleaseResult
 		return r.releaseHodlHodl(ctx, contractID)
 	case db.DexBisq:
 		return r.releaseBisq(ctx, contractID)
+	case db.DexBisq2:
+		return r.releaseBisq2(ctx, contractID)
 	case db.DexRoboSats:
 		return r.releaseRoboSats(ctx, contractID)
 	default:
@@ -164,6 +170,8 @@ func (r *Releaser) ReturnSecurityDeposit(ctx context.Context, in SecurityDeposit
 	case db.DexRoboSats:
 		return &SecurityDepositReturnResult{Method: "robosats_automatic_bond_unlock"}, nil
 	case db.DexHodlHodl:
+		return &SecurityDepositReturnResult{Method: "not_required"}, nil
+	case db.DexBisq2:
 		return &SecurityDepositReturnResult{Method: "not_required"}, nil
 	default:
 		return nil, fmt.Errorf("dexaccount: security-deposit return not supported for exchange %q", in.Exchange)
@@ -238,6 +246,16 @@ func (r *Releaser) releaseBisq(ctx context.Context, tradeID string) (*ReleaseRes
 		result.Raw["phase"] = trade.Phase
 	}
 	return result, nil
+}
+
+func (r *Releaser) releaseBisq2(ctx context.Context, tradeID string) (*ReleaseResult, error) {
+	if r.bisq2 == nil {
+		return nil, fmt.Errorf("bisq2 client is not configured")
+	}
+	if err := r.bisq2.ConfirmFiatReceipt(ctx, tradeID); err != nil {
+		return nil, fmt.Errorf("bisq2: confirm fiat receipt: %w", err)
+	}
+	return &ReleaseResult{Raw: map[string]any{"exchange": "bisq2", "trade_id": tradeID, "event": "SELLER_CONFIRM_FIAT_RECEIPT"}}, nil
 }
 
 // releaseRoboSats confirms fiat received; the coordinator settles the hold invoice to the

@@ -9,8 +9,8 @@ import (
 )
 
 // TestReleaseDispatchErrors covers the venue-dispatch guard rails without touching the
-// network: missing contract id, unsupported venues (incl. the route/enum-only bisq2 and
-// peachbitcoin that have no client), and unconfigured clients.
+// network: missing contract id, unsupported venues (peachbitcoin has no client), and
+// unconfigured clients.
 func TestReleaseDispatchErrors(t *testing.T) {
 	r := NewReleaser(nil, nil, nil, nil, HodlHodlEscrowConfig{})
 	ctx := context.Background()
@@ -21,7 +21,7 @@ func TestReleaseDispatchErrors(t *testing.T) {
 		wantSnip string
 	}{
 		{"empty contract id", ReleaseInput{Exchange: "hodlhodl"}, "contract_id is required"},
-		{"unsupported bisq2", ReleaseInput{Exchange: "bisq2", ContractID: "x"}, "not supported"},
+		{"bisq2 nil client", ReleaseInput{Exchange: "bisq2", ContractID: "x"}, "not configured"},
 		{"unsupported peach", ReleaseInput{Exchange: "peachbitcoin", ContractID: "x"}, "not supported"},
 		{"unknown venue", ReleaseInput{Exchange: "nope", ContractID: "x"}, "not supported"},
 		{"hodlhodl nil client", ReleaseInput{Exchange: "hodlhodl", ContractID: "x"}, "not configured"},

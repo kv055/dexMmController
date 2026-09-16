@@ -308,14 +308,14 @@ func main() {
 	if mostroManager != nil {
 		mostroTaker = mostroManager
 	}
-	dexTaker := dexaccount.NewTaker(repo, bq, hh, rs, mostroTaker)
+	dexTaker := dexaccount.NewTaker(repo, bq, hh, rs, mostroTaker).WithBisq2(b2)
 	// dexReleaser performs Stage-6 BTC release; dexReleaseWorker drains the webhook-fed
 	// queue and runs the (idempotent) releases in the background.
 	dexReleaser := dexaccount.NewReleaser(repo, bq, hh, rs, dexaccount.HodlHodlEscrowConfig{
 		EncryptedSeed:   hhEscrowSeed,
 		PaymentPassword: hhEscrowPaymentPassword,
 	})
-	dexReleaser.WithMostro(mostroManager)
+	dexReleaser.WithMostro(mostroManager).WithBisq2(b2)
 	if mostroManager != nil {
 		dexPaymentResolver.WithMostro(mostroManager)
 	}

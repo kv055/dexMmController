@@ -12,6 +12,7 @@ import (
 
 	"dexMmController/internal/db"
 	"dexMmController/internal/exchangeconnectors/dex/bisq"
+	"dexMmController/internal/exchangeconnectors/dex/bisq2"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
 	"dexMmController/internal/exchangeconnectors/dex/mostro"
 	"dexMmController/internal/exchangeconnectors/dex/robosats"
@@ -35,6 +36,7 @@ type LNDRelay interface {
 type Taker struct {
 	repo     *db.TransactionRepository
 	bisq     *bisq.Client
+	bisq2    *bisq2.Client
 	hodlhodl *hodlhodl.Client
 	robosats *robosats.Client
 	mostro   MostroTaker
@@ -61,6 +63,13 @@ func NewTaker(
 		robosats: robosatsClient,
 		mostro:   mostroClient,
 	}
+}
+
+// WithBisq2 attaches the Bisq Easy REST client used to take bids and resolve
+// the buyer's bitcoinPaymentData.
+func (t *Taker) WithBisq2(client *bisq2.Client) *Taker {
+	t.bisq2 = client
+	return t
 }
 
 // OfferInput identifies an offer to take.
@@ -99,6 +108,8 @@ func (t *Taker) Take(ctx context.Context, in OfferInput) (*TakeResult, error) {
 		return t.takeHodlHodl(ctx, offerID, in.FiatAmount)
 	case db.DexBisq:
 		return t.takeBisq(ctx, offerID, in.BTCAmount)
+	case db.DexBisq2:
+		return t.takeBisq2(ctx, in)
 	case db.DexRoboSats:
 		return t.takeRoboSats(ctx, offerID)
 	case db.DexMostro:
@@ -162,6 +173,9 @@ func (t *Taker) ResolveDeposit(ctx context.Context, exchange string, execution m
 	platform := db.DexPlatformFromSlug(exchange)
 	if platform == db.DexBisq {
 		return "", "", nil
+	}
+	if platform == db.DexBisq2 {
+		return t.pollBisq2Deposit(ctx, execution)
 	}
 	if platform != db.DexRoboSats {
 		return "", "", nil
@@ -230,6 +244,137 @@ func (t *Taker) takeBisq(ctx context.Context, offerID string, btcAmount float64)
 			"requested_sats": params.AmountSats,
 		},
 	}, nil
+}
+
+func (t *Taker) takeBisq2(ctx context.Context, in OfferInput) (*TakeResult, error) {
+	if t.bisq2 == nil {
+		return nil, fmt.Errorf("bisq2 client is not configured")
+	}
+	quoteUnits := bisq2.QuoteAmountUnits(in.FiatAmount)
+	baseSats := BTCToSats(in.BTCAmount)
+	if quoteUnits <= 0 {
+		return nil, fmt.Errorf("bisq2: fiat amount is required to take an offer")
+	}
+	if baseSats <= 0 {
+		return nil, fmt.Errorf("bisq2: btc amount is required to take an offer")
+	}
+
+	offer, err := t.bisq2.GetOffer(ctx, in.FiatCurrency, in.OfferID)
+	if err != nil {
+		return nil, err
+	}
+	bitcoinMethod := bisq2.PickBitcoinRail(offer.BitcoinRails)
+	fiatMethod := bisq2.MatchFiatRail(in.PaymentMethod, offer.FiatRails)
+	if fiatMethod == "" {
+		return nil, fmt.Errorf("bisq2: no fiat payment method selected for offer %s", in.OfferID)
+	}
+
+	taken, err := t.bisq2.TakeOffer(ctx, in.OfferID, bisq2.TakeOfferParams{
+		BaseSideAmount:       baseSats,
+		QuoteSideAmount:      quoteUnits,
+		BitcoinPaymentMethod: bitcoinMethod,
+		FiatPaymentMethod:    fiatMethod,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if accountData := t.bisq2PaymentAccountData(ctx, in.PaymentMethod); accountData != "" {
+		if err := t.bisq2.SendSellerPaymentAccount(ctx, taken.TradeID, accountData); err != nil {
+			log.Printf("dexaccount: bisq2 send seller payment account for trade %s: %v", taken.TradeID, err)
+		}
+	}
+
+	return &TakeResult{
+		Execution: map[string]any{
+			"exchange":               "bisq2",
+			"offer_id":               in.OfferID,
+			"trade_id":               taken.TradeID,
+			"requested_sats":         baseSats,
+			"quote_side_amount":      quoteUnits,
+			"bitcoin_payment_method": taken.BitcoinPaymentMethod,
+			"fiat_payment_method":    taken.FiatPaymentMethod,
+		},
+	}, nil
+}
+
+func (t *Taker) bisq2PaymentAccountData(ctx context.Context, paymentMethod string) string {
+	if t.repo == nil {
+		return ""
+	}
+	vars, err := t.repo.GetChatTemplateVariables(ctx, paymentMethod)
+	if err != nil {
+		log.Printf("dexaccount: bisq2 payment account variables: %v", err)
+		return ""
+	}
+	return formatBisq2PaymentAccount(paymentMethod, vars)
+}
+
+func formatBisq2PaymentAccount(method string, vars map[string]string) string {
+	if vars == nil {
+		vars = map[string]string{}
+	}
+	var b strings.Builder
+	if method = strings.TrimSpace(method); method != "" {
+		b.WriteString(method)
+	}
+	writeLine := func(label, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(label)
+		b.WriteString(": ")
+		b.WriteString(value)
+	}
+	writeLine("Account holder", vars["owner_name"])
+	if details := strings.TrimSpace(vars["details_encrypted"]); details != "" && details != "{}" && details != "null" {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(details)
+	}
+	writeLine("Email", vars["email"])
+	writeLine("Phone", vars["phone"])
+	writeLine("Payment tag", vars["payment_tag"])
+	return strings.TrimSpace(b.String())
+}
+
+func (t *Taker) pollBisq2Deposit(ctx context.Context, execution map[string]any) (string, string, error) {
+	if t.bisq2 == nil {
+		return "", "", fmt.Errorf("bisq2 client is not configured")
+	}
+	tradeID := StringField(execution, "trade_id")
+	if tradeID == "" {
+		return "", "", fmt.Errorf("bisq2: trade_id missing from execution")
+	}
+	data, err := t.bisq2.WaitForBitcoinPaymentData(ctx, tradeID, bisq2.DepositPollTimeout)
+	if err != nil {
+		return "", "", err
+	}
+	addr, invoice := bisq2.ClassifyBitcoinPaymentData(data)
+	if addr == "" && invoice == "" {
+		return "", "", fmt.Errorf("bisq2: bitcoin payment data for trade %s is empty", tradeID)
+	}
+	return addr, invoice, nil
+}
+
+// ReportBtcSent notifies a venue that we have sent the BTC leg. Bisq Easy needs
+// SELLER_CONFIRM_BTC_SENT with the on-chain txid (or LN proof).
+func (t *Taker) ReportBtcSent(ctx context.Context, exchange, tradeID, proof string) error {
+	if db.DexPlatformFromSlug(exchange) != db.DexBisq2 {
+		return nil
+	}
+	if t.bisq2 == nil {
+		return fmt.Errorf("bisq2 client is not configured")
+	}
+	if err := t.bisq2.ConfirmBtcSent(ctx, tradeID, proof); err != nil {
+		return fmt.Errorf("bisq2: confirm btc sent: %w", err)
+	}
+	return nil
 }
 
 func (t *Taker) takeRoboSats(ctx context.Context, offerID string) (*TakeResult, error) {
