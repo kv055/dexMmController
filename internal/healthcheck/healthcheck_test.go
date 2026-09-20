@@ -2,12 +2,14 @@ package healthcheck
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/db"
+	"dexMmController/internal/dexaccount"
 	"dexMmController/internal/exchangeconnectors/dex/bisq"
 	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
 )
@@ -78,6 +80,30 @@ func (f *fakeTransactionStore) UpdateTransaction(tx *db.Transaction) error {
 func (f *fakeBisqPositionSource) GetPosition(_ context.Context, _ string) (*bisq.Trade, error) {
 	f.calls++
 	return f.trade, f.err
+}
+
+type fakeStructuredPaymentResolver struct {
+	payloads []json.RawMessage
+	errs     []error
+	calls    int
+}
+
+func (f *fakeStructuredPaymentResolver) IsStructuredVenue(string) bool { return true }
+func (f *fakeStructuredPaymentResolver) FetchCounterparty(context.Context, string, map[string]any) (json.RawMessage, error) {
+	i := f.calls
+	f.calls++
+	var err error
+	if i < len(f.errs) {
+		err = f.errs[i]
+	}
+	var payload json.RawMessage
+	if i < len(f.payloads) {
+		payload = f.payloads[i]
+	}
+	return payload, err
+}
+func (f *fakeStructuredPaymentResolver) CaptureChatPayment(context.Context, dexaccount.ChatRequest) (json.RawMessage, error) {
+	return nil, nil
 }
 
 type anomalyCall struct {
@@ -296,6 +322,40 @@ func TestVerifyBisqPositionTakenEscalatesAfterObservationDelayOnce(t *testing.T)
 	}
 	if len(notifier.calls) != 1 {
 		t.Fatalf("dedupe failed: %d alerts", len(notifier.calls))
+	}
+}
+
+func TestVerifyBisqPositionTakenRetriesPendingPaymentPayload(t *testing.T) {
+	store := &fakeTransactionStore{}
+	resolver := &fakeStructuredPaymentResolver{
+		errs:     []error{errors.New("bisq: maker payment payload is pending"), nil},
+		payloads: []json.RawMessage{nil, json.RawMessage(`{"iban":"DE00"}`)},
+	}
+	h := &HealthChecker{
+		repo:     store,
+		resolver: resolver,
+		bisq:     &fakeBisqPositionSource{trade: &bisq.Trade{State: "DEPOSIT_CONFIRMED"}},
+	}
+	tx := bisqTakenTransaction(t)
+
+	if err := h.verifyBisqPositionTaken(context.Background(), tx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tx.CounterpartyPaymentInfo) != 0 || store.updates != 0 {
+		t.Fatal("pending payload must not be stored as payment details")
+	}
+
+	if err := h.verifyBisqPositionTaken(context.Background(), tx); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.calls != 2 {
+		t.Fatalf("calls = %d, want 2", resolver.calls)
+	}
+	if string(tx.CounterpartyPaymentInfo) != `{"iban":"DE00"}` {
+		t.Fatalf("stored = %s", tx.CounterpartyPaymentInfo)
+	}
+	if store.updates != 1 {
+		t.Fatalf("updates = %d, want 1", store.updates)
 	}
 }
 

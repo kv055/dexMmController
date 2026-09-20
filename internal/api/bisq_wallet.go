@@ -33,6 +33,7 @@ type bisqWalletClient interface {
 	GetTransactions(ctx context.Context) ([]bisq.WalletTransaction, error)
 	SendBtc(ctx context.Context, address, amountBTC, txFeeRate, memo string) (*bisq.WalletTransaction, error)
 	UnlockWallet(ctx context.Context, password string, timeoutSeconds uint64) error
+	RequireFundingAddress(ctx context.Context, address string) error
 }
 
 type bisqBTCBalanceDTO struct {

@@ -52,21 +52,30 @@ func (s *hedgelessFakeService) MarketBuyBTCForRefill(_ context.Context, amount f
 
 type fakeHedgelessDEX struct {
 	takeCalls int
+	lastInput dexaccount.OfferInput
 	result    *dexaccount.TakeResult
 }
 
-func (d *fakeHedgelessDEX) Take(context.Context, dexaccount.OfferInput) (*dexaccount.TakeResult, error) {
+func (d *fakeHedgelessDEX) Take(_ context.Context, in dexaccount.OfferInput) (*dexaccount.TakeResult, error) {
 	d.takeCalls++
+	d.lastInput = in
 	return d.result, nil
 }
+func (d *fakeHedgelessDEX) CheckRoboSats(context.Context, dexaccount.OfferInput) error { return nil }
 func (d *fakeHedgelessDEX) ResolveDeposit(context.Context, string, map[string]any) (string, string, error) {
 	return "", "", nil
 }
 
-type fakeHedgelessWallet struct{ sendCalls, payCalls int }
+type fakeHedgelessWallet struct {
+	sendCalls, payCalls int
+	lastSendSat         int64
+	lastAddress         string
+}
 
-func (w *fakeHedgelessWallet) SendOnChain(context.Context, string, int64, int64) (string, error) {
+func (w *fakeHedgelessWallet) SendOnChain(_ context.Context, toAddress string, amountSat, _ int64) (string, error) {
 	w.sendCalls++
+	w.lastSendSat = amountSat
+	w.lastAddress = toAddress
 	return "dex-funding-tx", nil
 }
 func (w *fakeHedgelessWallet) PayInvoice(context.Context, string, int64) (string, error) {
@@ -107,9 +116,15 @@ func (r *fakeBisqResolver) DirectBalanceBTC(context.Context, string, string) (fl
 }
 
 func hedgelessOrder(dex string) Order {
-	return Order{Provider: "binance", MarketSide: "bid", BTCAmount: 0.018, RequiredBTCLiquidity: 0.02,
+	order := Order{Provider: "binance", MarketSide: "bid", BTCAmount: 0.018, RequiredBTCLiquidity: 0.02,
 		SecurityDepositBTC: 0.002, FiatCurrency: "EUR", RequiredCapital: 1000, OfferID: "offer-1",
 		Dex: dex, FiatAmount: 900, PaymentMethod: "SEPA", TradeMode: cexaccount.TradeModeHedgelessDoubleCollateral}
+	if dex == "robosats" {
+		order.SelectedOffer, _ = json.Marshal(map[string]any{
+			"offer_id": "offer-1", "exchange": "robosats", "venue_coordinator_id": "expats",
+		})
+	}
+	return order
 }
 
 func hedgelessService() *hedgelessFakeService {
@@ -185,6 +200,21 @@ func TestRunHedgelessRoboSatsPaysInvoice(t *testing.T) {
 	}
 }
 
+func TestRunHedgelessRoboSatsFundedSkipsInvoicePayment(t *testing.T) {
+	svc := hedgelessService()
+	dex := &fakeHedgelessDEX{result: &dexaccount.TakeResult{Execution: map[string]any{
+		"position_id": "p-1", "exchange": "robosats", "robosats_funded": true, "payment_hash": "escrow-hash", "amount_sat": int64(1_800_000),
+	}, LNInvoice: "lnbc1shouldnotpay"}}
+	wallet := &fakeHedgelessWallet{}
+	_, err := New(svc, newFakeStore()).WithHedgelessExecution(dex, wallet).Run(context.Background(), hedgelessOrder("robosats"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if wallet.payCalls != 0 {
+		t.Fatalf("paid invoice after coordinator-confirmed escrow: %d", wallet.payCalls)
+	}
+}
+
 func TestRunHedgelessBisqFundsIntegratedWalletBeforeTake(t *testing.T) {
 	svc := hedgelessService()
 	dex := &fakeHedgelessDEX{result: &dexaccount.TakeResult{Execution: map[string]any{"trade_id": "t-1", "exchange": "bisq"}}}
@@ -196,6 +226,41 @@ func TestRunHedgelessBisqFundsIntegratedWalletBeforeTake(t *testing.T) {
 	}
 	if wallet.sendCalls != 1 || dex.takeCalls != 1 || resolver.balanceCalls < 2 {
 		t.Fatalf("send/take/balance = %d/%d/%d", wallet.sendCalls, dex.takeCalls, resolver.balanceCalls)
+	}
+}
+
+func TestRunHedgelessBisqPlanFundsDepositAndFees(t *testing.T) {
+	svc := hedgelessService()
+	dex := &fakeHedgelessDEX{result: &dexaccount.TakeResult{Execution: map[string]any{"trade_id": "t-1", "exchange": "bisq", "fiat_amount": 550.0}}}
+	wallet := &fakeHedgelessWallet{}
+	resolver := &fakeBisqResolver{}
+	order := hedgelessOrder("bisq")
+	order.BisqPlan = &db.BisqExecutionPlan{
+		TradeAmountSats:     1_000_000,
+		SecurityDepositSats: 150_000,
+		TakerFeeSats:        8_000,
+		MiningFeeSats:       2_000,
+		TotalToPaySats:      1_160_000,
+		PaymentAccountID:    "acct-9",
+		FundingAddress:      "bc1qdesignated",
+		MaxWalletDebitSats:  1_160_000,
+		FiatAmount:          550,
+		MinVolumeAsLong:     5_500_000,
+	}
+	order.BTCAmount = 0.01
+	order.RequiredBTCLiquidity = 0.02
+	_, err := New(svc, newFakeStore()).WithDirectDestinationResolver(resolver).WithHedgelessExecution(dex, wallet).Run(context.Background(), order)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if wallet.lastSendSat != 1_160_000 {
+		t.Fatalf("funded %d sats, want 1160000 (principal+deposit+fees)", wallet.lastSendSat)
+	}
+	if wallet.lastAddress != "bc1qdesignated" {
+		t.Fatalf("funding address = %q", wallet.lastAddress)
+	}
+	if dex.lastInput.PaymentAccountID != "acct-9" || dex.lastInput.BTCAmount != 0.01 {
+		t.Fatalf("take input = %+v", dex.lastInput)
 	}
 }
 

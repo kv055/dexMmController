@@ -82,3 +82,26 @@ func TestHoldPaymentDoesNotResubmitExistingOrAmbiguousPayments(t *testing.T) {
 		})
 	}
 }
+
+func TestPayInvoiceUsesFeeLimitFixed(t *testing.T) {
+	c := &Client{host: "https://lnd.test", httpClient: &http.Client{Transport: paymentRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.Method != "POST" || r.URL.Path != "/v1/channels/transactions" {
+			t.Fatalf("path=%s %s", r.Method, r.URL.Path)
+		}
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := req["fee_limit_sat"]; ok {
+			t.Fatalf("legacy fee_limit_sat still present: %v", req)
+		}
+		limit, _ := req["fee_limit"].(map[string]any)
+		if req["payment_request"] != "lnbc1invoice" || limit["fixed"] != "17" {
+			t.Fatalf("wrong sendpayment request: %v", req)
+		}
+		return paymentResponse(200, `{"payment_error":"","payment_preimage":"aa"}`), nil
+	})}}
+	if _, err := c.PayInvoice(context.Background(), "lnbc1invoice", 17); err != nil {
+		t.Fatal(err)
+	}
+}

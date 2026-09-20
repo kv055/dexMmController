@@ -161,6 +161,9 @@ func (w *Worker) runOnce(ctx context.Context) {
 	}
 	for i := range txs {
 		tx := &txs[i]
+		if db.IsDurableRoboSats(tx) {
+			continue
+		}
 		if err := w.process(ctx, tx); err != nil {
 			log.Printf("dexrelay: tx %d (%s): %v", tx.ID, tx.Status, err)
 		}
@@ -168,6 +171,9 @@ func (w *Worker) runOnce(ctx context.Context) {
 }
 
 func (w *Worker) process(ctx context.Context, tx *db.Transaction) error {
+	if db.BisqManaged(tx) {
+		return nil
+	}
 	switch tx.Status {
 	case db.StatusCexCryptoWithdrawalInitiated:
 		return w.confirmWithdrawal(ctx, tx)
@@ -176,6 +182,15 @@ func (w *Worker) process(ctx context.Context, tx *db.Transaction) error {
 	default:
 		return nil
 	}
+}
+
+// ProcessRoboSats is invoked only by the durable execution owner under its
+// cross-process lock. The periodic relay skips these transactions.
+func (w *Worker) ProcessRoboSats(ctx context.Context, tx *db.Transaction) error {
+	if !db.IsDurableRoboSats(tx) {
+		return fmt.Errorf("durable RoboSats transaction required")
+	}
+	return w.process(ctx, tx)
 }
 
 // confirmWithdrawal advances Initiated → Arrived once the required BTC have landed at
@@ -301,7 +316,24 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	}
 
 	paymentSat, routingFeeSat := relayLightningBudget(tx, meta)
-	if meta.ResolvedRoute.UsesLightning() {
+	prepared := false
+	var roboPreparation interface {
+		RoboSatsLiquidityPrepared(context.Context, uint64, bool) (bool, error)
+	}
+	if db.IsDurableRoboSats(tx) {
+		var ok bool
+		roboPreparation, ok = w.taker.(interface {
+			RoboSatsLiquidityPrepared(context.Context, uint64, bool) (bool, error)
+		})
+		if !ok {
+			return fmt.Errorf("RoboSats durable liquidity preparation unavailable")
+		}
+		prepared, err = roboPreparation.RoboSatsLiquidityPrepared(ctx, uint64(tx.ID), false)
+		if err != nil {
+			return err
+		}
+	}
+	if meta.ResolvedRoute.UsesLightning() && !prepared {
 		if w.liquidity == nil {
 			return fmt.Errorf("Lightning liquidity preparation is not configured")
 		}
@@ -316,25 +348,36 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 			return fmt.Errorf("prepare RoboSats outbound liquidity: %w", err)
 		}
 		defer func() { _ = w.liquidity.Release(context.WithoutCancel(ctx), reservationID) }()
+		if roboPreparation != nil {
+			if _, err := roboPreparation.RoboSatsLiquidityPrepared(ctx, uint64(tx.ID), true); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Take the offer (idempotent: only when no execution recorded yet).
 	if strings.EqualFold(exchange, "mostro") && meta.Execution != nil && meta.Execution["mostro_session_id"] == nil {
 		return w.parkTakenFundingReview(tx, fmt.Errorf("mostro: legacy execution needs manual recovery"))
 	}
-	if meta.Execution == nil || strings.EqualFold(exchange, "mostro") {
+	if meta.Execution == nil || strings.EqualFold(exchange, "mostro") || (strings.EqualFold(exchange, "robosats") && meta.Execution["robosats_funded"] != true) {
 		takeResult, takeErr := w.taker.Take(ctx, dexaccount.OfferInput{
 			Exchange:        exchange,
 			OfferID:         offerID,
-			FiatAmount:      tx.FiatAmount,
-			BTCAmount:       float64(paymentSat) / 1e8,
+			FiatAmount:      takeFiatAmount(tx, meta),
+			BTCAmount:       takeBTCAmount(tx, meta, paymentSat),
 			RequestID:       uint64(tx.ID),
 			VenueNodePubKey: strings.TrimSpace(stringFromSelectedOffer(meta.SelectedOffer, "venue_node_pubkey")),
+			CoordinatorID:   strings.TrimSpace(stringFromSelectedOffer(meta.SelectedOffer, "venue_coordinator_id")),
+			QuoteID:         strings.TrimSpace(stringFromSelectedOffer(meta.SelectedOffer, "quote_id")),
 			ProtocolVersion: intFromSelectedOffer(meta.SelectedOffer, "protocol_version", 0),
 			SourceEventID:   strings.TrimSpace(stringFromSelectedOffer(meta.SelectedOffer, "source_event_id")),
 			FiatCurrency:    tx.FiatCurrency, PaymentMethod: tx.PaymentMethod,
-			MaxPaymentSat: paymentSat - int64(math.Round(meta.ResolvedRoute.SecurityDepositBTC*1e8)),
-			MaxBondSat:    int64(math.Round(meta.ResolvedRoute.SecurityDepositBTC * 1e8)), RoutingFeeSat: routingFeeSat,
+			MaxPaymentSat: maxSatFromSelectedOffer(meta.SelectedOffer, "max_escrow_sat", paymentSat-int64(math.Round(meta.ResolvedRoute.SecurityDepositBTC*1e8))),
+			MaxBondSat:    maxSatFromSelectedOffer(meta.SelectedOffer, "max_bond_sat", int64(math.Round(meta.ResolvedRoute.SecurityDepositBTC*1e8))),
+			RoutingFeeSat: routingFeeSat,
+			PaymentAccountID:   takePaymentAccountID(meta),
+			MaxWalletDebitSats: takeMaxWalletDebit(meta),
+			MinVolumeAsLong:    takeMinVolume(meta),
 		})
 		if takeErr != nil {
 			return fmt.Errorf("take offer: %w", takeErr)
@@ -346,6 +389,10 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 		if takeResult.LNInvoice != "" {
 			meta.Execution["invoice"] = takeResult.LNInvoice
 		}
+		if meta.BisqExecution != nil {
+			meta.BisqExecution.Stage = db.BisqStageTaken
+		}
+		applyTakenFiatAmount(tx, takeResult.Execution)
 		raw, marshalErr := db.MarshalDexOfferCreation(meta)
 		if marshalErr != nil {
 			return marshalErr
@@ -370,6 +417,14 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 
 	if strings.EqualFold(exchange, "mostro") {
 		// Take has reconciled the durable escrow and authenticated daemon acceptance.
+		relayDetails.PaymentMethod = "lightning"
+		relayDetails.PaymentHash = dexaccount.StringField(meta.Execution, "payment_hash")
+		if v, ok := meta.Execution["amount_sat"].(int64); ok {
+			relayDetails.AmountSat = v
+		}
+		return w.finishRelay(tx, meta, relayDetails)
+	}
+	if strings.EqualFold(exchange, "robosats") && meta.Execution != nil && meta.Execution["robosats_funded"] == true {
 		relayDetails.PaymentMethod = "lightning"
 		relayDetails.PaymentHash = dexaccount.StringField(meta.Execution, "payment_hash")
 		if v, ok := meta.Execution["amount_sat"].(int64); ok {
@@ -475,6 +530,53 @@ func relayLightningBudget(tx *db.Transaction, meta db.DexOfferMeta) (paymentSat,
 	return dexaccount.BTCToSats(amountBTC), routingFeeSat
 }
 
+func takeBTCAmount(tx *db.Transaction, meta db.DexOfferMeta, paymentSat int64) float64 {
+	if meta.BisqExecution != nil && meta.BisqExecution.TradeAmountSats > 0 {
+		return dexaccount.SatsToBTC(int64(meta.BisqExecution.TradeAmountSats))
+	}
+	return float64(paymentSat) / 1e8
+}
+
+func takeFiatAmount(tx *db.Transaction, meta db.DexOfferMeta) float64 {
+	if meta.BisqExecution != nil && meta.BisqExecution.FiatAmount > 0 {
+		return meta.BisqExecution.FiatAmount
+	}
+	return tx.FiatAmount
+}
+
+func takePaymentAccountID(meta db.DexOfferMeta) string {
+	if meta.BisqExecution == nil {
+		return ""
+	}
+	return meta.BisqExecution.PaymentAccountID
+}
+
+func takeMaxWalletDebit(meta db.DexOfferMeta) uint64 {
+	if meta.BisqExecution == nil {
+		return 0
+	}
+	return meta.BisqExecution.MaxWalletDebitSats
+}
+
+func takeMinVolume(meta db.DexOfferMeta) int64 {
+	if meta.BisqExecution == nil {
+		return 0
+	}
+	return meta.BisqExecution.MinVolumeAsLong
+}
+
+func applyTakenFiatAmount(tx *db.Transaction, execution map[string]any) {
+	if tx == nil || execution == nil {
+		return
+	}
+	switch v := execution["fiat_amount"].(type) {
+	case float64:
+		if v > 0 {
+			tx.FiatAmount = v
+		}
+	}
+}
+
 func validateInvoice(invoice string, decoded *lnd.DecodedInvoice, prepared int64, now time.Time) error {
 	if decoded == nil {
 		return fmt.Errorf("invoice decode returned no data")
@@ -517,12 +619,14 @@ func (w *Worker) populateCounterpartyPayment(ctx context.Context, tx *db.Transac
 	if !w.resolver.IsStructuredVenue(exchange) {
 		return
 	}
-	info, err := w.resolver.FetchCounterparty(ctx, exchange, meta.Execution)
-	if err != nil {
+	if info, err := w.resolver.FetchCounterparty(ctx, exchange, meta.Execution); err != nil {
 		log.Printf("dexrelay: tx %d fetch counterparty payment (%s): %v", tx.ID, exchange, err)
 		return
+	} else if len(info) == 0 {
+		return
+	} else {
+		tx.CounterpartyPaymentInfo = info
 	}
-	tx.CounterpartyPaymentInfo = info
 	if err := w.repo.UpdateTransaction(tx); err != nil {
 		log.Printf("dexrelay: tx %d persist counterparty payment (%s): %v", tx.ID, exchange, err)
 	}
@@ -611,6 +715,27 @@ func intFromSelectedOffer(raw json.RawMessage, field string, fallback int) int {
 		}
 	case string:
 		if parsed, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+func maxSatFromSelectedOffer(raw json.RawMessage, field string, fallback int64) int64 {
+	if fallback < 0 {
+		fallback = 0
+	}
+	var offer map[string]any
+	if json.Unmarshal(raw, &offer) != nil {
+		return fallback
+	}
+	switch value := offer[field].(type) {
+	case float64:
+		if value > 0 {
+			return int64(value)
+		}
+	case string:
+		if parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil && parsed > 0 {
 			return parsed
 		}
 	}

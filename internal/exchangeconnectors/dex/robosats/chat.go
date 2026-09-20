@@ -19,6 +19,7 @@ type ChatMessage struct {
 	Nick string `json:"nick"`
 	// Plaintext is the decrypted message body, or "" if it could not be decrypted.
 	Plaintext string `json:"plaintext"`
+	Own       bool   `json:"-"`
 }
 
 // ChatThread is the decrypted view of an order's trade chat.
@@ -50,12 +51,14 @@ type chatResponse struct {
 	} `json:"messages"`
 }
 
-// GetChatMessages fetches and decrypts the trade chat for an order. Each message is decrypted
-// with the robot's own key; messages that fail to decrypt are returned with an empty Plaintext
-// rather than failing the whole call (so an operator still sees the metadata).
+// GetChatMessages fetches and decrypts the trade chat for an order. Decryption
+// failures fail the call so unreadable history is not treated as empty.
 func (c *Client) GetChatMessages(ctx context.Context, orderID string) (*ChatThread, error) {
 	if orderID == "" {
 		return nil, errors.New("robosats: order ID is required")
+	}
+	if _, err := c.GetRobot(ctx); err != nil {
+		return nil, err
 	}
 	var raw chatResponse
 	if err := c.request(ctx, http.MethodGet, fmt.Sprintf(c.chatPath, orderID), nil, &raw); err != nil {
@@ -79,15 +82,16 @@ func (c *Client) GetChatMessages(ctx context.Context, orderID string) (*ChatThre
 		PeerPubKey:    unescapeArmor(raw.PeerPubKey),
 	}
 	for _, m := range raw.Messages {
-		plaintext, derr := decryptChatMessage(unescapeArmor(m.Message), self, peer)
+		plaintext, own, derr := decryptChatMessageAuthenticated(unescapeArmor(m.Message), self, peer)
 		if derr != nil {
-			plaintext = ""
+			return nil, fmt.Errorf("robosats: decrypt chat message %d: %w", m.Index, derr)
 		}
 		thread.Messages = append(thread.Messages, ChatMessage{
 			Index:     m.Index,
 			Time:      m.Time,
 			Nick:      m.Nick,
 			Plaintext: plaintext,
+			Own:       own,
 		})
 	}
 	return thread, nil

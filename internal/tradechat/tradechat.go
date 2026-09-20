@@ -214,6 +214,16 @@ func EnsurePaymentRequest(ctx context.Context, chat telegram.TradeChat, req Paym
 	if strings.TrimSpace(req.OrderID) == "" {
 		return RequestResult{}, errors.New("tradechat: order ID is required")
 	}
+	if durable, ok := chat.(interface {
+		EnsurePaymentRequest(context.Context, string, string) error
+	}); ok {
+		outbound := RenderPaymentRequest(template, req.ExpectedAmount, req.ExpectedCurrency)
+		if err := durable.EnsurePaymentRequest(ctx, req.OrderID, outbound); err != nil {
+			return RequestResult{}, err
+		}
+		messages, err := chat.Messages(ctx, req.OrderID)
+		return RequestResult{Messages: messages, KnownOutbound: []string{outbound}}, err
+	}
 	msgs, err := chat.Messages(ctx, req.OrderID)
 	if err != nil {
 		return RequestResult{}, fmt.Errorf("tradechat: read messages: %w", err)

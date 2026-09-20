@@ -44,12 +44,17 @@ func unlockedEntity(encPrivKeyArmored, token string) (*openpgp.Entity, error) {
 // private key. The peer key, when supplied, lets ReadMessage verify the sender's signature;
 // it is optional so a message can still be read when the peer key is not yet known.
 func decryptChatMessage(armoredMsg string, self, peer *openpgp.Entity) (string, error) {
+	text, _, err := decryptChatMessageAuthenticated(armoredMsg, self, peer)
+	return text, err
+}
+
+func decryptChatMessageAuthenticated(armoredMsg string, self, peer *openpgp.Entity) (string, bool, error) {
 	if self == nil {
-		return "", errors.New("robosats: own unlocked key is required to decrypt")
+		return "", false, errors.New("robosats: own unlocked key is required to decrypt")
 	}
 	block, err := armor.Decode(strings.NewReader(strings.TrimSpace(armoredMsg)))
 	if err != nil {
-		return "", fmt.Errorf("robosats: de-armor chat message: %w", err)
+		return "", false, fmt.Errorf("robosats: de-armor chat message: %w", err)
 	}
 	keyring := openpgp.EntityList{self}
 	if peer != nil {
@@ -61,13 +66,17 @@ func decryptChatMessage(armoredMsg string, self, peer *openpgp.Entity) (string, 
 	}
 	md, err := openpgp.ReadMessage(block.Body, keyring, prompt, nil)
 	if err != nil {
-		return "", fmt.Errorf("robosats: decrypt chat message: %w", err)
+		return "", false, fmt.Errorf("robosats: decrypt chat message: %w", err)
 	}
 	buf, err := io.ReadAll(md.UnverifiedBody)
 	if err != nil {
-		return "", fmt.Errorf("robosats: read decrypted chat message: %w", err)
+		return "", false, fmt.Errorf("robosats: read decrypted chat message: %w", err)
 	}
-	return string(buf), nil
+	if !md.IsSigned || md.SignedBy == nil || md.SignatureError != nil {
+		return "", false, errors.New("robosats: chat signature could not be authenticated")
+	}
+	own := bytes.Equal(md.SignedBy.Entity.PrimaryKey.Fingerprint, self.PrimaryKey.Fingerprint)
+	return string(buf), own, nil
 }
 
 // encryptChatMessage encrypts and signs plaintext to the peer (and to ourselves, so the

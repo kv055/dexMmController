@@ -15,6 +15,7 @@ import (
 
 	internalapi "dexMmController/internal/api/gen/internalapi"
 	publicapi "dexMmController/internal/api/gen/public"
+	"dexMmController/internal/bisqexec"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/hedgestream"
@@ -69,6 +70,9 @@ type Server struct {
 	// bisqWallet is the wallet subset of the same bisq1 gRPC client backing the
 	// /api/bisq/wallet/* management routes, set via WithBisqWallet. Nil → 503.
 	bisqWallet bisqWalletClient
+
+	// bisqExec quotes and accepts durable Bisq v1 bid execution.
+	bisqExec *bisqexec.Service
 
 	// telegramRelay forwards operator Telegram replies into active DEX trade chats.
 	telegramRelay *telegram.ChatRelay
@@ -250,6 +254,12 @@ func (s *Server) WithBisqWallet(client bisqWalletClient) *Server {
 	return s
 }
 
+// WithBisqExec attaches the durable Bisq v1 quote/accept worker.
+func (s *Server) WithBisqExec(svc *bisqexec.Service) *Server {
+	s.bisqExec = svc
+	return s
+}
+
 // WithInternalSecret sets the shared secret required on X-Internal-Secret for
 // all API and WS routes (webhooks and health/metrics excepted).
 func (s *Server) WithInternalSecret(secret string) *Server {
@@ -302,6 +312,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	s.registerLegacyRoutes(legacyMux)
 	publicapi.RegisterLegacyStrictHandler(legacyMux, mux)
 	internalapi.RegisterLegacyStrictHandler(legacyMux, mux)
+	mux.HandleFunc("POST /api/robosats/quote", s.handleRoboSatsQuote)
 
 	// WebSocket upgrades bypass generated response handling by design.
 	mux.HandleFunc("GET /ws/cex/hedge-stream", s.handleCexHedgeStream)
@@ -347,6 +358,7 @@ func (s *Server) registerLegacyRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/cex/spot-trades", s.handleCexSpotTrades)
 	mux.HandleFunc("POST /api/cex/pre-trade-check", s.handleCexPreTradeCheck)
 	mux.HandleFunc("POST /api/cex/tradeflow", s.handleCexTradeflow)
+	mux.HandleFunc("POST /api/robosats/quote", s.handleRoboSatsQuote)
 	mux.HandleFunc("GET /api/cex/withdrawal-track", s.handleCexWithdrawalTrack)
 	mux.HandleFunc("POST /api/webhooks/dex-release", s.handleDexReleaseWebhook)
 	mux.HandleFunc("POST /telegram-webhook", s.handleTelegramWebhook)
@@ -362,6 +374,12 @@ func (s *Server) registerLegacyRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/bisq/payment-methods/{id}/form", s.handleBisqPaymentAccountForm)
 	mux.HandleFunc("POST /api/bisq/payment-accounts", s.handleBisqCreatePaymentAccount)
 	mux.HandleFunc("DELETE /api/bisq/payment-accounts/{id}", s.handleBisqDeletePaymentAccount)
+	mux.HandleFunc("POST /api/bisq/execution/quote", s.handleBisqExecutionQuote)
+	mux.HandleFunc("POST /api/bisq/execution/accept", s.handleBisqExecutionAccept)
+	mux.HandleFunc("GET /api/bisq/payment-account-mappings", s.handleBisqPaymentAccountMappings)
+	mux.HandleFunc("PUT /api/bisq/payment-account-mappings", s.handleBisqPaymentAccountMappings)
+	mux.HandleFunc("GET /api/bisq/funding-destination", s.handleBisqFundingDestination)
+	mux.HandleFunc("PUT /api/bisq/funding-destination", s.handleBisqFundingDestination)
 	mux.HandleFunc("GET /api/bisq/wallet/balances", s.handleBisqWalletBalances)
 	mux.HandleFunc("GET /api/bisq/wallet/addresses", s.handleBisqWalletAddresses)
 	mux.HandleFunc("GET /api/bisq/wallet/transactions", s.handleBisqWalletTransactions)
@@ -519,6 +537,23 @@ func (s *Server) handleTransactionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if db.IsDurableRoboSats(transaction) {
+		session, err := repo.LoadRoboSatsSession(r.Context(), uint64(transaction.ID))
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, fmt.Errorf("RoboSats progress unavailable"))
+			return
+		}
+		if session != nil {
+			// Deliberate allowlist: never expose recovery tokens, armored private
+			// keys or the encrypted recovery blob through the dashboard API.
+			progress := map[string]any{"phase": session.Phase, "funded": session.Funded, "chat_sent": session.ChatSent, "last_error": session.LastError, "chat_error": session.ChatError}
+			writeJSON(w, http.StatusOK, struct {
+				*db.Transaction
+				RoboSats map[string]any `json:"robosats"`
+			}{transaction, progress})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, transaction)
 }
 

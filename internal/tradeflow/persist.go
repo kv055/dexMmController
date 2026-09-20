@@ -59,6 +59,7 @@ func createTradeflowRow(store transactionStore, order Order, target string, sett
 		ResolvedRoute:  order.ResolvedRoute,
 		TradeflowAt:    &now,
 		TradeflowOrder: orderSnapshot,
+		BisqExecution:  order.BisqPlan,
 	}
 
 	fiatCurrency := strings.TrimSpace(order.FiatCurrency)
@@ -67,14 +68,20 @@ func createTradeflowRow(store transactionStore, order Order, target string, sett
 	}
 
 	tx := &db.Transaction{
-		Direction:     "bid",
-		FiatAmount:    order.FiatAmount,
-		FiatCurrency:  fiatCurrency,
-		PaymentMethod: strings.TrimSpace(order.PaymentMethod),
-		Cex:           db.CexExchangeFromProvider(order.Provider),
-		Dex:           db.DexPlatformFromSlug(dexSlug),
-		Status:        db.StatusCexTradeflowStarted,
-		DexOfferID:    offerID,
+		Direction:            "bid",
+		FiatAmount:           order.FiatAmount,
+		FiatCurrency:         fiatCurrency,
+		PaymentMethod:        strings.TrimSpace(order.PaymentMethod),
+		Cex:                  db.CexExchangeFromProvider(order.Provider),
+		Dex:                  db.DexPlatformFromSlug(dexSlug),
+		Status:               db.StatusCexTradeflowStarted,
+		TradeMode:            order.TradeMode,
+		DexOfferID:           offerID,
+		BTCRequiredLiquidity: order.RequiredBTCLiquidity,
+	}
+	if isRoboOrder(order) {
+		tx.TradeMode = order.TradeMode
+		tx.BTCRequiredLiquidity = order.RequiredBTCLiquidity
 	}
 	applyWithdrawTarget(tx, &meta, target, settlement)
 
@@ -88,6 +95,12 @@ func createTradeflowRow(store transactionStore, order Order, target string, sett
 		existing, err := store.GetTransaction(order.TransactionID)
 		if err != nil {
 			return 0, err
+		}
+		if strings.EqualFold(order.Dex, "robosats") && (order.QuoteID == "" || existing.Status != db.StatusTransactionNeedsReview || existing.Dex != db.DexRoboSats || existing.DexOfferID != order.OfferID) {
+			return 0, fmt.Errorf("RoboSats transaction has already started or is not the admitted offer")
+		}
+		if hasFinancialReceipt(existing) {
+			return existing.ID, nil
 		}
 		tx.ID = existing.ID
 		tx.CreatedAt = existing.CreatedAt
@@ -190,30 +203,38 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 		addr = strings.TrimSpace(result.Withdrawal.WalletAddress)
 	}
 
-	meta := db.DexOfferMeta{
-		SelectedOffer: selectedOffer,
-		ResolvedRoute: order.ResolvedRoute,
-		CexWithdrawal: &db.CexWithdrawalMeta{
-			WithdrawalID:    result.Withdrawal.WithdrawalID,
-			ClientRequestID: result.Withdrawal.ClientRequestID,
-			Provider:        result.Withdrawal.Provider,
-		},
-		TradeflowAt:    &now,
-		TradeflowOrder: orderSnapshot,
-	}
-	if settlement == "onchain_hub" || settlement == "onchain_swap" {
-		meta.LNDReceiveAddress = addr
-	}
-	dexOfferJSON, err := db.MarshalDexOfferCreation(meta)
-	if err != nil {
-		return err
-	}
 	details, err := bundleCexDetails(spot, hedge, result.Withdrawal)
 	if err != nil {
 		return err
 	}
 
 	return mutateRow(store, id, func(tx *db.Transaction) {
+		existingMeta, _ := db.ParseDexOfferCreation(tx.DexOfferCreation)
+		meta := db.DexOfferMeta{
+			SelectedOffer: selectedOffer,
+			ResolvedRoute: order.ResolvedRoute,
+			CexWithdrawal: &db.CexWithdrawalMeta{
+				WithdrawalID:    result.Withdrawal.WithdrawalID,
+				ClientRequestID: result.Withdrawal.ClientRequestID,
+				Provider:        result.Withdrawal.Provider,
+			},
+			TradeflowAt:    &now,
+			TradeflowOrder: orderSnapshot,
+			BisqExecution:  existingMeta.BisqExecution,
+		}
+		if meta.BisqExecution == nil {
+			meta.BisqExecution = order.BisqPlan
+		}
+		if meta.BisqExecution != nil {
+			meta.BisqExecution.Stage = db.BisqStageFundingInitiated
+		}
+		if settlement == "onchain_hub" || settlement == "onchain_swap" {
+			meta.LNDReceiveAddress = addr
+		}
+		dexOfferJSON, marshalErr := db.MarshalDexOfferCreation(meta)
+		if marshalErr != nil {
+			return
+		}
 		tx.SetStatus(db.StatusCexCryptoWithdrawalInitiated, "")
 		tx.CexTransactionDetails = details
 		tx.CexBitcoinAmount = result.Withdrawal.AmountBTC
@@ -221,8 +242,23 @@ func recordWithdrawal(store transactionStore, id uint, order Order, spot *cexacc
 		if tx.DexOfferID == "" {
 			tx.DexOfferID = offerID
 		}
-		applyWithdrawTarget(tx, nil, addr, settlement)
+		applyWithdrawTarget(tx, &meta, addr, settlement)
 	})
+}
+
+func hasFinancialReceipt(tx *db.Transaction) bool {
+	if tx == nil {
+		return false
+	}
+	if tx.CexBitcoinAmount > 0 || len(tx.CexTransactionDetails) > 0 || len(tx.CexToDexWithdrawalTxDetails) > 0 {
+		return true
+	}
+	switch tx.Status {
+	case db.StatusCexTradeflowStarted, db.StatusHedgelessTradeStarted:
+		return false
+	default:
+		return true
+	}
 }
 
 // bundleCexDetails serializes the spot/hedge/withdrawal outcomes known so far into

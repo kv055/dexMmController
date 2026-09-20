@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -29,9 +32,11 @@ type Client struct {
 	host     string
 	password string
 
-	conn    *grpc.ClientConn
-	connErr error
-	once    sync.Once
+	conn      *grpc.ClientConn
+	connErr   error
+	once      sync.Once
+	quoteMu   sync.Mutex
+	nextQuote time.Time
 }
 
 // Offer is a normalized DEX offer used by this package.
@@ -182,12 +187,50 @@ type WalletTransaction struct {
 
 // TakeOfferParams represents a take offer params.
 type TakeOfferParams struct {
-	// PaymentAccountID is the count associated with the take offer params.
+	// PaymentAccountID is the Bisq daemon payment-account id used to take the offer.
 	PaymentAccountID string
 	// TakerFeeCurrencyCode names the asset or network for the take offer params.
 	TakerFeeCurrencyCode string
 	// AmountSats is the amount in satoshis.
 	AmountSats uint64
+}
+
+// QuoteTakeOfferParams is the input to the patched QuoteTakeOffer RPC.
+type QuoteTakeOfferParams struct {
+	PaymentAccountID     string
+	TakerFeeCurrencyCode string
+	AmountSats           uint64
+}
+
+// GuardedTakeOfferParams is the input to the patched GuardedTakeOffer RPC.
+type GuardedTakeOfferParams struct {
+	PaymentAccountID     string
+	TakerFeeCurrencyCode string
+	AmountSats           uint64
+	MaxWalletDebitSats   uint64
+	MinVolumeAsLong      int64
+	DeadlineAt           time.Time
+}
+
+// TakeOfferQuote is the daemon's live seller-funding and volume calculation.
+type TakeOfferQuote struct {
+	OfferID                  string
+	PaymentAccountID         string
+	PaymentMethodID          string
+	CurrencyCode             string
+	Price                    string
+	IsBuyOffer               bool
+	TradeAmountSats          uint64
+	SecurityDepositSats      uint64
+	TakerFeeSats             uint64
+	IsCurrencyForTakerFeeBtc bool
+	MiningFeeSats            uint64
+	TotalToPaySats           uint64
+	FundsNeededForTradeSats  uint64
+	MissingSats              uint64
+	IsBtcWalletFunded        bool
+	Volume                   string
+	VolumeAsLong             int64
 }
 
 // CreatePositionParams represents a create position params.
@@ -384,21 +427,14 @@ func (c *Client) DeletePaymentAccount(ctx context.Context, id string) error {
 	return c.invoke(ctx, "/io.bisq.protobuffer.PaymentAccounts/DeletePaymentAccount", req, resp)
 }
 
-// TakeOffer accepts an existing DEX offer.
+// TakeOffer accepts an existing DEX offer. PaymentAccountID is required; the
+// connector never selects accounts[0] on the caller's behalf.
 func (c *Client) TakeOffer(ctx context.Context, offerID string, params TakeOfferParams) (*Trade, error) {
 	if offerID == "" {
 		return nil, errors.New("bisq: offer ID is required")
 	}
-
-	if params.PaymentAccountID == "" {
-		accounts, err := c.GetPaymentAccounts(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("bisq: get payment accounts: %w", err)
-		}
-		if len(accounts) == 0 {
-			return nil, errors.New("bisq: no payment accounts configured")
-		}
-		params.PaymentAccountID = accounts[0].ID
+	if strings.TrimSpace(params.PaymentAccountID) == "" {
+		return nil, errors.New("bisq: payment_account_id is required")
 	}
 	if params.TakerFeeCurrencyCode == "" {
 		params.TakerFeeCurrencyCode = defaultTakerFeeCurrency
@@ -414,13 +450,124 @@ func (c *Client) TakeOffer(ctx context.Context, offerID string, params TakeOffer
 	if err := c.invoke(ctx, "/io.bisq.protobuffer.Trades/TakeOffer", req, resp); err != nil {
 		return nil, err
 	}
+	return tradeFromTakeReply(resp)
+}
 
+// QuoteTakeOffer asks the patched daemon for the live seller-funding requirement
+// without reserving the offer or broadcasting transactions.
+func (c *Client) QuoteTakeOffer(ctx context.Context, offerID string, params QuoteTakeOfferParams) (*TakeOfferQuote, error) {
+	if strings.TrimSpace(offerID) == "" {
+		return nil, errors.New("bisq: offer ID is required")
+	}
+	if strings.TrimSpace(params.PaymentAccountID) == "" {
+		return nil, errors.New("bisq: payment_account_id is required")
+	}
+	if params.TakerFeeCurrencyCode == "" {
+		params.TakerFeeCurrencyCode = defaultTakerFeeCurrency
+	}
+	req := newMessage("QuoteTakeOfferRequest")
+	setString(req, "offer_id", offerID)
+	setString(req, "payment_account_id", params.PaymentAccountID)
+	setString(req, "taker_fee_currency_code", params.TakerFeeCurrencyCode)
+	setUint64(req, "amount", params.AmountSats)
+	resp := newMessage("QuoteTakeOfferReply")
+	// Failed requests count against the daemon's one-call/second limit too.
+	// Never issue a dummy quote as a capability probe ahead of a real quote.
+	if err := c.waitQuoteTurn(ctx); err != nil {
+		return nil, err
+	}
+	if err := c.invoke(ctx, "/io.bisq.protobuffer.Trades/QuoteTakeOffer", req, resp); err != nil {
+		return nil, err
+	}
+	quote := takeOfferQuoteFromMessage(resp)
+	return &quote, nil
+}
+
+func (c *Client) waitQuoteTurn(ctx context.Context) error {
+	c.quoteMu.Lock()
+	start := time.Now()
+	if c.nextQuote.After(start) {
+		start = c.nextQuote
+	}
+	c.nextQuote = start.Add(1100 * time.Millisecond)
+	c.quoteMu.Unlock()
+	timer := time.NewTimer(time.Until(start))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
+	}
+}
+
+// GuardedTakeOffer takes the offer only when the daemon's live calculation still
+// matches the confirmed trade amount and spending limits.
+func (c *Client) GuardedTakeOffer(ctx context.Context, offerID string, params GuardedTakeOfferParams) (*Trade, error) {
+	if params.AmountSats == 0 || params.MaxWalletDebitSats == 0 || params.MinVolumeAsLong <= 0 || !time.Now().Before(params.DeadlineAt) {
+		return nil, errors.New("bisq: positive limits and a future execution deadline are required")
+	}
+	if err := c.RequireGuardVersion(ctx); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(offerID) == "" {
+		return nil, errors.New("bisq: offer ID is required")
+	}
+	if strings.TrimSpace(params.PaymentAccountID) == "" {
+		return nil, errors.New("bisq: payment_account_id is required")
+	}
+	if params.TakerFeeCurrencyCode == "" {
+		params.TakerFeeCurrencyCode = defaultTakerFeeCurrency
+	}
+	req := newMessage("GuardedTakeOfferRequest")
+	setString(req, "offer_id", offerID)
+	setString(req, "payment_account_id", params.PaymentAccountID)
+	setString(req, "taker_fee_currency_code", params.TakerFeeCurrencyCode)
+	setUint64(req, "amount", params.AmountSats)
+	setUint64(req, "max_wallet_debit_sats", params.MaxWalletDebitSats)
+	setInt64(req, "min_volume_as_long", params.MinVolumeAsLong)
+	setInt64(req, "deadline_epoch_millis", params.DeadlineAt.UnixMilli())
+	resp := newMessage("TakeOfferReply")
+	if err := c.invoke(ctx, "/io.bisq.protobuffer.Trades/GuardedTakeOffer", req, resp); err != nil {
+		return nil, err
+	}
+	return tradeFromTakeReply(resp)
+}
+
+// RequireGuardVersion uses a side-effect-free RPC, not a dummy quote. Old
+// daemons ignore unknown protobuf fields, so method presence alone is unsafe.
+func (c *Client) RequireGuardVersion(ctx context.Context) error {
+	req, resp := newMessage("GetTakeCapabilitiesRequest"), newMessage("GetTakeCapabilitiesReply")
+	if err := c.invoke(ctx, "/io.bisq.protobuffer.Trades/GetTakeCapabilities", req, resp); err != nil {
+		return err
+	}
+	if resp.Get(resp.Descriptor().Fields().ByName("guard_version")).Uint() != 2 {
+		return errors.New("bisq: daemon does not support guarded take version 2")
+	}
+	return nil
+}
+
+func tradeFromTakeReply(resp *dynamicpb.Message) (*Trade, error) {
 	tradeField := resp.Descriptor().Fields().ByName("trade")
 	if !resp.Has(tradeField) {
 		return nil, errors.New("bisq: take offer returned no trade")
 	}
 	trade := tradeFromMessage(resp.Get(tradeField).Message())
 	return &trade, nil
+}
+
+// RPCUnimplemented reports whether err is a gRPC Unimplemented status.
+func RPCUnimplemented(err error) bool {
+	return status.Code(err) == codes.Unimplemented
+}
+
+// FiatAmountFromVolumeAsLong converts Bisq's 4-decimal fiat Monetary value to a
+// major-unit amount (EUR 500.00 is stored as 5_000_000).
+func FiatAmountFromVolumeAsLong(volumeAsLong int64) float64 {
+	if volumeAsLong <= 0 {
+		return 0
+	}
+	return math.Round(float64(volumeAsLong)/100) / 100
 }
 
 // GetOpenPositions retrieves an open positions.
@@ -519,8 +666,8 @@ func (c *Client) TransactionByMemo(ctx context.Context, memo string) (*WalletTra
 // for a taken trade, read from the trade contract. Bisq is the "structured" style: the daemon
 // exposes both parties' payment accounts inside contract_as_json once the trade is taken — no
 // chat needed. We are always the taker, so the counterparty is the maker
-// (makerPaymentAccountPayload); when that key is absent we return the whole contract so nothing
-// is lost. Returns an error while the contract has not been formed yet.
+// (makerPaymentAccountPayload). Missing, empty, or null payloads are pending — never treated
+// as usable payment details.
 func (c *Client) GetCounterpartyPayment(ctx context.Context, tradeID string) (json.RawMessage, error) {
 	trade, err := c.GetPosition(ctx, tradeID)
 	if err != nil {
@@ -533,8 +680,8 @@ func (c *Client) GetCounterpartyPayment(ctx context.Context, tradeID string) (js
 }
 
 // makerPaymentFromContract extracts the maker's payment-account payload from a bisq trade
-// contract JSON. We are always the taker, so the counterparty is the maker. When the field is
-// absent the whole contract is returned so nothing is lost.
+// contract JSON. We are always the taker, so the counterparty is the maker. Missing, empty,
+// or JSON-null payloads are pending rather than a successful result.
 func makerPaymentFromContract(contractJSON string) (json.RawMessage, error) {
 	contractJSON = strings.TrimSpace(contractJSON)
 	if contractJSON == "" {
@@ -544,10 +691,19 @@ func makerPaymentFromContract(contractJSON string) (json.RawMessage, error) {
 	if err := json.Unmarshal([]byte(contractJSON), &contract); err != nil {
 		return nil, fmt.Errorf("bisq: parse contract json: %w", err)
 	}
-	if payload, ok := contract["makerPaymentAccountPayload"]; ok && len(payload) > 0 {
-		return json.RawMessage(payload), nil
+	payload, ok := contract["makerPaymentAccountPayload"]
+	if !ok {
+		return nil, fmt.Errorf("bisq: maker payment payload is pending")
 	}
-	return json.RawMessage(contractJSON), nil
+	trimmed := bytesTrimSpace(payload)
+	if len(trimmed) == 0 || string(trimmed) == "null" || string(trimmed) == "{}" {
+		return nil, fmt.Errorf("bisq: maker payment payload is pending")
+	}
+	return json.RawMessage(payload), nil
+}
+
+func bytesTrimSpace(raw json.RawMessage) []byte {
+	return []byte(strings.TrimSpace(string(raw)))
 }
 
 // CreatePosition creates a position.
@@ -613,7 +769,8 @@ func (c *Client) GetFundingAddresses(ctx context.Context) ([]AddressBalance, err
 }
 
 // FundingAddress returns a BTC address to fund the bisq wallet, preferring an unused
-// one (so a fresh CEX withdrawal lands on a clean address).
+// one (so a fresh CEX withdrawal lands on a clean address). Automated execution must
+// not call this to substitute an operator-designated destination.
 func (c *Client) FundingAddress(ctx context.Context) (string, error) {
 	addrs, err := c.GetFundingAddresses(ctx)
 	if err != nil {
@@ -630,6 +787,25 @@ func (c *Client) FundingAddress(ctx context.Context) (string, error) {
 		}
 	}
 	return "", errors.New("bisq: no funding address available")
+}
+
+// RequireFundingAddress verifies that address currently belongs to the configured
+// daemon wallet. Automated execution uses this instead of picking an unused address.
+func (c *Client) RequireFundingAddress(ctx context.Context, address string) error {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return errors.New("bisq: funding address is required")
+	}
+	addrs, err := c.GetFundingAddresses(ctx)
+	if err != nil {
+		return err
+	}
+	for _, a := range addrs {
+		if strings.EqualFold(strings.TrimSpace(a.Address), address) {
+			return nil
+		}
+	}
+	return fmt.Errorf("bisq: funding address %s is not in the daemon wallet", address)
 }
 
 // GetBalances returns the bisq wallet's balance summary for currencyCode ("BTC" or "BSQ").
@@ -846,6 +1022,36 @@ func setUint64(msg *dynamicpb.Message, fieldName string, value uint64) {
 	}
 	field := msg.Descriptor().Fields().ByName(protoreflect.Name(fieldName))
 	msg.Set(field, protoreflect.ValueOfUint64(value))
+}
+
+func setInt64(msg *dynamicpb.Message, fieldName string, value int64) {
+	if value == 0 {
+		return
+	}
+	field := msg.Descriptor().Fields().ByName(protoreflect.Name(fieldName))
+	msg.Set(field, protoreflect.ValueOfInt64(value))
+}
+
+func takeOfferQuoteFromMessage(msg protoreflect.Message) TakeOfferQuote {
+	return TakeOfferQuote{
+		OfferID:                  stringField(msg, "offer_id"),
+		PaymentAccountID:         stringField(msg, "payment_account_id"),
+		PaymentMethodID:          stringField(msg, "payment_method_id"),
+		CurrencyCode:             stringField(msg, "currency_code"),
+		Price:                    stringField(msg, "price"),
+		IsBuyOffer:               boolField(msg, "is_buy_offer"),
+		TradeAmountSats:          uint64Field(msg, "trade_amount_sats"),
+		SecurityDepositSats:      uint64Field(msg, "security_deposit_sats"),
+		TakerFeeSats:             uint64Field(msg, "taker_fee_sats"),
+		IsCurrencyForTakerFeeBtc: boolField(msg, "is_currency_for_taker_fee_btc"),
+		MiningFeeSats:            uint64Field(msg, "mining_fee_sats"),
+		TotalToPaySats:           uint64Field(msg, "total_to_pay_sats"),
+		FundsNeededForTradeSats:  uint64Field(msg, "funds_needed_for_trade_sats"),
+		MissingSats:              uint64Field(msg, "missing_sats"),
+		IsBtcWalletFunded:        boolField(msg, "is_btc_wallet_funded"),
+		Volume:                   stringField(msg, "volume"),
+		VolumeAsLong:             int64Field(msg, "volume_as_long"),
+	}
 }
 
 func setEnum(msg *dynamicpb.Message, fieldName string, value int32) {
@@ -1092,6 +1298,44 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 			message("TakeOfferReply", []*descriptorpb.FieldDescriptorProto{
 				messageField("trade", 1, ".io.bisq.protobuffer.TradeInfo"),
 			}),
+			message("QuoteTakeOfferRequest", []*descriptorpb.FieldDescriptorProto{
+				field("offer_id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("payment_account_id", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("taker_fee_currency_code", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("amount", 4, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+			}),
+			message("QuoteTakeOfferReply", []*descriptorpb.FieldDescriptorProto{
+				field("offer_id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("payment_account_id", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("payment_method_id", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("currency_code", 4, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("price", 5, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("is_buy_offer", 6, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
+				field("trade_amount_sats", 7, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("security_deposit_sats", 8, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("taker_fee_sats", 9, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("is_currency_for_taker_fee_btc", 10, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
+				field("mining_fee_sats", 11, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("total_to_pay_sats", 12, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("funds_needed_for_trade_sats", 13, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("missing_sats", 14, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("is_btc_wallet_funded", 15, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
+				field("volume", 16, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("volume_as_long", 17, descriptorpb.FieldDescriptorProto_TYPE_INT64),
+			}),
+			message("GuardedTakeOfferRequest", []*descriptorpb.FieldDescriptorProto{
+				field("offer_id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("payment_account_id", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("taker_fee_currency_code", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				field("amount", 4, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("max_wallet_debit_sats", 5, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("min_volume_as_long", 6, descriptorpb.FieldDescriptorProto_TYPE_INT64),
+				field("deadline_epoch_millis", 7, descriptorpb.FieldDescriptorProto_TYPE_INT64),
+			}),
+			message("GetTakeCapabilitiesRequest", nil),
+			message("GetTakeCapabilitiesReply", []*descriptorpb.FieldDescriptorProto{
+				field("guard_version", 1, descriptorpb.FieldDescriptorProto_TYPE_UINT32),
+			}),
 			message("GetTradeRequest", []*descriptorpb.FieldDescriptorProto{
 				field("trade_id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 			}),
@@ -1216,6 +1460,9 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 				Name: strptr("Trades"),
 				Method: []*descriptorpb.MethodDescriptorProto{
 					method("TakeOffer", ".io.bisq.protobuffer.TakeOfferRequest", ".io.bisq.protobuffer.TakeOfferReply"),
+					method("QuoteTakeOffer", ".io.bisq.protobuffer.QuoteTakeOfferRequest", ".io.bisq.protobuffer.QuoteTakeOfferReply"),
+					method("GuardedTakeOffer", ".io.bisq.protobuffer.GuardedTakeOfferRequest", ".io.bisq.protobuffer.TakeOfferReply"),
+					method("GetTakeCapabilities", ".io.bisq.protobuffer.GetTakeCapabilitiesRequest", ".io.bisq.protobuffer.GetTakeCapabilitiesReply"),
 					method("GetTrade", ".io.bisq.protobuffer.GetTradeRequest", ".io.bisq.protobuffer.GetTradeReply"),
 					method("GetTrades", ".io.bisq.protobuffer.GetTradesRequest", ".io.bisq.protobuffer.GetTradesReply"),
 					method("ConfirmPaymentReceived", ".io.bisq.protobuffer.ConfirmPaymentReceivedRequest", ".io.bisq.protobuffer.ConfirmPaymentReceivedReply"),

@@ -626,10 +626,13 @@ type CreateInvoiceResponse struct {
 
 // PayInvoiceRequest represents a pay invoice request.
 type PayInvoiceRequest struct {
-	// PaymentRequest is the payment request value for the pay invoice request.
-	PaymentRequest string `json:"payment_request"`
-	// FeeLimitSat records the relevant time for the pay invoice request.
-	FeeLimitSat int64 `json:"fee_limit_sat"`
+	PaymentRequest string       `json:"payment_request"`
+	FeeLimit       *PayFeeLimit `json:"fee_limit,omitempty"`
+}
+
+// PayFeeLimit is LND SendPaymentSync's fee_limit object.
+type PayFeeLimit struct {
+	Fixed string `json:"fixed,omitempty"`
 }
 
 // PayInvoiceResponse represents a pay invoice response.
@@ -696,7 +699,7 @@ func (c *Client) PayInvoice(
 ) (*PayInvoiceResponse, error) {
 	req := PayInvoiceRequest{
 		PaymentRequest: paymentRequest,
-		FeeLimitSat:    feeLimitSat,
+		FeeLimit:       &PayFeeLimit{Fixed: strconv.FormatInt(feeLimitSat, 10)},
 	}
 	var resp PayInvoiceResponse
 	if err := c.post(ctx, "/v1/channels/transactions", req, &resp); err != nil {

@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -56,6 +57,12 @@ type anomalyNotifier interface {
 	NotifyAnomaly(ctx context.Context, exchange, tradeID, reason, detail string) error
 }
 
+type paymentResolver interface {
+	IsStructuredVenue(exchange string) bool
+	FetchCounterparty(ctx context.Context, exchange string, execution map[string]any) (json.RawMessage, error)
+	CaptureChatPayment(ctx context.Context, req dexaccount.ChatRequest) (json.RawMessage, error)
+}
+
 type bisqFiatEscalationState struct {
 	firstSeen time.Time
 	notifying bool
@@ -84,7 +91,7 @@ type HealthChecker struct {
 	btc                     bitcoinTransactionSource
 	hodlhodl                hodlPositionSource
 	bisq                    bisqPositionSource
-	resolver                *dexaccount.PaymentResolver
+	resolver                paymentResolver
 	telegram                tradeChatRegistrar
 	anomaly                 anomalyNotifier
 	recoverer               TradeflowRecoverer
@@ -213,6 +220,12 @@ func (h *HealthChecker) Run(ctx context.Context) error {
 
 // verify dispatches to the appropriate scenario based on the current status.
 func (h *HealthChecker) verify(ctx context.Context, tx *db.Transaction) error {
+	if db.IsDurableRoboSats(tx) && tx.Status != db.StatusDexFiatHasArrived && tx.Status != db.StatusDexPositionReleased {
+		return nil // The durable RoboSats runner owns funding, recovery and chat.
+	}
+	if db.BisqManaged(tx) && tx.Status != db.StatusDexPositionTaken && tx.Status != db.StatusDexFiatHasArrived && tx.Status != db.StatusDexPositionReleased {
+		return nil // The versioned executor owns all pre-take financial actions.
+	}
 	switch tx.Status {
 	case db.StatusTransactionNeedsReview:
 		return nil // Unclassifiable legacy rows require explicit operator reconciliation.
@@ -394,6 +407,9 @@ func (h *HealthChecker) checkBisqTradeAnomaly(ctx context.Context, tx *db.Transa
 }
 
 func (h *HealthChecker) verifyBisqPositionTaken(ctx context.Context, tx *db.Transaction) error {
+	if err := h.captureStructuredPayment(ctx, tx); err != nil {
+		return err
+	}
 	if h.bisq == nil || h.anomaly == nil {
 		return nil
 	}
@@ -413,6 +429,32 @@ func (h *HealthChecker) verifyBisqPositionTaken(ctx context.Context, tx *db.Tran
 		return err
 	}
 	return h.maybeEscalateBisqFiatSent(ctx, tx, tradeID, trade)
+}
+
+func (h *HealthChecker) captureStructuredPayment(ctx context.Context, tx *db.Transaction) error {
+	if h.resolver == nil || len(tx.CounterpartyPaymentInfo) > 0 {
+		return nil
+	}
+	meta, err := db.ParseDexOfferCreation(tx.DexOfferCreation)
+	if err != nil {
+		return nil
+	}
+	exchange := meta.Exchange()
+	if exchange == "" {
+		exchange = string(tx.Dex)
+	}
+	if !h.resolver.IsStructuredVenue(exchange) {
+		return nil
+	}
+	info, err := h.resolver.FetchCounterparty(ctx, exchange, meta.Execution)
+	if err != nil {
+		return nil // pending contracts retry next tick
+	}
+	if len(info) == 0 {
+		return nil
+	}
+	tx.CounterpartyPaymentInfo = info
+	return h.repo.UpdateTransaction(tx)
 }
 
 func (h *HealthChecker) maybeEscalateBisqFiatSent(ctx context.Context, tx *db.Transaction, tradeID string, trade *bisq.Trade) error {

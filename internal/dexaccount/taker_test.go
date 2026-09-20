@@ -40,6 +40,14 @@ func TestResolveDepositRoboSatsHonorsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestTakeBisqRequiresPaymentAccountID(t *testing.T) {
+	taker := NewTaker(nil, nil, nil, nil, nil)
+	_, err := taker.Take(context.Background(), OfferInput{Exchange: "bisq", OfferID: "offer-1", BTCAmount: 0.01})
+	if err == nil || !strings.Contains(err.Error(), "payment_account_id") {
+		t.Fatalf("error = %v, want missing payment_account_id", err)
+	}
+}
+
 func TestTakeUnsupportedWithoutBisq2Client(t *testing.T) {
 	taker := NewTaker(nil, nil, nil, nil, nil)
 	_, err := taker.Take(context.Background(), OfferInput{Exchange: "bisq2", OfferID: "o1", FiatAmount: 100, BTCAmount: 0.01, FiatCurrency: "EUR", PaymentMethod: "SEPA"})

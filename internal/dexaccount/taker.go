@@ -34,12 +34,13 @@ type LNDRelay interface {
 
 // Taker accepts DEX offers and resolves per-offer deposit destinations.
 type Taker struct {
-	repo     *db.TransactionRepository
-	bisq     *bisq.Client
-	bisq2    *bisq2.Client
-	hodlhodl *hodlhodl.Client
-	robosats *robosats.Client
-	mostro   MostroTaker
+	repo         *db.TransactionRepository
+	bisq         *bisq.Client
+	bisq2        *bisq2.Client
+	hodlhodl     *hodlhodl.Client
+	robosats     *robosats.Client
+	robosatsExec *robosats.Coordinator
+	mostro       MostroTaker
 }
 
 type MostroTaker interface {
@@ -72,6 +73,13 @@ func (t *Taker) WithBisq2(client *bisq2.Client) *Taker {
 	return t
 }
 
+func (t *Taker) WithRoboSats(c *robosats.Coordinator) *Taker {
+	if t != nil {
+		t.robosatsExec = c
+	}
+	return t
+}
+
 // OfferInput identifies an offer to take.
 type OfferInput struct {
 	Exchange        string
@@ -87,6 +95,15 @@ type OfferInput struct {
 	MaxPaymentSat   int64
 	MaxBondSat      int64
 	RoutingFeeSat   int64
+	CoordinatorID      string
+	CredentialID       int64
+	QuoteID            string
+	BondFeeSat         int64
+	EscrowFeeSat       int64
+	NativeTerms        *robosats.NativeTerms
+	PaymentAccountID   string
+	MaxWalletDebitSats uint64
+	MinVolumeAsLong    int64
 }
 
 // TakeResult is the outcome of TakeOffer plus optional deposit destination.
@@ -107,11 +124,11 @@ func (t *Taker) Take(ctx context.Context, in OfferInput) (*TakeResult, error) {
 	case db.DexHodlHodl:
 		return t.takeHodlHodl(ctx, offerID, in.FiatAmount)
 	case db.DexBisq:
-		return t.takeBisq(ctx, offerID, in.BTCAmount)
+		return t.takeBisq(ctx, in)
 	case db.DexBisq2:
 		return t.takeBisq2(ctx, in)
 	case db.DexRoboSats:
-		return t.takeRoboSats(ctx, offerID)
+		return t.takeRoboSats(ctx, in)
 	case db.DexMostro:
 		return t.takeMostro(ctx, in)
 	default:
@@ -157,6 +174,9 @@ func (t *Taker) takeMostro(ctx context.Context, in OfferInput) (*TakeResult, err
 func (t *Taker) ResolveDeposit(ctx context.Context, exchange string, execution map[string]any) (address, invoice string, err error) {
 	if db.DexPlatformFromSlug(exchange) == db.DexMostro {
 		return "", "", fmt.Errorf("mostro: funding must be reconciled by the Mostro coordinator")
+	}
+	if execution != nil && execution["robosats_funded"] == true {
+		return "", "", nil
 	}
 	if execution == nil {
 		return "", "", fmt.Errorf("dexaccount: execution payload is required")
@@ -226,24 +246,60 @@ func (t *Taker) takeHodlHodl(ctx context.Context, offerID string, fiatAmount flo
 	}, nil
 }
 
-func (t *Taker) takeBisq(ctx context.Context, offerID string, btcAmount float64) (*TakeResult, error) {
+func (t *Taker) takeBisq(ctx context.Context, in OfferInput) (*TakeResult, error) {
+	if strings.TrimSpace(in.PaymentAccountID) == "" {
+		return nil, fmt.Errorf("bisq: payment_account_id is required")
+	}
 	if t.bisq == nil {
 		return nil, fmt.Errorf("bisq client is not configured")
 	}
-	params := bisq.TakeOfferParams{AmountSats: uint64(BTCToSats(btcAmount))}
-	trade, err := t.bisq.TakeOffer(ctx, offerID, params)
+	amountSats := uint64(BTCToSats(in.BTCAmount))
+	if amountSats == 0 {
+		return nil, fmt.Errorf("bisq: btc amount is required")
+	}
+	trade, err := t.bisq.GuardedTakeOffer(ctx, in.OfferID, bisq.GuardedTakeOfferParams{
+		PaymentAccountID:   in.PaymentAccountID,
+		AmountSats:         amountSats,
+		MaxWalletDebitSats: in.MaxWalletDebitSats,
+		MinVolumeAsLong:    in.MinVolumeAsLong,
+	})
 	if err != nil {
 		return nil, err
 	}
+	fiatAmount := bisq.FiatAmountFromVolumeAsLong(parseVolumeAsLong(trade.TradeVolume))
+	if trade.TradeAmountSats > 0 && trade.TradeAmountSats != amountSats {
+		return nil, fmt.Errorf("bisq: taken amount %d sats does not match confirmed %d sats", trade.TradeAmountSats, amountSats)
+	}
 	return &TakeResult{
 		Execution: map[string]any{
-			"exchange":       "bisq",
-			"offer_id":       offerID,
-			"trade_id":       trade.TradeID,
-			"trade":          trade,
-			"requested_sats": params.AmountSats,
+			"exchange":             "bisq",
+			"offer_id":             in.OfferID,
+			"trade_id":             trade.TradeID,
+			"trade":                trade,
+			"requested_sats":       amountSats,
+			"trade_amount_sats":    trade.TradeAmountSats,
+			"trade_price":          trade.TradePrice,
+			"trade_volume":         trade.TradeVolume,
+			"fiat_amount":          fiatAmount,
+			"payment_account_id":   in.PaymentAccountID,
 		},
 	}, nil
+}
+
+func parseVolumeAsLong(volume string) int64 {
+	volume = strings.TrimSpace(volume)
+	if volume == "" {
+		return 0
+	}
+	fields := strings.Fields(volume)
+	if len(fields) == 0 {
+		return 0
+	}
+	value, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0
+	}
+	return int64(math.Round(value * 10000))
 }
 
 func (t *Taker) takeBisq2(ctx context.Context, in OfferInput) (*TakeResult, error) {
@@ -377,7 +433,138 @@ func (t *Taker) ReportBtcSent(ctx context.Context, exchange, tradeID, proof stri
 	return nil
 }
 
-func (t *Taker) takeRoboSats(ctx context.Context, offerID string) (*TakeResult, error) {
+func (t *Taker) CheckRoboSats(ctx context.Context, in OfferInput) error {
+	if t.robosatsExec == nil {
+		return fmt.Errorf("robosats: execution coordinator is not configured")
+	}
+	if t.repo != nil && in.RequestID > 0 {
+		if session, err := t.repo.LoadRoboSatsSession(ctx, in.RequestID); err != nil {
+			return err
+		} else if session != nil {
+			return t.robosatsExec.CheckBound(ctx, session)
+		}
+	}
+	fiat := strconv.FormatFloat(in.FiatAmount, 'f', -1, 64)
+	if math.Trunc(in.FiatAmount) == in.FiatAmount {
+		fiat = strconv.FormatFloat(in.FiatAmount, 'f', 0, 64)
+	}
+	if in.CredentialID == 0 {
+		id, _, err := t.latestRoboSatsCredential(ctx)
+		if err != nil {
+			return err
+		}
+		in.CredentialID = id
+	}
+	return t.robosatsExec.Check(ctx, robosats.TakeRequest{
+		RequestID: in.RequestID, CoordinatorID: in.CoordinatorID, OrderID: in.OfferID,
+		FiatAmount: fiat, FiatCurrency: in.FiatCurrency, PaymentMethod: in.PaymentMethod,
+		MaxBondSat: in.MaxBondSat, MaxEscrowSat: in.MaxPaymentSat, RoutingFeeSat: in.RoutingFeeSat,
+		CredentialID: in.CredentialID, QuoteID: in.QuoteID,
+		Terms: in.NativeTerms, BondFeeSat: in.BondFeeSat, EscrowFeeSat: in.EscrowFeeSat,
+	})
+}
+
+func (t *Taker) QuoteRoboSats(ctx context.Context, in robosats.QuoteInput) (*robosats.NativeTerms, error) {
+	if t.robosatsExec == nil || !t.robosatsExec.Enabled {
+		return nil, fmt.Errorf("RoboSats new execution is disabled")
+	}
+	_, token, err := t.latestRoboSatsCredential(ctx)
+	if err != nil {
+		return nil, err
+	}
+	api, err := t.robosatsExec.Dial(in.CoordinatorID, token)
+	if err != nil {
+		return nil, err
+	}
+	client, ok := api.(*robosats.Client)
+	if !ok {
+		return nil, fmt.Errorf("RoboSats quote client unavailable")
+	}
+	return client.Quote(ctx, in)
+}
+
+func (t *Taker) PrepareRoboSats(ctx context.Context, in OfferInput) (*robosats.Session, error) {
+	if err := t.CheckRoboSats(ctx, in); err != nil {
+		return nil, err
+	}
+	id, _, err := t.latestRoboSatsCredential(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s := &robosats.Session{Phase: robosats.PhaseCreated, CreatedAt: time.Now().UTC(), Payments: map[string]*robosats.Payment{}, Request: robosats.TakeRequest{
+		RequestID: in.RequestID, CoordinatorID: in.CoordinatorID, OrderID: in.OfferID, FiatAmount: strconv.FormatFloat(in.FiatAmount, 'f', 2, 64), FiatCurrency: in.FiatCurrency, PaymentMethod: in.PaymentMethod, CredentialID: id, QuoteID: in.QuoteID, MaxBondSat: in.MaxBondSat, MaxEscrowSat: in.MaxPaymentSat, RoutingFeeSat: in.RoutingFeeSat, BondFeeSat: in.BondFeeSat, EscrowFeeSat: in.EscrowFeeSat, Terms: in.NativeTerms,
+	}}
+	if in.NativeTerms == nil {
+		return nil, fmt.Errorf("RoboSats native quote terms missing")
+	}
+	s.Request.NodePubKey = in.NativeTerms.NodePubKey
+	if err := t.robosatsExec.SnapshotIdentity(ctx, s); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (t *Taker) RoboSatsLiquidityPrepared(ctx context.Context, id uint64, mark bool) (bool, error) {
+	if t.robosatsExec == nil {
+		return false, fmt.Errorf("RoboSats coordinator unavailable")
+	}
+	store := t.robosatsExec.Store
+	unlock, err := store.LockRoboSats(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	s, err := store.LoadRoboSatsSession(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if s == nil {
+		return false, fmt.Errorf("RoboSats admitted session missing")
+	}
+	if mark {
+		s.PreparationComplete = true
+		err = store.SaveRoboSatsSession(ctx, s)
+	}
+	return s.PreparationComplete, err
+}
+
+func (t *Taker) takeRoboSats(ctx context.Context, in OfferInput) (*TakeResult, error) {
+	if t.robosatsExec != nil {
+		if t.repo != nil {
+			s, err := t.repo.LoadRoboSatsSession(ctx, in.RequestID)
+			if err != nil {
+				return nil, err
+			}
+			if s != nil {
+				if s.Request.OrderID != in.OfferID || s.Request.CoordinatorID != in.CoordinatorID {
+					return nil, fmt.Errorf("RoboSats bound offer mismatch")
+				}
+				result, err := t.robosatsExec.Take(ctx, s.Request)
+				if err != nil {
+					return nil, err
+				}
+				return roboTakeResult(result, in)
+			}
+		}
+		if in.CredentialID == 0 {
+			id, _, err := t.latestRoboSatsCredential(ctx)
+			if err != nil {
+				return nil, err
+			}
+			in.CredentialID = id
+		}
+		fiat := strconv.FormatFloat(in.FiatAmount, 'f', -1, 64)
+		result, err := t.robosatsExec.Take(ctx, robosats.TakeRequest{
+			RequestID: in.RequestID, CoordinatorID: in.CoordinatorID, OrderID: in.OfferID,
+			FiatAmount: fiat, FiatCurrency: in.FiatCurrency, PaymentMethod: in.PaymentMethod,
+			MaxBondSat: in.MaxBondSat, MaxEscrowSat: in.MaxPaymentSat, RoutingFeeSat: in.RoutingFeeSat,
+			CredentialID: in.CredentialID, QuoteID: in.QuoteID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return roboTakeResult(result, in)
+	}
 	if t.robosats == nil {
 		return nil, fmt.Errorf("robosats client is not configured")
 	}
@@ -387,14 +574,14 @@ func (t *Taker) takeRoboSats(ctx context.Context, offerID string) (*TakeResult, 
 	} else if token != "" {
 		client = t.robosats.WithAuthToken(token)
 	}
-
-	position, err := client.TakeOffer(ctx, offerID)
+	fiat := strconv.FormatFloat(in.FiatAmount, 'f', -1, 64)
+	position, err := client.TakeOfferWithAmount(ctx, in.OfferID, fiat)
 	if err != nil {
 		return nil, err
 	}
 	exec := map[string]any{
 		"exchange":    "robosats",
-		"offer_id":    offerID,
+		"offer_id":    in.OfferID,
 		"position_id": position.ID,
 		"position":    position,
 	}
@@ -404,6 +591,13 @@ func (t *Taker) takeRoboSats(ctx context.Context, offerID string) (*TakeResult, 
 		DepositAddress: addr,
 		LNInvoice:      inv,
 	}, nil
+}
+
+func roboTakeResult(result *robosats.TakeResult, in OfferInput) (*TakeResult, error) {
+	if result == nil || !result.Funded {
+		return nil, fmt.Errorf("robosats: seller escrow has not been confirmed")
+	}
+	return &TakeResult{Execution: map[string]any{"exchange": "robosats", "offer_id": in.OfferID, "position_id": result.OrderID, "coordinator_id": in.CoordinatorID, "robosats_session_id": result.SessionID, "robosats_trade_ref": robosats.TradeRef(in.CoordinatorID, result.OrderID), "robosats_funded": true, "payment_hash": result.PaymentHash, "amount_sat": result.AmountSat, "phase": result.Phase}}, nil
 }
 
 func (t *Taker) pollRoboSatsDeposit(ctx context.Context, execution map[string]any) (string, string, error) {
@@ -423,31 +617,41 @@ func (t *Taker) pollRoboSatsDeposit(ctx context.Context, execution map[string]an
 	return addr, inv, nil
 }
 
-func (t *Taker) latestRoboSatsToken(ctx context.Context) (string, error) {
+func (t *Taker) latestRoboSatsCredential(ctx context.Context) (int64, string, error) {
 	if t.repo == nil {
-		return "", nil
+		return 0, "", nil
 	}
 	keys, err := t.repo.GetActiveAPIKeysForProvider(ctx, "Robosats")
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
 	for _, key := range keys {
 		if token := strings.TrimSpace(key.APIKey); token != "" {
-			return token, nil
+			return int64(key.ID), token, nil
 		}
 	}
-	return "", nil
+	return 0, "", nil
+}
+
+func (t *Taker) latestRoboSatsToken(ctx context.Context) (string, error) {
+	_, token, err := t.latestRoboSatsCredential(ctx)
+	return token, err
 }
 
 func extractRoboSatsDeposit(position *robosats.Position) (address, invoice string) {
 	if position == nil {
 		return "", ""
 	}
+	for _, inv := range []string{position.EscrowInvoice, position.BondInvoice} {
+		if looksLikeBolt11(inv) {
+			return "", inv
+		}
+	}
 	if len(position.Raw) > 0 {
 		var raw map[string]any
 		if err := json.Unmarshal(position.Raw, &raw); err == nil {
-			for _, key := range []string{"bond_invoice", "invoice", "bolt11", "ln_invoice", "payout_invoice"} {
-				if inv := StringField(raw, key); strings.HasPrefix(strings.ToLower(inv), "ln") || strings.HasPrefix(inv, "lntb") {
+			for _, key := range []string{"escrow_invoice", "bond_invoice", "invoice", "bolt11", "ln_invoice", "payout_invoice"} {
+				if inv := StringField(raw, key); looksLikeBolt11(inv) {
 					return "", inv
 				}
 			}
@@ -459,6 +663,11 @@ func extractRoboSatsDeposit(position *robosats.Position) (address, invoice strin
 		}
 	}
 	return "", ""
+}
+
+func looksLikeBolt11(inv string) bool {
+	lower := strings.ToLower(strings.TrimSpace(inv))
+	return strings.HasPrefix(lower, "lnbc") || strings.HasPrefix(lower, "lntb") || strings.HasPrefix(lower, "lnbcrt")
 }
 
 // DefaultSatPerVbyte is the conservative on-chain fee rate used for LND→DEX relay.

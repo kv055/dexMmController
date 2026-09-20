@@ -493,6 +493,80 @@ func TestRun_UnsupportedMarketSideRejected(t *testing.T) {
 	}
 }
 
+func TestRun_BisqPlanFundsDepositAndFees(t *testing.T) {
+	svc := happyFake()
+	svc.spotResult.Execution.FilledBTC = 0.0116
+	order := persistOrder()
+	order.Dex = "bisq"
+	order.BTCAmount = 0.01
+	order.FiatAmount = 550
+	order.HedgeNotionalBTC = 0.01
+	order.ResolvedRoute.Settlement = "onchain_direct"
+	order.ResolvedRoute.NeedsHub = false
+	order.BisqPlan = &db.BisqExecutionPlan{
+		TradeAmountSats:     1_000_000,
+		SecurityDepositSats: 150_000,
+		TakerFeeSats:        8_000,
+		MiningFeeSats:       2_000,
+		TotalToPaySats:      1_160_000,
+		PaymentAccountID:    "acct-9",
+		FundingAddress:      "bc1qdesignated",
+		FiatAmount:          550,
+	}
+	store := newFakeStore()
+	result, err := New(svc, store).Run(context.Background(), order)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if mathAbs(svc.lastSpotAmount-0.0116) > 1e-12 {
+		t.Fatalf("spot buy = %.8f, want 0.01160000 (principal+deposit+fees)", svc.lastSpotAmount)
+	}
+	if mathAbs(svc.lastWithdrawAmount-0.0116) > 1e-12 {
+		t.Fatalf("withdraw = %.8f, want 0.01160000", svc.lastWithdrawAmount)
+	}
+	if result.Withdrawal.WalletAddress != "bc1qtest" {
+		t.Fatalf("withdraw result address = %q", result.Withdrawal.WalletAddress)
+	}
+	row := store.only(t)
+	if row.DestinationAddress != "bc1qdesignated" {
+		t.Fatalf("persisted destination = %q, want designated Bisq address", row.DestinationAddress)
+	}
+	meta, err := db.ParseDexOfferCreation(row.DexOfferCreation)
+	if err != nil || meta.BisqExecution == nil {
+		t.Fatalf("bisq execution metadata missing: %+v %v", meta.BisqExecution, err)
+	}
+	if meta.BisqExecution.TradeAmountSats != 1_000_000 {
+		t.Fatalf("stored trade amount = %d", meta.BisqExecution.TradeAmountSats)
+	}
+	if mathAbs(row.FiatAmount-550) > 1e-9 {
+		t.Fatalf("persisted fiat = %v, want Bisq volume 550", row.FiatAmount)
+	}
+}
+
+func TestRun_BisqShortFillDoesNotChangeTakeAmount(t *testing.T) {
+	svc := happyFake()
+	svc.spotResult.Execution.FilledBTC = 0.01
+	order := persistOrder()
+	order.Dex = "bisq"
+	order.ResolvedRoute.Settlement = "onchain_direct"
+	order.ResolvedRoute.NeedsHub = false
+	order.BisqPlan = &db.BisqExecutionPlan{TotalToPaySats: 1_160_000, TradeAmountSats: 1_000_000, FundingAddress: "bc1qdesignated"}
+	_, err := New(svc, newFakeStore()).Run(context.Background(), order)
+	if err == nil {
+		t.Fatal("expected short-fill review error")
+	}
+	if svc.hedgeCallCount != 0 || svc.withdrawCallCount != 0 {
+		t.Fatalf("hedge/withdraw = %d/%d, want 0 after short fill", svc.hedgeCallCount, svc.withdrawCallCount)
+	}
+}
+
+func mathAbs(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 func TestRun_ValidationRejectsZeroBTC(t *testing.T) {
 	o := validOrder()
 	o.BTCAmount = 0

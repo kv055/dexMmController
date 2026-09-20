@@ -265,6 +265,26 @@ func TestHandleCexTradeflowSuccess(t *testing.T) {
 	}
 }
 
+func TestHandleCexTradeflowBisqRequiresQuoteID(t *testing.T) {
+	runner := &fakeTradeFlowRunner{result: &tradeflow.Result{TradeMode: cexaccount.TradeModeHedgefullSingleCollateral}}
+	s := (&Server{}).WithTradeFlow(runner)
+	payload, _ := json.Marshal(tradeflowRequest{
+		Provider: "binance", MarketSide: "bid", BTCAmount: 0.01, FiatCurrency: "EUR",
+		RequiredCapital: 1000, HedgeVenue: "binance_futures", HedgeSide: "short", HedgeNotionalBTC: 0.01, Leverage: 10,
+		Dex: "bisq", OfferID: "offer-1",
+		ResolvedRoute: authoritativeTestRoute(cexaccount.TradeModeHedgefullSingleCollateral, "onchain_direct"),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/cex/tradeflow", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	s.handleCexTradeflow(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if runner.gotOrder.OfferID != "" {
+		t.Fatal("tradeflow runner must not execute a Bisq take without a stored quote")
+	}
+}
+
 func TestHandleCexTradeflowNotConfigured(t *testing.T) {
 	s := &Server{}
 	req := httptest.NewRequest(http.MethodPost, "/api/cex/tradeflow", bytes.NewReader([]byte(`{}`)))

@@ -392,6 +392,24 @@ func (r *TransactionRepository) maybeResolveOfferDBID(tx *Transaction) {
 	if tx == nil || tx.DexOfferDBID != nil || strings.TrimSpace(tx.DexOfferID) == "" {
 		return
 	}
+	if tx.Dex == DexRoboSats {
+		meta, err := ParseDexOfferCreation(tx.DexOfferCreation)
+		if err != nil {
+			return
+		}
+		var selected struct {
+			CoordinatorID string `json:"venue_coordinator_id"`
+		}
+		if json.Unmarshal(meta.SelectedOffer, &selected) != nil || selected.CoordinatorID == "" {
+			return
+		}
+		var id int64
+		result := r.db.Raw(`SELECT id FROM offers WHERE exchange='robosats' AND venue_coordinator_id=? AND offer_id=? LIMIT 1`, selected.CoordinatorID, tx.DexOfferID).Scan(&id)
+		if result.Error == nil && id > 0 {
+			tx.DexOfferDBID = &id
+		}
+		return
+	}
 	if id, err := r.ResolveOfferDBID(tx.DexOfferID); err == nil {
 		tx.DexOfferDBID = id
 	}
@@ -563,7 +581,20 @@ func (r *TransactionRepository) UpdateTransaction(tx *Transaction) error {
 		return errors.New("transaction ID is required for update")
 	}
 	r.maybeResolveOfferDBID(tx)
-	if err := r.db.Save(tx).Error; err != nil {
+	query := r.db
+	if IsDurableRoboSats(tx) {
+		// Save includes zero values; optional enum/check-constrained fields
+		// must remain SQL NULL until this trade has a value for them.
+		var omit []string
+		if tx.CexHedgingPosition == "" {
+			omit = append(omit, "CexHedgingPosition")
+		}
+		if tx.BTCPoolRefillStatus == "" {
+			omit = append(omit, "BTCPoolRefillStatus")
+		}
+		query = query.Omit(omit...)
+	}
+	if err := query.Save(tx).Error; err != nil {
 		return fmt.Errorf("failed to update transaction: %w", err)
 	}
 	return nil
