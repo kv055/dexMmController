@@ -51,13 +51,15 @@ type ChatTemplateStore interface {
 // venues (Bisq, HodlHodl) read the trade contract in one shot; chat venues (Robosats, Bisq2)
 // run a short conversation: send one templated request and capture the counterparty's reply.
 type PaymentResolver struct {
-	mostro    TradeChat
-	repo      *db.TransactionRepository
-	templates ChatTemplateStore
-	bisq      *bisq.Client
-	bisq2     *bisq2.Client
-	hodlhodl  *hodlhodl.Client
-	robosats  *robosats.Client
+	mostro          TradeChat
+	repo            *db.TransactionRepository
+	templates       ChatTemplateStore
+	bisq            *bisq.Client
+	bisq2           *bisq2.Client
+	hodlhodl        *hodlhodl.Client
+	robosats        *robosats.Client
+	roboCoordinator *robosats.Coordinator
+	robosatsDial    func(coordinatorID, token string) (*robosats.Client, error)
 }
 
 // NewPaymentResolver creates a PaymentResolver backed by the configured DEX clients.
@@ -79,6 +81,16 @@ func NewPaymentResolver(
 }
 
 func (p *PaymentResolver) WithMostro(chat TradeChat) *PaymentResolver { p.mostro = chat; return p }
+
+func (p *PaymentResolver) WithRoboSatsCoordinator(c *robosats.Coordinator) *PaymentResolver {
+	p.roboCoordinator = c
+	return p
+}
+
+func (p *PaymentResolver) WithRoboSatsDial(dial func(coordinatorID, token string) (*robosats.Client, error)) *PaymentResolver {
+	p.robosatsDial = dial
+	return p
+}
 
 // IsStructuredVenue reports whether a venue exposes details in the trade object (so the
 // one-shot FetchCounterparty applies) rather than via chat.
@@ -243,10 +255,10 @@ func (p *PaymentResolver) tradeChat(ctx context.Context, exchange string) (Trade
 		}
 		return p.mostro, nil
 	case db.DexRoboSats:
-		if p.robosats == nil {
+		if p.robosats == nil && p.robosatsDial == nil {
 			return nil, fmt.Errorf("robosats client is not configured")
 		}
-		return robosatsChat{client: p.roboSatsClient(ctx)}, nil
+		return robosatsChat{fallback: p.roboSatsClient(ctx), dial: p.robosatsDial, repo: p.repo, coordinator: p.roboCoordinator}, nil
 	case db.DexBisq2:
 		if p.bisq2 == nil {
 			return nil, fmt.Errorf("bisq2 client is not configured")
@@ -265,21 +277,82 @@ func (p *PaymentResolver) tradeChat(ctx context.Context, exchange string) (Trade
 }
 
 type robosatsChat struct {
-	client *robosats.Client
+	coordinator *robosats.Coordinator
+	fallback    *robosats.Client
+	dial        func(coordinatorID, token string) (*robosats.Client, error)
+	repo        *db.TransactionRepository
+}
+
+func (c robosatsChat) clientFor(ctx context.Context, orderRef string) (*robosats.Client, string, error) {
+	coordinatorID, orderID := robosats.SplitTradeRef(orderRef)
+	if orderID == "" {
+		return nil, "", fmt.Errorf("robosats: order ID is required")
+	}
+	if c.coordinator != nil && c.repo != nil {
+		s, err := c.repo.RoboSatsSessionForRef(ctx, coordinatorID, orderID)
+		if err != nil {
+			return nil, "", err
+		}
+		api, err := c.coordinator.SessionAPI(ctx, s)
+		if err != nil {
+			return nil, "", err
+		}
+		client, ok := api.(*robosats.Client)
+		if !ok {
+			return nil, "", fmt.Errorf("RoboSats pinned chat client unavailable")
+		}
+		return client, orderID, nil
+	}
+	if coordinatorID != "" && c.dial != nil {
+		token := robosatsTokenForRepo(ctx, c.repo)
+		client, err := c.dial(coordinatorID, token)
+		if err != nil {
+			return nil, "", err
+		}
+		if client != nil {
+			return client, orderID, nil
+		}
+	}
+	if c.fallback == nil {
+		return nil, "", fmt.Errorf("robosats client is not configured")
+	}
+	return c.fallback, orderID, nil
 }
 
 func (c robosatsChat) SendMessage(ctx context.Context, orderID, text string) error {
-	return c.client.SendChatMessage(ctx, orderID, text)
+	client, nativeID, err := c.clientFor(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	return client.SendChatMessage(ctx, nativeID, text)
+}
+
+// EnsurePaymentRequest bypasses marker-only deduplication: only a message
+// authenticated by the admitted robot's PGP key can acknowledge this template.
+func (c robosatsChat) EnsurePaymentRequest(ctx context.Context, ref, text string) error {
+	if c.coordinator == nil || c.repo == nil {
+		return fmt.Errorf("RoboSats durable chat is unavailable")
+	}
+	coordinator, order := robosats.SplitTradeRef(ref)
+	s, err := c.repo.RoboSatsSessionForRef(ctx, coordinator, order)
+	if err != nil {
+		return err
+	}
+	return c.coordinator.ReconcileChat(ctx, s.Request.RequestID, text, s.RobotNick)
 }
 
 func (c robosatsChat) Messages(ctx context.Context, orderID string) ([]TradeChatMessage, error) {
-	thread, err := c.client.GetChatMessages(ctx, orderID)
+	client, nativeID, err := c.clientFor(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	thread, err := client.GetChatMessages(ctx, nativeID)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]TradeChatMessage, 0, len(thread.Messages))
 	for _, m := range thread.Messages {
-		out = append(out, TradeChatMessage{Time: m.Time, Sender: m.Nick, Text: m.Plaintext})
+		out = append(out, TradeChatMessage{Time: m.Time, Sender: m.Nick, Text: m.Plaintext, Outbound: m.Own})
 	}
 	return out, nil
 }

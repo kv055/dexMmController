@@ -448,6 +448,8 @@ components:
         transaction_id:
           type: integer
           minimum: 1
+        quote_id:
+          type: string
         selected_offer:
           type: object
           additionalProperties: true

@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"commons/mmcapabilities"
+	"dexMmController/internal/bisqexec"
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
@@ -44,6 +46,7 @@ type tradeflowRequest struct {
 	FiatAmount             float64                  `json:"fiat_amount"`
 	TransactionID          uint                     `json:"transaction_id,omitempty"`
 	SelectedOffer          json.RawMessage          `json:"selected_offer,omitempty"`
+	QuoteID                string                   `json:"quote_id,omitempty"`
 	PaymentMethod          string                   `json:"payment_method"`
 	PaymentMethods         []string                 `json:"payment_methods"`
 	TradeMode              string                   `json:"trade_mode"`
@@ -51,6 +54,7 @@ type tradeflowRequest struct {
 	RoutingFeeAllowanceSat int64                    `json:"routing_fee_allowance_sat"`
 	CEXWithdrawalFeeBTC    float64                  `json:"cex_withdrawal_fee_btc"`
 	SwapSafetyHeadroomBTC  float64                  `json:"swap_safety_headroom_btc"`
+	IdempotencyKey         string                   `json:"idempotency_key,omitempty"`
 }
 
 func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +66,20 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 	var req tradeflowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if err := s.applyExecutionQuote(r.Context(), &req); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	if strings.EqualFold(req.Dex, "robosats") && req.TransactionID > 0 {
+		writeJSON(w, http.StatusAccepted, map[string]any{"transaction_id": req.TransactionID, "status_url": fmt.Sprintf("/api/transactions/%d", req.TransactionID)})
+		return
+	}
+	if isBisqV1(req.Dex) {
+		// Bisq execution inputs are bound to the stored quote. In particular an
+		// idempotent retry must not depend on current CEX health or client routes.
+		s.acceptBisqTradeflow(w, r, req)
 		return
 	}
 	if req.ResolvedRoute == nil && len(req.SelectedOffer) > 0 {
@@ -179,7 +197,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.tradeFlow.Run(r.Context(), tradeflow.Order{
+	order := tradeflow.Order{
 		Provider:                 provider,
 		MarketSide:               marketSide,
 		BTCAmount:                req.BTCAmount,
@@ -196,6 +214,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		FiatAmount:               req.FiatAmount,
 		TransactionID:            req.TransactionID,
 		SelectedOffer:            req.SelectedOffer,
+		QuoteID:                  strings.TrimSpace(req.QuoteID),
 		PaymentMethod:            strings.TrimSpace(req.PaymentMethod),
 		PaymentMethods:           req.PaymentMethods,
 		TradeMode:                tradeMode,
@@ -204,15 +223,144 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		CEXWithdrawalFeeBTC:      req.CEXWithdrawalFeeBTC,
 		SwapSafetyHeadroomBTC:    req.SwapSafetyHeadroomBTC,
 		LightningLiquiditySource: lightningSource,
-	})
+	}
+	if strings.EqualFold(req.Dex, "robosats") {
+		admitter, ok := s.tradeFlow.(interface {
+			AdmitRoboSats(context.Context, tradeflow.Order) (uint, error)
+		})
+		if !ok {
+			writeError(w, http.StatusServiceUnavailable, fmt.Errorf("RoboSats durable execution unavailable"))
+			return
+		}
+		id, err := admitter.AdmitRoboSats(r.Context(), order)
+		if err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"transaction_id": id, "status_url": fmt.Sprintf("/api/transactions/%d", id)})
+		return
+	}
+	result, err := s.tradeFlow.Run(r.Context(), order)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
+	}
+	// Preserve the legacy non-RoboSats quote bookkeeping. RoboSats returned
+	// above and binds atomically before its worker can move funds.
+	if req.QuoteID != "" && result != nil && result.TransactionID > 0 && s.repo != nil {
+		if err := s.repo.BindExecutionQuote(r.Context(), req.QuoteID, result.TransactionID); err != nil {
+			log.Printf("bind non-RoboSats execution quote: %v", err)
+		}
 	}
 
 	// TradeFlow persists each step itself (including the transaction id on result);
 	// the handler no longer writes the row after the fact.
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) applyExecutionQuote(ctx context.Context, req *tradeflowRequest) error {
+	if req == nil {
+		return nil
+	}
+	if strings.TrimSpace(req.QuoteID) == "" && len(req.SelectedOffer) > 0 {
+		var selected struct {
+			QuoteID string `json:"quote_id"`
+		}
+		if json.Unmarshal(req.SelectedOffer, &selected) == nil {
+			req.QuoteID = strings.TrimSpace(selected.QuoteID)
+		}
+	}
+	quoteID := strings.TrimSpace(req.QuoteID)
+	if quoteID == "" {
+		if strings.EqualFold(strings.TrimSpace(req.Dex), "robosats") {
+			return fmt.Errorf("quote_id is required for RoboSats execution")
+		}
+		return nil
+	}
+	if s.repo == nil {
+		return fmt.Errorf("execution quotes are unavailable")
+	}
+	quote, err := s.repo.LoadExecutionQuote(ctx, quoteID)
+	if err != nil {
+		return err
+	}
+	return applyStoredQuote(req, quote, time.Now())
+}
+
+func applyStoredQuote(req *tradeflowRequest, quote *db.ExecutionQuote, now time.Time) error {
+	if quote == nil {
+		return fmt.Errorf("execution quote not found")
+	}
+	if req.Dex != "" && !strings.EqualFold(req.Dex, quote.Exchange) {
+		return fmt.Errorf("quote exchange mismatch")
+	}
+	if req.OfferID != "" && req.OfferID != quote.OfferID {
+		return fmt.Errorf("quote offer mismatch")
+	}
+	if req.TransactionID != 0 && req.TransactionID != quote.TransactionID {
+		return fmt.Errorf("quote transaction mismatch")
+	}
+	if req.PaymentMethod != "" && req.PaymentMethod != quote.PaymentMethod {
+		return fmt.Errorf("quote payment method mismatch")
+	}
+	req.Dex = quote.Exchange
+	req.OfferID = quote.OfferID
+	req.QuoteID = quote.ID
+	if quote.TransactionID > 0 {
+		req.TransactionID = quote.TransactionID
+	} else if !now.Before(quote.ExpiresAt) {
+		return fmt.Errorf("execution quote expired")
+	}
+	if quote.Route == nil {
+		return fmt.Errorf("execution quote has no route")
+	}
+	req.ResolvedRoute = quote.Route
+	if quote.PaymentMethod != "" {
+		req.PaymentMethod = quote.PaymentMethod
+	}
+	selected := map[string]any{}
+	if len(req.SelectedOffer) > 0 && json.Unmarshal(req.SelectedOffer, &selected) != nil {
+		return fmt.Errorf("invalid selected offer")
+	}
+	authoritative := map[string]any{"exchange": quote.Exchange, "offer_id": quote.OfferID, "venue_coordinator_id": quote.CoordinatorID, "quote_id": quote.ID, "max_bond_sat": quote.MaxBondSat, "max_escrow_sat": quote.MaxEscrowSat, "bond_fee_sat": quote.BondFeeSat, "escrow_fee_sat": quote.EscrowFeeSat}
+	for key, want := range authoritative {
+		if got, ok := selected[key]; ok && got != nil && got != "" {
+			actual, _ := json.Marshal(got)
+			expected, _ := json.Marshal(want)
+			if string(actual) != string(expected) {
+				return fmt.Errorf("quote field %s mismatch", key)
+			}
+		}
+		selected[key] = want
+	}
+	selected["native_terms"] = quote.NativeTerms
+	req.SelectedOffer, _ = json.Marshal(selected)
+	return nil
+}
+
+func (s *Server) acceptBisqTradeflow(w http.ResponseWriter, r *http.Request, req tradeflowRequest) {
+	quoteID := strings.TrimSpace(req.QuoteID)
+	if quoteID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("quote_id is required for Bisq execution"))
+		return
+	}
+	if s.bisqExec == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("automated Bisq execution is not configured"))
+		return
+	}
+	key := strings.TrimSpace(req.IdempotencyKey)
+	if key == "" {
+		key = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	}
+	result, err := s.bisqExec.Accept(r.Context(), bisqexec.AcceptRequest{
+		QuoteID:        quoteID,
+		IdempotencyKey: key,
+	})
+	if err != nil {
+		writeBisqExecError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, result)
 }
 
 func validateLegacyTradeflowFields(req tradeflowRequest) error {
@@ -323,6 +471,7 @@ func (s *Server) handlePoolRefillReconcile(w http.ResponseWriter, r *http.Reques
 
 // preTradeCheckRequest is the JSON body for POST /api/cex/pre-trade-check.
 type preTradeCheckRequest struct {
+	QuoteID                string                   `json:"quote_id"`
 	Provider               string                   `json:"provider"`
 	FiatCurrency           string                   `json:"fiat_currency"`
 	RequiredCapital        float64                  `json:"required_capital"`
@@ -351,6 +500,15 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
+	}
+	if strings.EqualFold(req.Dex, "robosats") {
+		bound := tradeflowRequest{QuoteID: req.QuoteID, Dex: req.Dex, PaymentMethod: req.PaymentMethod}
+		if err := s.applyExecutionQuote(r.Context(), &bound); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		req.ResolvedRoute = bound.ResolvedRoute
+		req.PaymentMethod = bound.PaymentMethod
 	}
 	if req.ResolvedRoute == nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route from unified API is required"))

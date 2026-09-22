@@ -150,6 +150,60 @@ func (response legacyPostApiAccountsHealthCheckResponse) VisitPostApiAccountsHea
 	return response.server.serveLegacy(w, response.request)
 }
 
+type legacyAcceptBisqExecutionResponse struct {
+	server  *LegacyStrictServer
+	request *legacyRequest
+}
+
+func (response legacyAcceptBisqExecutionResponse) VisitAcceptBisqExecutionResponse(w http.ResponseWriter) error {
+	return response.server.serveLegacy(w, response.request)
+}
+
+type legacyQuoteBisqExecutionResponse struct {
+	server  *LegacyStrictServer
+	request *legacyRequest
+}
+
+func (response legacyQuoteBisqExecutionResponse) VisitQuoteBisqExecutionResponse(w http.ResponseWriter) error {
+	return response.server.serveLegacy(w, response.request)
+}
+
+type legacyGetBisqFundingDestinationResponse struct {
+	server  *LegacyStrictServer
+	request *legacyRequest
+}
+
+func (response legacyGetBisqFundingDestinationResponse) VisitGetBisqFundingDestinationResponse(w http.ResponseWriter) error {
+	return response.server.serveLegacy(w, response.request)
+}
+
+type legacySetBisqFundingDestinationResponse struct {
+	server  *LegacyStrictServer
+	request *legacyRequest
+}
+
+func (response legacySetBisqFundingDestinationResponse) VisitSetBisqFundingDestinationResponse(w http.ResponseWriter) error {
+	return response.server.serveLegacy(w, response.request)
+}
+
+type legacyListBisqPaymentAccountMappingsResponse struct {
+	server  *LegacyStrictServer
+	request *legacyRequest
+}
+
+func (response legacyListBisqPaymentAccountMappingsResponse) VisitListBisqPaymentAccountMappingsResponse(w http.ResponseWriter) error {
+	return response.server.serveLegacy(w, response.request)
+}
+
+type legacyUpsertBisqPaymentAccountMappingResponse struct {
+	server  *LegacyStrictServer
+	request *legacyRequest
+}
+
+func (response legacyUpsertBisqPaymentAccountMappingResponse) VisitUpsertBisqPaymentAccountMappingResponse(w http.ResponseWriter) error {
+	return response.server.serveLegacy(w, response.request)
+}
+
 type legacyGetApiBisqPaymentAccountsResponse struct {
 	server  *LegacyStrictServer
 	request *legacyRequest
@@ -633,6 +687,48 @@ func (server *LegacyStrictServer) PostApiAccountsHealthCheck(ctx context.Context
 		return nil, err
 	}
 	return legacyPostApiAccountsHealthCheckResponse{server: server, request: request}, nil
+}
+func (server *LegacyStrictServer) AcceptBisqExecution(ctx context.Context, _ AcceptBisqExecutionRequestObject) (AcceptBisqExecutionResponseObject, error) {
+	request, err := legacyRequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return legacyAcceptBisqExecutionResponse{server: server, request: request}, nil
+}
+func (server *LegacyStrictServer) QuoteBisqExecution(ctx context.Context, _ QuoteBisqExecutionRequestObject) (QuoteBisqExecutionResponseObject, error) {
+	request, err := legacyRequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return legacyQuoteBisqExecutionResponse{server: server, request: request}, nil
+}
+func (server *LegacyStrictServer) GetBisqFundingDestination(ctx context.Context, _ GetBisqFundingDestinationRequestObject) (GetBisqFundingDestinationResponseObject, error) {
+	request, err := legacyRequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return legacyGetBisqFundingDestinationResponse{server: server, request: request}, nil
+}
+func (server *LegacyStrictServer) SetBisqFundingDestination(ctx context.Context, _ SetBisqFundingDestinationRequestObject) (SetBisqFundingDestinationResponseObject, error) {
+	request, err := legacyRequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return legacySetBisqFundingDestinationResponse{server: server, request: request}, nil
+}
+func (server *LegacyStrictServer) ListBisqPaymentAccountMappings(ctx context.Context, _ ListBisqPaymentAccountMappingsRequestObject) (ListBisqPaymentAccountMappingsResponseObject, error) {
+	request, err := legacyRequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return legacyListBisqPaymentAccountMappingsResponse{server: server, request: request}, nil
+}
+func (server *LegacyStrictServer) UpsertBisqPaymentAccountMapping(ctx context.Context, _ UpsertBisqPaymentAccountMappingRequestObject) (UpsertBisqPaymentAccountMappingResponseObject, error) {
+	request, err := legacyRequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return legacyUpsertBisqPaymentAccountMappingResponse{server: server, request: request}, nil
 }
 func (server *LegacyStrictServer) GetApiBisqPaymentAccounts(ctx context.Context, _ GetApiBisqPaymentAccountsRequestObject) (GetApiBisqPaymentAccountsResponseObject, error) {
 	request, err := legacyRequestFromContext(ctx)

@@ -67,6 +67,29 @@ func TestParseDexOfferMetaOfferAndContract(t *testing.T) {
 	}
 }
 
+func TestRoboSatsContractIDKeepsCoordinator(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"selected_offer": map[string]any{
+			"offer_id":              "7",
+			"exchange":              "robosats",
+			"venue_coordinator_id":  "expats",
+		},
+		"execution": map[string]any{
+			"exchange":       "robosats",
+			"position_id":    "7",
+			"coordinator_id": "expats",
+			"robosats_trade_ref": "expats:7",
+		},
+	})
+	meta, err := ParseDexOfferCreation(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ContractID() != "expats:7" {
+		t.Fatalf("ContractID: got %q", meta.ContractID())
+	}
+}
+
 func TestHasRelayCompleted(t *testing.T) {
 	if HasRelayCompleted(nil) {
 		t.Fatal("empty should not be complete")

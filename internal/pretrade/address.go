@@ -19,3 +19,17 @@ func MatchWhitelistedLNDAddress(walletAddresses, cexWhitelistAddresses []string)
 	}
 	return ""
 }
+
+// AddressIsWhitelisted reports whether address is present in the CEX whitelist.
+func AddressIsWhitelisted(address string, cexWhitelistAddresses []string) bool {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return false
+	}
+	for _, candidate := range cexWhitelistAddresses {
+		if strings.EqualFold(address, strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
+}

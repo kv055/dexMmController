@@ -122,8 +122,10 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 		if err != nil {
 			return nil, err
 		}
-		if len(active) > 0 {
-			return nil, fmt.Errorf("tradeflow: hedgeless liquidity pool is reserved by transaction %d (%s)", active[0].ID, active[0].BTCPoolRefillStatus)
+		for _, row := range active {
+			if order.TransactionID == 0 || row.ID != order.TransactionID {
+				return nil, fmt.Errorf("tradeflow: hedgeless liquidity pool is reserved by transaction %d (%s)", row.ID, row.BTCPoolRefillStatus)
+			}
 		}
 	}
 
@@ -188,6 +190,12 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 		defer func() { _ = tf.liquidity.Release(context.WithoutCancel(ctx), reservationID) }()
 	}
 
+	if order.QuoteID != "" && strings.EqualFold(order.Dex, "robosats") {
+		if err := tf.markRoboSatsPrepared(ctx, txID); err != nil {
+			return nil, err
+		}
+		return tf.resumeRoboSatsHedgeless(ctx, txID, order)
+	}
 	var spot *cexaccount.SpotOrderResult
 	var withdrawal *WithdrawalResult
 	var current float64
@@ -248,6 +256,9 @@ func (tf *TradeFlow) runHedgelessBid(ctx context.Context, order Order) (*Result,
 func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Order, onPoolSpent func(*DEXFundingResult) error) (*DEXFundingResult, map[string]any, error) {
 	exchange := strings.ToLower(strings.TrimSpace(order.Dex))
 	amountSat := dexaccount.BTCToSats(order.RequiredBTCLiquidity)
+	if order.BisqPlan != nil && order.BisqPlan.TotalToPaySats > 0 {
+		amountSat = int64(order.BisqPlan.TotalToPaySats)
+	}
 	if amountSat <= 0 {
 		return nil, nil, fmt.Errorf("invalid BTC funding amount")
 	}
@@ -264,6 +275,9 @@ func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Orde
 		if err != nil {
 			return nil, nil, err
 		}
+		if order.BisqPlan != nil && strings.TrimSpace(order.BisqPlan.FundingAddress) != "" {
+			address = strings.TrimSpace(order.BisqPlan.FundingAddress)
+		}
 		baseline, err := resolver.DirectBalanceBTC(ctx, exchange, address)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read Bisq funding balance: %w", err)
@@ -275,15 +289,26 @@ func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Orde
 		if err != nil {
 			return nil, nil, fmt.Errorf("LND to Bisq wallet: %w", err)
 		}
-		funding := &DEXFundingResult{Exchange: exchange, Method: "lnd_to_bisq_wallet", AmountBTC: order.RequiredBTCLiquidity, TxID: txid, Destination: address, Status: "funded"}
+		funding := &DEXFundingResult{Exchange: exchange, Method: "lnd_to_bisq_wallet", AmountBTC: dexaccount.SatsToBTC(amountSat), TxID: txid, Destination: address, Status: "funded"}
 		if err := onPoolSpent(funding); err != nil {
 			return nil, nil, fmt.Errorf("start pool refill after Bisq wallet funding: %w", err)
 		}
-		if err := waitForBisqFunding(ctx, resolver, exchange, address, baseline+order.RequiredBTCLiquidity); err != nil {
+		if err := waitForBisqFunding(ctx, resolver, exchange, address, baseline+dexaccount.SatsToBTC(amountSat)); err != nil {
 			return nil, nil, err
 		}
 		node, protocol := mostroOfferTransport(order.SelectedOffer)
-		taken, err := tf.hedgelessDEX.Take(ctx, dexaccount.OfferInput{Exchange: exchange, OfferID: order.OfferID, BTCAmount: order.BTCAmount, FiatAmount: order.FiatAmount, RequestID: uint64(txID), VenueNodePubKey: node, ProtocolVersion: protocol})
+		taken, err := tf.hedgelessDEX.Take(ctx, dexaccount.OfferInput{
+			Exchange:           exchange,
+			OfferID:            order.OfferID,
+			BTCAmount:          order.BTCAmount,
+			FiatAmount:         order.FiatAmount,
+			RequestID:          uint64(txID),
+			VenueNodePubKey:    node,
+			ProtocolVersion:    protocol,
+			PaymentAccountID:   hedgelessPaymentAccountID(order),
+			MaxWalletDebitSats: hedgelessMaxWalletDebit(order),
+			MinVolumeAsLong:    hedgelessMinVolume(order),
+		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("take Bisq offer after wallet funding: %w", err)
 		}
@@ -292,18 +317,7 @@ func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Orde
 
 	// HodlHodl, RoboSats, and Bisq Easy create their deposit destination while
 	// taking the offer, so their ordering is take offer -> resolve address/invoice -> fund.
-	node, protocol := mostroOfferTransport(order.SelectedOffer)
-	taken, err := tf.hedgelessDEX.Take(ctx, dexaccount.OfferInput{
-		Exchange:        exchange,
-		OfferID:         order.OfferID,
-		BTCAmount:       order.BTCAmount,
-		FiatAmount:      order.FiatAmount,
-		RequestID:       uint64(txID),
-		VenueNodePubKey: node,
-		ProtocolVersion: protocol,
-		FiatCurrency:    order.FiatCurrency,
-		PaymentMethod:   order.PaymentMethod,
-	})
+	taken, err := tf.hedgelessDEX.Take(ctx, robosatsOfferInput(order, txID))
 	if err != nil {
 		return nil, nil, fmt.Errorf("take %s offer: %w", exchange, err)
 	}
@@ -311,6 +325,26 @@ func (tf *TradeFlow) fundHedgelessDEX(ctx context.Context, txID uint, order Orde
 	// operator can still identify the already-taken DEX position.
 	if err := persistHedgelessExecution(tf.store, txID, taken.Execution); err != nil {
 		return nil, nil, err
+	}
+	if taken.Execution["robosats_funded"] == true {
+		escrowBTC := math.Max(0, order.RequiredBTCLiquidity-order.SecurityDepositBTC)
+		if v, ok := taken.Execution["amount_sat"].(int64); ok && v > 0 {
+			escrowBTC = float64(v) / 1e8
+		}
+		if err := markHedgelessFundingInitiated(tf.store, txID, ""); err != nil {
+			return nil, nil, err
+		}
+		funding := &DEXFundingResult{
+			Exchange:    exchange,
+			Method:      "lightning",
+			AmountBTC:   escrowBTC,
+			PaymentHash: dexaccount.StringField(taken.Execution, "payment_hash"),
+			Status:      "funded",
+		}
+		if err := onPoolSpent(funding); err != nil {
+			return nil, nil, fmt.Errorf("start pool refill after RoboSats escrow lock: %w", err)
+		}
+		return funding, taken.Execution, nil
 	}
 	address, invoice := strings.TrimSpace(taken.DepositAddress), strings.TrimSpace(taken.LNInvoice)
 	if address == "" && invoice == "" {
@@ -397,7 +431,19 @@ func mostroOfferTransport(raw []byte) (string, int) {
 	return strings.TrimSpace(node), protocol
 }
 
+func stringFromOfferJSON(raw []byte, field string) string {
+	var offer map[string]any
+	if json.Unmarshal(raw, &offer) != nil {
+		return ""
+	}
+	s, _ := offer[field].(string)
+	return strings.TrimSpace(s)
+}
+
 func routingFeeLimit(order Order) int64 {
+	if isRoboOrder(order) {
+		return order.RoutingFeeAllowanceSat
+	}
 	if order.RoutingFeeAllowanceSat > 0 {
 		return order.RoutingFeeAllowanceSat
 	}
@@ -476,6 +522,27 @@ func markHedgelessExecutionNeedsReview(store transactionStore, id uint, reason s
 	})
 }
 
+func hedgelessPaymentAccountID(order Order) string {
+	if order.BisqPlan == nil {
+		return ""
+	}
+	return order.BisqPlan.PaymentAccountID
+}
+
+func hedgelessMaxWalletDebit(order Order) uint64 {
+	if order.BisqPlan == nil {
+		return 0
+	}
+	return order.BisqPlan.MaxWalletDebitSats
+}
+
+func hedgelessMinVolume(order Order) int64 {
+	if order.BisqPlan == nil {
+		return 0
+	}
+	return order.BisqPlan.MinVolumeAsLong
+}
+
 func waitForBisqFunding(ctx context.Context, resolver directBalanceResolver, exchange, address string, wantBTC float64) error {
 	// Compare against baseline+amount rather than the absolute amount. A reused
 	// Bisq address may already hold BTC, which must not be mistaken for this send.
@@ -514,6 +581,9 @@ func (tf *TradeFlow) startRefill(ctx context.Context, txID uint, order Order, pr
 	spot, err := hc.MarketBuyBTCForRefill(ctx, amountBTC, preTrade)
 	if err != nil {
 		return nil, nil, err
+	}
+	if isRoboOrder(order) && (spot == nil || spot.Execution == nil || spot.Execution.FilledBTC <= 0) {
+		return nil, nil, fmt.Errorf("RoboSats refill buy has no confirmed fill; reconcile with CEX")
 	}
 	filled := amountBTC
 	if spot.Execution != nil && spot.Execution.FilledBTC > 0 {
@@ -559,7 +629,10 @@ func createHedgelessRow(store transactionStore, order Order, poolTarget float64,
 		return 0, err
 	}
 	now := time.Now().UTC()
-	meta, err := db.MarshalDexOfferCreation(db.DexOfferMeta{SelectedOffer: selected, LNDReceiveAddress: lndAddress, TradeflowAt: &now, TradeflowOrder: snapshot})
+	meta, err := db.MarshalDexOfferCreation(db.DexOfferMeta{
+		SelectedOffer: selected, LNDReceiveAddress: lndAddress, TradeflowAt: &now,
+		TradeflowOrder: snapshot, BisqExecution: order.BisqPlan,
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -572,6 +645,32 @@ func createHedgelessRow(store transactionStore, order Order, poolTarget float64,
 	}
 	if tx.FiatCurrency == "" {
 		tx.FiatCurrency = "EUR"
+	}
+	if order.TransactionID > 0 && strings.EqualFold(order.Dex, "robosats") {
+		existing, err := store.GetTransaction(order.TransactionID)
+		if err != nil {
+			return 0, err
+		}
+		if order.QuoteID == "" || existing.Status != db.StatusTransactionNeedsReview || existing.Dex != db.DexRoboSats || existing.DexOfferID != order.OfferID {
+			return 0, fmt.Errorf("RoboSats transaction is not awaiting initial preparation")
+		}
+		tx.ID, tx.CreatedAt = existing.ID, existing.CreatedAt
+		return tx.ID, store.UpdateTransaction(tx)
+	}
+	if order.TransactionID > 0 {
+		existing, err := store.GetTransaction(order.TransactionID)
+		if err != nil {
+			return 0, err
+		}
+		if hasFinancialReceipt(existing) {
+			return existing.ID, nil
+		}
+		tx.ID = existing.ID
+		tx.CreatedAt = existing.CreatedAt
+		if err := store.UpdateTransaction(tx); err != nil {
+			return 0, err
+		}
+		return tx.ID, nil
 	}
 	if err := store.CreateTransaction(tx); err != nil {
 		return 0, err
@@ -619,9 +718,17 @@ func recordHedgelessDEXTaken(store transactionStore, id uint, order Order, fundi
 	return mutateRow(store, id, func(tx *db.Transaction) {
 		meta, _ := db.ParseDexOfferCreation(tx.DexOfferCreation)
 		meta.Execution = execution
+		if meta.BisqExecution != nil {
+			meta.BisqExecution.Stage = db.BisqStageTaken
+		}
 		tx.DexOfferCreation, _ = db.MarshalDexOfferCreation(meta)
 		tx.CexToDexWithdrawalTxDetails = relay
 		tx.CexBitcoinAmount = order.BTCAmount
+		if v, ok := execution["fiat_amount"].(float64); ok && v > 0 {
+			tx.FiatAmount = v
+		} else if order.BisqPlan != nil && order.BisqPlan.FiatAmount > 0 {
+			tx.FiatAmount = order.BisqPlan.FiatAmount
+		}
 		tx.SetStatus(db.StatusDexPositionTaken, "")
 		tx.DexOfferTaken = time.Now().UTC()
 	})
@@ -718,6 +825,9 @@ func (tf *TradeFlow) runRefillOnce(ctx context.Context) {
 	// slice also lets deployments recover safely while the index migration is
 	// being rolled out or repaired.
 	for i := range active {
+		if db.IsDurableRoboSats(&active[i]) {
+			continue
+		}
 		if err := tf.advanceRefill(ctx, &active[i]); err != nil {
 			slog.Error("tradeflow: advance hedgeless pool refill", "transaction_id", active[i].ID, "err", err)
 		}
@@ -725,6 +835,9 @@ func (tf *TradeFlow) runRefillOnce(ctx context.Context) {
 }
 
 func (tf *TradeFlow) advanceRefill(ctx context.Context, tx *db.Transaction) error {
+	if db.BisqManaged(tx) {
+		return nil
+	}
 	hc, ok := tf.svc.(hedgelessCEX)
 	if !ok || tx == nil {
 		return nil
@@ -821,6 +934,25 @@ func (tf *TradeFlow) advanceRefill(ctx context.Context, tx *db.Transaction) erro
 			return nil
 		}
 		deficit := refillTarget - current
+		if db.IsDurableRoboSats(tx) {
+			if tf.robo == nil {
+				return fmt.Errorf("RoboSats funding receipt unavailable")
+			}
+			session, err := tf.robo.Progress(ctx, uint64(tx.ID))
+			if err != nil {
+				return err
+			}
+			if session == nil || !session.Funded || session.Payments["escrow"] == nil {
+				return fmt.Errorf("RoboSats escrow is not confirmed")
+			}
+			// LND balance RPCs may lag the hold-payment commitment. Replace
+			// the non-returning escrow once, never the refundable bond itself.
+			minimum := float64(session.Payments["escrow"].AmountSat+session.Request.BondFeeSat+session.Request.EscrowFeeSat) / 1e8
+			deficit = math.Max(deficit, minimum)
+			if !strings.EqualFold(rc.order.Provider, "coinbase") {
+				deficit += rc.order.CEXWithdrawalFeeBTC
+			}
+		}
 		if deficit <= 1e-8 {
 			if securityDepositBTC > 0 {
 				return mutateRow(tf.store, tx.ID, func(row *db.Transaction) { row.BTCPoolRefillStatus = refillAwaitingDeposit })
@@ -864,6 +996,11 @@ func (tf *TradeFlow) advanceRefill(ctx context.Context, tx *db.Transaction) erro
 		if existing != nil {
 			last.Withdrawal = &WithdrawalResult{Provider: rc.order.Provider, WithdrawalID: existing.WithdrawalID, ClientRequestID: clientID, WalletAddress: details.LNDAddress, AmountBTC: withdrawAmountBTC, CexStatus: existing.CexStatus}
 			return replaceLastRefillAttempt(tf.store, tx.ID, details.LNDAddress, last, refillWithdrawalInitiated)
+		}
+		if db.IsDurableRoboSats(tx) {
+			// Absence from a possibly delayed history is not proof that an
+			// interrupted withdrawal was never accepted by the exchange.
+			return markHedgelessNeedsReview(tf.store, tx.ID, false)
 		}
 		wd, err := tf.svc.WithdrawSpotToLND(ctx, rc.order.Provider, withdrawAmountBTC, details.LNDAddress, clientID)
 		if err != nil {

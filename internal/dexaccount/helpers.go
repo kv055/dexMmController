@@ -14,6 +14,14 @@ func BTCToSats(btc float64) int64 {
 	return int64(math.Round(btc * 1e8))
 }
 
+// SatsToBTC converts satoshis to BTC.
+func SatsToBTC(sats int64) float64 {
+	if sats <= 0 {
+		return 0
+	}
+	return math.Round(float64(sats)) / 1e8
+}
+
 // StringField extracts a trimmed string from a map[string]any.
 func StringField(m map[string]any, key string) string {
 	if m == nil {

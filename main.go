@@ -16,6 +16,7 @@ import (
 
 	"dexMmController/internal/accounthealth"
 	"dexMmController/internal/api"
+	"dexMmController/internal/bisqexec"
 	"dexMmController/internal/bitcoin"
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
@@ -309,6 +310,65 @@ func main() {
 		mostroTaker = mostroManager
 	}
 	dexTaker := dexaccount.NewTaker(repo, bq, hh, rs, mostroTaker).WithBisq2(b2)
+	robosatsRegistry := robosats.RegistryFromOnions(robosats.DefaultCoordinatorURLs)
+	if registry, err := robosats.LoadFederation(ctx, &http.Client{Timeout: 10 * time.Second}, robosatsRegistry, envOr("ROBOSATS_FEDERATION_URL", robosats.DefaultFederationURL)); err != nil {
+		log.Printf("RoboSats federation unavailable; only configured coordinator IDs can be used: %v", err)
+	} else {
+		robosatsRegistry = registry
+	}
+	for id, coordinatorURL := range robosats.ParseCoordinatorPairs(envOr("ROBOSATS_COORDINATORS", "")) {
+		robosatsRegistry[id] = coordinatorURL
+	}
+	if strings.TrimSpace(robosatsURL) != "" {
+		robosatsRegistry["configured"] = strings.TrimRight(robosatsURL, "/")
+	}
+	robosatsCoord := &robosats.Coordinator{
+		Enabled:  strings.EqualFold(envOr("ROBOSATS_ENABLED", "false"), "true"),
+		Store:    repo,
+		Registry: robosatsRegistry,
+		DialPinned: func(base, token string) (robosats.OrderAPI, error) {
+			if strings.TrimSpace(base) == "" {
+				return nil, fmt.Errorf("RoboSats saved coordinator URL missing")
+			}
+			return robosats.NewClient(robosats.Config{BaseURL: base, AuthToken: token, ProxyURL: torProxyURL}), nil
+		},
+		Dial: func(id, token string) (robosats.OrderAPI, error) {
+			base := strings.TrimSpace(robosatsRegistry[id])
+			if base == "" {
+				return nil, fmt.Errorf("robosats: coordinator %q is not in the federation registry", id)
+			}
+			return robosats.NewClient(robosats.Config{BaseURL: base, AuthToken: token, ProxyURL: torProxyURL}), nil
+		},
+		Token: func(ctx context.Context, id int64) (string, error) {
+			keys, err := repo.GetActiveAPIKeysForProvider(ctx, "Robosats")
+			if err != nil {
+				return "", err
+			}
+			for _, key := range keys {
+				token := strings.TrimSpace(key.APIKey)
+				if token == "" {
+					continue
+				}
+				if id == 0 || int64(key.ID) == id {
+					return token, nil
+				}
+			}
+			return "", fmt.Errorf("robosats: robot credential %d is not active", id)
+		},
+	}
+	dexTaker.WithRoboSats(robosatsCoord)
+	dexPaymentResolver.WithRoboSatsCoordinator(robosatsCoord)
+	dexPaymentResolver.WithRoboSatsDial(func(id, token string) (*robosats.Client, error) {
+		api, err := robosatsCoord.Dial(id, token)
+		if err != nil {
+			return nil, err
+		}
+		client, ok := api.(*robosats.Client)
+		if !ok {
+			return nil, fmt.Errorf("robosats: coordinator dialer did not return a client")
+		}
+		return client, nil
+	})
 	// dexReleaser performs Stage-6 BTC release; dexReleaseWorker drains the webhook-fed
 	// queue and runs the (idempotent) releases in the background.
 	dexReleaser := dexaccount.NewReleaser(repo, bq, hh, rs, dexaccount.HodlHodlEscrowConfig{
@@ -340,6 +400,19 @@ func main() {
 		RobosatsBaseURL:      robosatsURL,
 		TorProxyURL:          torProxyURL,
 	})
+	whitelistFetcher := pretrade.WhitelistFetcherFunc(func(ctx context.Context, provider string) ([]string, error) {
+		addrs, err := cexAccountService.WithdrawalAddresses(ctx, provider)
+		if err != nil {
+			return nil, err
+		}
+		var out []string
+		for _, a := range addrs {
+			if a.Whitelisted {
+				out = append(out, a.Address)
+			}
+		}
+		return out, nil
+	})
 	preTradeChecker := pretrade.NewPreTradeChecker(
 		pretrade.BalanceFetcherFunc(func(ctx context.Context, provider, currency string) (float64, error) {
 			b, err := cexAccountService.Balances(ctx, provider)
@@ -353,19 +426,7 @@ func main() {
 			}
 			return 0, nil
 		}),
-		pretrade.WhitelistFetcherFunc(func(ctx context.Context, provider string) ([]string, error) {
-			addrs, err := cexAccountService.WithdrawalAddresses(ctx, provider)
-			if err != nil {
-				return nil, err
-			}
-			var out []string
-			for _, a := range addrs {
-				if a.Whitelisted {
-					out = append(out, a.Address)
-				}
-			}
-			return out, nil
-		}),
+		whitelistFetcher,
 		pretrade.PermissionCheckerFunc(func(ctx context.Context, provider string) (map[string]string, error) {
 			canonical, err := cexaccount.CanonicalProvider(provider)
 			if err != nil || !cexaccount.IsCEXProvider(canonical) {
@@ -476,6 +537,28 @@ func main() {
 		WithDirectDestinationResolver(dexaccount.NewDirectResolver(bq)).
 		WithChainConfirmationSource(btc).
 		WithCapabilities(capabilityStore)
+	tradeFlow.WithRoboSats(robosatsCoord, automatedTradeflowWorkers, dexRelayWorker.ProcessRoboSats, func(ctx context.Context, tx *db.Transaction) error {
+		meta, err := db.ParseDexOfferCreation(tx.DexOfferCreation)
+		if err != nil {
+			return err
+		}
+		ref := meta.ContractID()
+		if ref == "" {
+			return fmt.Errorf("RoboSats funded trade reference missing")
+		}
+		info, err := dexPaymentResolver.CaptureChatPayment(ctx, dexaccount.ChatRequest{Exchange: "robosats", OrderID: ref, ExpectedAmount: fmt.Sprintf("%.2f", tx.FiatAmount), ExpectedCurrency: tx.FiatCurrency, PaymentMethod: tx.PaymentMethod, TradeDirection: tx.ChatTradeDirection()})
+		if err != nil {
+			return err
+		}
+		tx.CounterpartyPaymentInfo = info
+		if err := repo.UpdateTransaction(tx); err != nil {
+			return err
+		}
+		return telegramSvc.RegisterTradeChat(ctx, "robosats", ref)
+	})
+	bisqExec := bisqexec.New(bq, repo, whitelistFetcher, tradeFlow).
+		WithRouteQuoter(bisqexec.HTTPRouteQuoter{BaseURL: envOr("UNIFIED_API_INTERNAL_URL", "http://unified-api:5010"), Secret: internalAPISecret}).
+		WithEnabled(automatedTradeflowWorkers)
 	hc := healthcheck.NewHealthChecker(repo, btc, hh, tradeFlow).
 		WithRecoveryGracePeriod(parseAccountHealthInterval(envOr("TRADEFLOW_RECOVERY_GRACE", "3m"))).
 		WithBisqFiatEscalationDelay(bisqFiatEscalationDelay).
@@ -493,6 +576,7 @@ func main() {
 		WithDexRelease(dexReleaseWorker, dexReleaseToken).
 		WithBisqPayments(bq).
 		WithBisqWallet(bq).
+		WithBisqExec(bisqExec).
 		WithServiceVersions(func(versionCtx context.Context) api.ServiceVersions {
 			result := api.ServiceVersions{
 				Bisq1: strings.TrimPrefix(envOr("BISQ_VERSION", ""), "v"),
@@ -711,6 +795,7 @@ func main() {
 		if mostroManager != nil {
 			mostroManager.Wallet = lndClient
 		}
+		robosatsCoord.Wallet = lndClient
 		dexRelayWorker.SetLND(dexrelay.LNDAdapter{Client: lndClient})
 
 		// The coordinator is embedded in mm-controller. It can reserve sufficient
@@ -780,6 +865,9 @@ func main() {
 			go runPeriodicLNDChannelBackup(ctx, lndBackupInterval, repo, lndClient, int64(lndAccount.ID))
 		})
 		lndWorkersOnce.Do(func() {
+			if automatedTradeflowWorkers {
+				go tradeFlow.RunRoboSatsWorker(ctx, 5*time.Second)
+			}
 			lndHealthChecker.RunAndLog(ctx)
 			go lndHealthChecker.RunPeriodic(ctx, accountHealthInterval)
 			go magmaCoordinator.RunPoller(ctx)
@@ -828,6 +916,7 @@ func main() {
 		go hc.RunPeriodic(ctx, healthcheckInterval)
 		go dexRelayWorker.RunPeriodic(ctx, healthcheckInterval)
 		go tradeFlow.RunRefillWorker(ctx, healthcheckInterval)
+		go bisqExec.RunPeriodic(ctx, healthcheckInterval)
 	} else {
 		log.Println("automated tradeflow workers disabled; set ENABLE_AUTOMATED_TRADEFLOW_WORKERS=true after staging validation")
 	}

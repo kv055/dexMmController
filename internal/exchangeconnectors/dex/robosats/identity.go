@@ -126,6 +126,29 @@ func generatePGPKeyPair(token string) (publicKey, encPrivKey string, err error) 
 	return publicKey, encPrivKey, nil
 }
 
+// IdentityFromStoredKeys rebuilds a robot identity from the coordinator's
+// registered public_key and encrypted_private_key instead of generating a new pair.
+func IdentityFromStoredKeys(token, publicKey, encPrivKey string) (*Identity, error) {
+	publicKey = unescapeArmor(strings.TrimSpace(publicKey))
+	encPrivKey = unescapeArmor(strings.TrimSpace(encPrivKey))
+	if publicKey == "" || encPrivKey == "" {
+		return nil, fmt.Errorf("robosats: registered robot keys are required")
+	}
+	if _, err := unlockedEntity(encPrivKey, token); err != nil {
+		return nil, err
+	}
+	nostrPubKey, err := nostrPubKeyFromToken(token)
+	if err != nil {
+		return nil, err
+	}
+	return &Identity{
+		TokenSHA256:       AuthHeaderToken(token),
+		PublicKeyArmored:  publicKey,
+		EncPrivKeyArmored: encPrivKey,
+		NostrPubKey:       nostrPubKey,
+	}, nil
+}
+
 func armorEntity(blockType string, serialize func(w *bytes.Buffer) error) (string, error) {
 	var payload bytes.Buffer
 	if err := serialize(&payload); err != nil {

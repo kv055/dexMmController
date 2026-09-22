@@ -20,6 +20,8 @@ type DexOfferMeta struct {
 	// the original parameters (hedge venue/side/notional, provider, …) and resume a
 	// stuck cycle. The db package only carries the bytes — it does not import tradeflow.
 	TradeflowOrder json.RawMessage `json:"tradeflow_order,omitempty"`
+	// BisqExecution is the versioned Bisq v1 quote, limits, and stage metadata.
+	BisqExecution *BisqExecutionPlan `json:"bisq_execution,omitempty"`
 }
 
 // ResolvedRoute is the immutable execution route selected by Unified API and
@@ -234,6 +236,14 @@ func (m DexOfferMeta) ContractID() string {
 		return id
 	}
 	if id := stringFieldMap(m.Execution, "position_id"); id != "" {
+		if stringFieldMap(m.Execution, "exchange") == "robosats" {
+			if ref := stringFieldMap(m.Execution, "robosats_trade_ref"); ref != "" {
+				return ref
+			}
+			if coord := firstNonEmpty(stringFieldMap(m.Execution, "coordinator_id"), selectedOfferString(m.SelectedOffer, "venue_coordinator_id")); coord != "" {
+				return coord + ":" + id
+			}
+		}
 		return id
 	}
 	if stringFieldMap(m.Execution, "exchange") == "mostro" {
@@ -347,4 +357,24 @@ func stringFieldMap(m map[string]any, key string) string {
 	default:
 		return strings.TrimSpace(fmt.Sprint(t))
 	}
+}
+
+func selectedOfferString(raw json.RawMessage, key string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var offer map[string]any
+	if json.Unmarshal(raw, &offer) != nil {
+		return ""
+	}
+	return stringFieldMap(offer, key)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }

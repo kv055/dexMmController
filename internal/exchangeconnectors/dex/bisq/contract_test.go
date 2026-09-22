@@ -28,18 +28,15 @@ func TestMakerPaymentFromContract(t *testing.T) {
 		}
 	})
 
-	t.Run("falls back to whole contract when field absent", func(t *testing.T) {
-		contract := `{"tradeAmount": 100000, "tradePrice": "50000"}`
-		got, err := makerPaymentFromContract(contract)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+	t.Run("treats missing payload as pending", func(t *testing.T) {
+		if _, err := makerPaymentFromContract(`{"tradeAmount": 100000, "tradePrice": "50000"}`); err == nil {
+			t.Fatal("expected pending error when maker payload is absent")
 		}
-		var payload map[string]any
-		if err := json.Unmarshal(got, &payload); err != nil {
-			t.Fatalf("result is not valid JSON: %v", err)
-		}
-		if payload["tradeAmount"] == nil {
-			t.Fatalf("expected the whole contract back, got %s", got)
+	})
+
+	t.Run("treats empty object payload as pending", func(t *testing.T) {
+		if _, err := makerPaymentFromContract(`{"makerPaymentAccountPayload": {}}`); err == nil {
+			t.Fatal("expected pending error on empty object payload")
 		}
 	})
 

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,17 +39,16 @@ type Config struct {
 	// ProxyURL is an optional SOCKS proxy (e.g. socks5h://127.0.0.1:9050),
 	// required to reach the Tor onion coordinators.
 	ProxyURL string
-	// TakeOfferPath is the take offer path value for the config.
+	// TakeOfferPath is unused; taking uses OrderActionPath. Kept for config compatibility.
 	TakeOfferPath string
 	// OpenPositionsPath is the open positions path value for the config.
 	OpenPositionsPath string
-	// PositionPath is the position path value for the config.
+	// PositionPath is unused; polling uses OrderActionPath. Kept for config compatibility.
 	PositionPath string
 	// CreateOrderPath is the create order path value for the config.
 	CreateOrderPath string
-	// OrderActionPath is the singular order-action endpoint used to update a trade
-	// (confirm fiat, dispute, …). Distinct from PositionPath: the action endpoint is
-	// /api/order/?order_id=<id> (singular), not the /api/orders/ list path.
+	// OrderActionPath is the singular order endpoint. Take, poll, and confirm all
+	// use POST/GET /api/order/?order_id=<id>.
 	OrderActionPath string
 	// RobotPath is the robot path value for the config.
 	RobotPath string
@@ -71,37 +71,153 @@ type Client struct {
 	http              *http.Client
 	proxyErr          error
 
-	identityMu sync.Mutex
-	identity   *Identity
+	identityMu     sync.Mutex
+	identity       *Identity
+	identityPinned bool
 }
 
-// Robot identifies a robot.
+// Robot identifies a robot. Coordinators return public_key and
+// encrypted_private_key for an already-registered identity.
 type Robot map[string]any
 
-// Position represents a position.
+// Position is a RoboSats order as returned by GET/POST /api/order/.
 type Position struct {
-	// ID identifies the position.
-	ID string `json:"id"`
-	// OfferID is the offer id value for the position.
-	OfferID string `json:"offer_id"`
-	// Type is the type value for the position.
-	Type string `json:"type"`
-	// Status is the current status of the position.
-	Status string `json:"status"`
-	// Amount is the amount value for the position.
-	Amount json.Number `json:"amount"`
-	// MinAmount is the min amount value for the position.
-	MinAmount json.Number `json:"min_amount"`
-	// MaxAmount is the max amount value for the position.
-	MaxAmount json.Number `json:"max_amount"`
-	// Price is the price value used by the position.
-	Price json.Number `json:"price"`
-	// Premium is the premium value for the position.
-	Premium json.Number `json:"premium"`
-	// PaymentMethod is the payment method value for the position.
-	PaymentMethod string `json:"payment_method"`
-	// Raw preserves additional source data for the position.
-	Raw json.RawMessage `json:"raw,omitempty"`
+	ID             string          `json:"id"`
+	OfferID        string          `json:"offer_id"`
+	Type           int             `json:"type"`
+	Status         int             `json:"status"`
+	Amount         json.Number     `json:"amount"`
+	MinAmount      json.Number     `json:"min_amount"`
+	MaxAmount      json.Number     `json:"max_amount"`
+	Price          json.Number     `json:"price"`
+	Premium        json.Number     `json:"premium"`
+	PaymentMethod  string          `json:"payment_method"`
+	BondInvoice    string          `json:"bond_invoice,omitempty"`
+	EscrowInvoice  string          `json:"escrow_invoice,omitempty"`
+	BondSatoshis   int64           `json:"bond_satoshis,omitempty"`
+	EscrowSatoshis int64           `json:"escrow_satoshis,omitempty"`
+	TradeSatoshis  int64           `json:"trade_satoshis,omitempty"`
+	MakerLocked    bool            `json:"maker_locked"`
+	TakerLocked    bool            `json:"taker_locked"`
+	EscrowLocked   bool            `json:"escrow_locked"`
+	IsSeller       bool            `json:"is_seller"`
+	IsBuyer        bool            `json:"is_buyer"`
+	IsTaker        bool            `json:"is_taker"`
+	IsMaker        bool            `json:"is_maker"`
+	HasRange       bool            `json:"has_range"`
+	ExpiresAt      string          `json:"expires_at,omitempty"`
+	StatusMessage  string          `json:"status_message,omitempty"`
+	UrNick         string          `json:"ur_nick,omitempty"`
+	BadRequest     string          `json:"bad_request,omitempty"`
+	ChatLastIndex  int             `json:"chat_last_index,omitempty"`
+	Raw            json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON accepts numeric or string id/type/status and retains the
+// complete coordinator payload, including top-level bond/escrow invoices.
+func (p *Position) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		ID             flexibleValue `json:"id"`
+		OfferID        flexibleValue `json:"offer_id"`
+		Type           flexibleValue `json:"type"`
+		Status         flexibleValue `json:"status"`
+		Amount         json.Number   `json:"amount"`
+		MinAmount      json.Number   `json:"min_amount"`
+		MaxAmount      json.Number   `json:"max_amount"`
+		Price          json.Number   `json:"price"`
+		Premium        json.Number   `json:"premium"`
+		PaymentMethod  string        `json:"payment_method"`
+		BondInvoice    string        `json:"bond_invoice"`
+		EscrowInvoice  string        `json:"escrow_invoice"`
+		BondSatoshis   int64         `json:"bond_satoshis"`
+		EscrowSatoshis int64         `json:"escrow_satoshis"`
+		TradeSatoshis  int64         `json:"trade_satoshis"`
+		MakerLocked    bool          `json:"maker_locked"`
+		TakerLocked    bool          `json:"taker_locked"`
+		EscrowLocked   bool          `json:"escrow_locked"`
+		IsSeller       bool          `json:"is_seller"`
+		IsBuyer        bool          `json:"is_buyer"`
+		IsTaker        bool          `json:"is_taker"`
+		IsMaker        bool          `json:"is_maker"`
+		HasRange       bool          `json:"has_range"`
+		ExpiresAt      string        `json:"expires_at"`
+		StatusMessage  string        `json:"status_message"`
+		UrNick         string        `json:"ur_nick"`
+		BadRequest     string        `json:"bad_request"`
+		ChatLastIndex  int           `json:"chat_last_index"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	p.ID = wire.ID.String()
+	p.OfferID = wire.OfferID.String()
+	var err error
+	p.Type, err = strconv.Atoi(wire.Type.String())
+	if err != nil && wire.BadRequest == "" {
+		return permanent("robosats: missing or invalid order type")
+	}
+	p.Status, err = strconv.Atoi(wire.Status.String())
+	if err != nil && wire.BadRequest == "" {
+		return permanent("robosats: missing or invalid order status")
+	}
+	p.Amount = wire.Amount
+	p.MinAmount = wire.MinAmount
+	p.MaxAmount = wire.MaxAmount
+	p.Price = wire.Price
+	p.Premium = wire.Premium
+	p.PaymentMethod = wire.PaymentMethod
+	p.BondInvoice = strings.TrimSpace(wire.BondInvoice)
+	p.EscrowInvoice = strings.TrimSpace(wire.EscrowInvoice)
+	p.BondSatoshis = wire.BondSatoshis
+	p.EscrowSatoshis = wire.EscrowSatoshis
+	p.TradeSatoshis = wire.TradeSatoshis
+	p.MakerLocked = wire.MakerLocked
+	p.TakerLocked = wire.TakerLocked
+	p.EscrowLocked = wire.EscrowLocked
+	p.IsSeller = wire.IsSeller
+	p.IsBuyer = wire.IsBuyer
+	p.IsTaker = wire.IsTaker
+	p.IsMaker = wire.IsMaker
+	p.HasRange = wire.HasRange
+	p.ExpiresAt = wire.ExpiresAt
+	p.StatusMessage = wire.StatusMessage
+	p.UrNick = wire.UrNick
+	p.BadRequest = wire.BadRequest
+	p.ChatLastIndex = wire.ChatLastIndex
+	p.Raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+
+type flexibleValue []byte
+
+func (v *flexibleValue) UnmarshalJSON(data []byte) error {
+	*v = append((*v)[:0], data...)
+	return nil
+}
+
+func (v flexibleValue) String() string {
+	if len(v) == 0 || string(v) == "null" {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(v, &s) == nil {
+		return s
+	}
+	var n json.Number
+	if json.Unmarshal(v, &n) == nil {
+		return n.String()
+	}
+	return strings.TrimSpace(string(v))
+}
+
+func (v flexibleValue) Int() int {
+	s := v.String()
+	if s == "" {
+		return 0
+	}
+	var n int
+	fmt.Sscanf(s, "%d", &n)
+	return n
 }
 
 // CreatePositionParams represents a create position params.
@@ -129,9 +245,9 @@ func NewClient(cfg Config) *Client {
 	client := &Client{
 		baseURL:           strings.TrimRight(cfg.BaseURL, "/"),
 		authToken:         cfg.AuthToken,
-		takeOfferPath:     defaultPath(cfg.TakeOfferPath, "/api/book/%s/take/"),
+		takeOfferPath:     defaultPath(cfg.TakeOfferPath, "/api/order/?order_id=%s"),
 		openPositionsPath: defaultPath(cfg.OpenPositionsPath, "/api/orders/"),
-		positionPath:      defaultPath(cfg.PositionPath, "/api/orders/%s/"),
+		positionPath:      defaultPath(cfg.PositionPath, "/api/order/?order_id=%s"),
 		createOrderPath:   defaultPath(cfg.CreateOrderPath, "/api/orders/"),
 		orderActionPath:   defaultPath(cfg.OrderActionPath, "/api/order/?order_id=%s"),
 		robotPath:         defaultPath(cfg.RobotPath, "/api/robot/"),
@@ -192,23 +308,84 @@ func (c *Client) robotIdentity() (*Identity, error) {
 	return identity, nil
 }
 
-// GetRobot retrieves a robot.
+// Identity returns the current robot identity, generating one only if the
+// coordinator has not yet restored registered keys.
+func (c *Client) Identity() *Identity {
+	c.identityMu.Lock()
+	defer c.identityMu.Unlock()
+	return c.identity
+}
+
+func (c *Client) restoreIdentityFromRobot(robot Robot) error {
+	if robot == nil || c.authToken == "" {
+		return nil
+	}
+	publicKey, _ := robot["public_key"].(string)
+	encPrivKey, _ := robot["encrypted_private_key"].(string)
+	if strings.TrimSpace(publicKey) == "" || strings.TrimSpace(encPrivKey) == "" {
+		return nil
+	}
+	identity, err := IdentityFromStoredKeys(c.authToken, publicKey, encPrivKey)
+	if err != nil {
+		return err
+	}
+	c.identityMu.Lock()
+	defer c.identityMu.Unlock()
+	if c.identityPinned && (c.identity == nil || c.identity.PublicKeyArmored != identity.PublicKeyArmored || c.identity.EncPrivKeyArmored != identity.EncPrivKeyArmored) {
+		return permanent("robosats: registered identity differs from admitted robot")
+	}
+	c.identity = identity
+	return nil
+}
+
+func robotString(robot Robot, keys ...string) string {
+	for _, key := range keys {
+		v := robot[key]
+		if v == nil {
+			continue
+		}
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if s != "" && s != "0" {
+			return s
+		}
+	}
+	return ""
+}
+
+// GetRobot retrieves a robot and restores the coordinator-registered PGP
+// identity when the response includes stored keys.
 func (c *Client) GetRobot(ctx context.Context) (Robot, error) {
 	var robot Robot
 	if err := c.request(ctx, http.MethodGet, c.robotPath, nil, &robot); err != nil {
 		return nil, err
 	}
+	if err := c.restoreIdentityFromRobot(robot); err != nil {
+		return nil, err
+	}
 	return robot, nil
 }
 
-// TakeOffer accepts an existing DEX offer.
+// TakeOffer accepts an existing DEX offer using action "take". Ranged offers
+// require amount as the selected fiat quantity.
 func (c *Client) TakeOffer(ctx context.Context, offerID string) (*Position, error) {
+	return c.TakeOfferWithAmount(ctx, offerID, "")
+}
+
+// TakeOfferWithAmount takes the order and, when amount is non-empty, sends the
+// selected fiat amount required for ranged offers.
+func (c *Client) TakeOfferWithAmount(ctx context.Context, offerID, amount string) (*Position, error) {
 	if offerID == "" {
 		return nil, errors.New("robosats: offer ID is required")
 	}
-
+	body := map[string]any{"action": "take"}
+	if strings.TrimSpace(amount) != "" {
+		body["amount"] = strings.TrimSpace(amount)
+	}
 	var pos Position
-	if err := c.request(ctx, http.MethodPost, fmt.Sprintf(c.takeOfferPath, offerID), nil, &pos); err != nil {
+	if err := c.request(ctx, http.MethodPost, c.orderPath(offerID), body, &pos); err != nil {
+		return nil, err
+	}
+	if err := pos.ValidateResponse(); err != nil {
 		return nil, err
 	}
 	return &pos, nil
@@ -230,7 +407,10 @@ func (c *Client) GetPosition(ctx context.Context, positionID string) (*Position,
 	}
 
 	var pos Position
-	if err := c.request(ctx, http.MethodGet, fmt.Sprintf(c.positionPath, positionID), nil, &pos); err != nil {
+	if err := c.request(ctx, http.MethodGet, c.orderPath(positionID), nil, &pos); err != nil {
+		return nil, err
+	}
+	if err := pos.ValidateResponse(); err != nil {
 		return nil, err
 	}
 	return &pos, nil
@@ -255,10 +435,24 @@ func (c *Client) ConfirmFiatReceived(ctx context.Context, orderID string) (*Posi
 	}
 	var pos Position
 	body := map[string]any{"action": "confirm"}
-	if err := c.request(ctx, http.MethodPost, fmt.Sprintf(c.orderActionPath, orderID), body, &pos); err != nil {
+	if err := c.request(ctx, http.MethodPost, c.orderPath(orderID), body, &pos); err != nil {
+		return nil, err
+	}
+	if err := pos.ValidateResponse(); err != nil {
 		return nil, err
 	}
 	return &pos, nil
+}
+
+func (c *Client) orderPath(orderID string) string {
+	path := c.orderActionPath
+	if path == "" {
+		path = c.positionPath
+	}
+	if path == "" {
+		path = c.takeOfferPath
+	}
+	return fmt.Sprintf(path, orderID)
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body any, out any) error {
@@ -301,6 +495,9 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 408 && resp.StatusCode != 429 {
+			return permanent("robosats: %s %s returned HTTP %d", method, path, resp.StatusCode)
+		}
 		if detail := readErrorDetail(resp.Body); detail != "" {
 			return fmt.Errorf("robosats: %s %s returned HTTP %d (%s)", method, path, resp.StatusCode, detail)
 		}
@@ -310,7 +507,7 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 		return nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("robosats: decode response: %w", err)
+		return permanent("robosats: invalid response: %v", err)
 	}
 	return nil
 }

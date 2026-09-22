@@ -22,6 +22,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 // Defines values for CexPreTradeCheckRequestMarketSide.
@@ -197,6 +198,107 @@ type APIError struct {
 	Provider  *string `json:"provider,omitempty"`
 }
 
+// BisqExecutionAcceptRequest defines model for BisqExecutionAcceptRequest.
+type BisqExecutionAcceptRequest struct {
+	IdempotencyKey string             `json:"idempotency_key"`
+	QuoteId        openapi_types.UUID `json:"quote_id"`
+}
+
+// BisqExecutionAccepted defines model for BisqExecutionAccepted.
+type BisqExecutionAccepted struct {
+	Accepted      bool   `json:"accepted"`
+	Stage         string `json:"stage"`
+	TradeMode     string `json:"trade_mode"`
+	TransactionId int    `json:"transaction_id"`
+}
+
+// BisqExecutionQuote defines model for BisqExecutionQuote.
+type BisqExecutionQuote struct {
+	ExpiresAt               time.Time          `json:"expires_at"`
+	FiatAmount              float32            `json:"fiat_amount"`
+	FundingAddress          string             `json:"funding_address"`
+	HedgelessNetworkFeeSats *int               `json:"hedgeless_network_fee_sats,omitempty"`
+	IsBtcWalletFunded       bool               `json:"is_btc_wallet_funded"`
+	Limits                  BisqSpendingLimits `json:"limits"`
+	MiningFeeSats           int                `json:"mining_fee_sats"`
+	MissingSats             int                `json:"missing_sats"`
+	PaymentAccountId        string             `json:"payment_account_id"`
+	QuoteId                 string             `json:"quote_id"`
+	SecurityDepositSats     int                `json:"security_deposit_sats"`
+	TakerFeeSats            int                `json:"taker_fee_sats"`
+	TotalToPaySats          int                `json:"total_to_pay_sats"`
+	TradeAmountSats         int                `json:"trade_amount_sats"`
+	TradeMode               TradeMode          `json:"trade_mode"`
+	Volume                  *string            `json:"volume,omitempty"`
+}
+
+// BisqExecutionQuoteRequest defines model for BisqExecutionQuoteRequest.
+type BisqExecutionQuoteRequest struct {
+	BtcAmount          *float32                `json:"btc_amount,omitempty"`
+	BtcAmountSats      *int                    `json:"btc_amount_sats,omitempty"`
+	FiatCurrency       *string                 `json:"fiat_currency,omitempty"`
+	MaxCexFiatSpend    *float32                `json:"max_cex_fiat_spend,omitempty"`
+	MaxWalletDebitSats *int                    `json:"max_wallet_debit_sats,omitempty"`
+	MinFiatProceeds    *float32                `json:"min_fiat_proceeds,omitempty"`
+	OfferId            string                  `json:"offer_id"`
+	PaymentMethod      string                  `json:"payment_method"`
+	PaymentMethods     *[]string               `json:"payment_methods,omitempty"`
+	Provider           string                  `json:"provider"`
+	ResolvedRoute      ResolvedRoute           `json:"resolved_route"`
+	SelectedOffer      *map[string]interface{} `json:"selected_offer,omitempty"`
+	TradeMode          TradeMode               `json:"trade_mode"`
+}
+
+// BisqFundingDestination defines model for BisqFundingDestination.
+type BisqFundingDestination struct {
+	Address   string     `json:"address"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	Id        int        `json:"id"`
+	IsActive  bool       `json:"is_active"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+}
+
+// BisqFundingDestinationEnvelope defines model for BisqFundingDestinationEnvelope.
+type BisqFundingDestinationEnvelope struct {
+	Destination *BisqFundingDestination `json:"destination"`
+}
+
+// BisqFundingDestinationRequest defines model for BisqFundingDestinationRequest.
+type BisqFundingDestinationRequest struct {
+	Address string `json:"address"`
+}
+
+// BisqPaymentAccountMapping defines model for BisqPaymentAccountMapping.
+type BisqPaymentAccountMapping struct {
+	BisqPaymentAccountId string     `json:"bisq_payment_account_id"`
+	CreatedAt            *time.Time `json:"created_at,omitempty"`
+	Currency             string     `json:"currency"`
+	Id                   int        `json:"id"`
+	LocalAccountId       int        `json:"local_account_id"`
+	PaymentMethodName    string     `json:"payment_method_name"`
+	UpdatedAt            *time.Time `json:"updated_at,omitempty"`
+}
+
+// BisqPaymentAccountMappingList defines model for BisqPaymentAccountMappingList.
+type BisqPaymentAccountMappingList struct {
+	Mappings []BisqPaymentAccountMapping `json:"mappings"`
+}
+
+// BisqPaymentAccountMappingRequest defines model for BisqPaymentAccountMappingRequest.
+type BisqPaymentAccountMappingRequest struct {
+	BisqPaymentAccountId string `json:"bisq_payment_account_id"`
+	Currency             string `json:"currency"`
+	LocalAccountId       *int   `json:"local_account_id,omitempty"`
+	PaymentMethodName    string `json:"payment_method_name"`
+}
+
+// BisqSpendingLimits defines model for BisqSpendingLimits.
+type BisqSpendingLimits struct {
+	MaxCexFiatSpend    *float32 `json:"max_cex_fiat_spend,omitempty"`
+	MaxWalletDebitSats *int     `json:"max_wallet_debit_sats,omitempty"`
+	MinFiatProceeds    *float32 `json:"min_fiat_proceeds,omitempty"`
+}
+
 // CexDepositAddress defines model for CexDepositAddress.
 type CexDepositAddress struct {
 	Address              string                 `json:"address"`
@@ -228,6 +330,7 @@ type CexPreTradeCheckRequest struct {
 	PaymentMethod  *string                            `json:"payment_method,omitempty"`
 	PaymentMethods *[]string                          `json:"payment_methods,omitempty"`
 	Provider       *string                            `json:"provider,omitempty"`
+	QuoteId        *string                            `json:"quote_id,omitempty"`
 
 	// RequiredBtcLiquidity Position BTC plus security deposit. Required for hedgeless on-chain liquidity-pool checks and for Swap_main2lightning Lightning liquidity.
 	RequiredBtcLiquidity   *float32                           `json:"required_btc_liquidity,omitempty"`
@@ -270,6 +373,12 @@ type CexSpotTrade struct {
 	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
+// CexTradeflowAccepted defines model for CexTradeflowAccepted.
+type CexTradeflowAccepted struct {
+	StatusUrl     string `json:"status_url"`
+	TransactionId int    `json:"transaction_id"`
+}
+
 // CexTradeflowRequest defines model for CexTradeflowRequest.
 type CexTradeflowRequest struct {
 	BtcAmount              float32                       `json:"btc_amount"`
@@ -280,12 +389,14 @@ type CexTradeflowRequest struct {
 	HedgeNotionalBtc       *float32                      `json:"hedge_notional_btc,omitempty"`
 	HedgeSide              *CexTradeflowRequestHedgeSide `json:"hedge_side,omitempty"`
 	HedgeVenue             *string                       `json:"hedge_venue,omitempty"`
+	IdempotencyKey         *string                       `json:"idempotency_key,omitempty"`
 	Leverage               *float32                      `json:"leverage,omitempty"`
 	MarketSide             CexTradeflowRequestMarketSide `json:"market_side"`
 	OfferId                *string                       `json:"offer_id,omitempty"`
 	PaymentMethod          *string                       `json:"payment_method,omitempty"`
 	PaymentMethods         *[]string                     `json:"payment_methods,omitempty"`
 	Provider               string                        `json:"provider"`
+	QuoteId                *string                       `json:"quote_id,omitempty"`
 	RequiredBtcLiquidity   *float32                      `json:"required_btc_liquidity,omitempty"`
 	RequiredCapital        float32                       `json:"required_capital"`
 	ResolvedRoute          *ResolvedRoute                `json:"resolved_route,omitempty"`
@@ -538,6 +649,11 @@ type PostApiBisqWalletUnlockJSONBody map[string]interface{}
 // PostApiBisqWalletWithdrawJSONBody defines parameters for PostApiBisqWalletWithdraw.
 type PostApiBisqWalletWithdrawJSONBody map[string]interface{}
 
+// StartCexTradeflow202JSONResponseBody defines parameters for StartCexTradeflow.
+type StartCexTradeflow202JSONResponseBody struct {
+	union json.RawMessage
+}
+
 // TrackCexWithdrawalParams defines parameters for TrackCexWithdrawal.
 type TrackCexWithdrawalParams struct {
 	Provider        string  `form:"provider" json:"provider"`
@@ -586,6 +702,18 @@ type PostApiTransactionsIdPoolRefillReconcileJSONBody map[string]interface{}
 
 // PostApiAccountsHealthCheckJSONRequestBody defines body for PostApiAccountsHealthCheck for application/json ContentType.
 type PostApiAccountsHealthCheckJSONRequestBody PostApiAccountsHealthCheckJSONBody
+
+// AcceptBisqExecutionJSONRequestBody defines body for AcceptBisqExecution for application/json ContentType.
+type AcceptBisqExecutionJSONRequestBody = BisqExecutionAcceptRequest
+
+// QuoteBisqExecutionJSONRequestBody defines body for QuoteBisqExecution for application/json ContentType.
+type QuoteBisqExecutionJSONRequestBody = BisqExecutionQuoteRequest
+
+// SetBisqFundingDestinationJSONRequestBody defines body for SetBisqFundingDestination for application/json ContentType.
+type SetBisqFundingDestinationJSONRequestBody = BisqFundingDestinationRequest
+
+// UpsertBisqPaymentAccountMappingJSONRequestBody defines body for UpsertBisqPaymentAccountMapping for application/json ContentType.
+type UpsertBisqPaymentAccountMappingJSONRequestBody = BisqPaymentAccountMappingRequest
 
 // PostApiBisqPaymentAccountsJSONRequestBody defines body for PostApiBisqPaymentAccounts for application/json ContentType.
 type PostApiBisqPaymentAccountsJSONRequestBody PostApiBisqPaymentAccountsJSONBody
@@ -1279,11 +1407,91 @@ func (a MMTransactionStatus) MarshalJSON() ([]byte, error) {
 	return json.Marshal(object)
 }
 
+// AsCexTradeflowAccepted returns the union data inside the StartCexTradeflow202JSONResponseBody as a CexTradeflowAccepted
+func (t StartCexTradeflow202JSONResponseBody) AsCexTradeflowAccepted() (CexTradeflowAccepted, error) {
+	var body CexTradeflowAccepted
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromCexTradeflowAccepted overwrites any union data inside the StartCexTradeflow202JSONResponseBody as the provided CexTradeflowAccepted
+func (t *StartCexTradeflow202JSONResponseBody) FromCexTradeflowAccepted(v CexTradeflowAccepted) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeCexTradeflowAccepted performs a merge with any union data inside the StartCexTradeflow202JSONResponseBody, using the provided CexTradeflowAccepted
+func (t *StartCexTradeflow202JSONResponseBody) MergeCexTradeflowAccepted(v CexTradeflowAccepted) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsBisqExecutionAccepted returns the union data inside the StartCexTradeflow202JSONResponseBody as a BisqExecutionAccepted
+func (t StartCexTradeflow202JSONResponseBody) AsBisqExecutionAccepted() (BisqExecutionAccepted, error) {
+	var body BisqExecutionAccepted
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromBisqExecutionAccepted overwrites any union data inside the StartCexTradeflow202JSONResponseBody as the provided BisqExecutionAccepted
+func (t *StartCexTradeflow202JSONResponseBody) FromBisqExecutionAccepted(v BisqExecutionAccepted) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeBisqExecutionAccepted performs a merge with any union data inside the StartCexTradeflow202JSONResponseBody, using the provided BisqExecutionAccepted
+func (t *StartCexTradeflow202JSONResponseBody) MergeBisqExecutionAccepted(v BisqExecutionAccepted) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t StartCexTradeflow202JSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *StartCexTradeflow202JSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// PostApiAccountsHealthCheck POST /api/accounts/health_check
 	// (POST /api/accounts/health_check)
 	PostApiAccountsHealthCheck(w http.ResponseWriter, r *http.Request)
+	// AcceptBisqExecution Accept a stored Bisq quote or recover an earlier acceptance
+	// (POST /api/bisq/execution/accept)
+	AcceptBisqExecution(w http.ResponseWriter, r *http.Request)
+	// QuoteBisqExecution Quote a Bisq v1 take-offer without reserving the offer
+	// (POST /api/bisq/execution/quote)
+	QuoteBisqExecution(w http.ResponseWriter, r *http.Request)
+	// GetBisqFundingDestination Get the designated Bisq funding address
+	// (GET /api/bisq/funding-destination)
+	GetBisqFundingDestination(w http.ResponseWriter, r *http.Request)
+	// SetBisqFundingDestination Set the designated Bisq funding address
+	// (PUT /api/bisq/funding-destination)
+	SetBisqFundingDestination(w http.ResponseWriter, r *http.Request)
+	// ListBisqPaymentAccountMappings List local-to-Bisq payment account mappings
+	// (GET /api/bisq/payment-account-mappings)
+	ListBisqPaymentAccountMappings(w http.ResponseWriter, r *http.Request)
+	// UpsertBisqPaymentAccountMapping Bind a local receiving account to a Bisq daemon payment account
+	// (PUT /api/bisq/payment-account-mappings)
+	UpsertBisqPaymentAccountMapping(w http.ResponseWriter, r *http.Request)
 	// GetApiBisqPaymentAccounts GET /api/bisq/payment-accounts
 	// (GET /api/bisq/payment-accounts)
 	GetApiBisqPaymentAccounts(w http.ResponseWriter, r *http.Request)
@@ -1459,6 +1667,90 @@ func (siw *ServerInterfaceWrapper) PostApiAccountsHealthCheck(w http.ResponseWri
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostApiAccountsHealthCheck(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AcceptBisqExecution operation middleware
+func (siw *ServerInterfaceWrapper) AcceptBisqExecution(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AcceptBisqExecution(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// QuoteBisqExecution operation middleware
+func (siw *ServerInterfaceWrapper) QuoteBisqExecution(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.QuoteBisqExecution(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetBisqFundingDestination operation middleware
+func (siw *ServerInterfaceWrapper) GetBisqFundingDestination(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetBisqFundingDestination(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SetBisqFundingDestination operation middleware
+func (siw *ServerInterfaceWrapper) SetBisqFundingDestination(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetBisqFundingDestination(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListBisqPaymentAccountMappings operation middleware
+func (siw *ServerInterfaceWrapper) ListBisqPaymentAccountMappings(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListBisqPaymentAccountMappings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpsertBisqPaymentAccountMapping operation middleware
+func (siw *ServerInterfaceWrapper) UpsertBisqPaymentAccountMapping(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpsertBisqPaymentAccountMapping(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2465,6 +2757,12 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/bisq/payment-accounts/{id}", wrapper.DeleteApiBisqPaymentAccountsId)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/bisq/payment-methods", wrapper.GetApiBisqPaymentMethods)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/bisq/payment-methods/{id}/form", wrapper.GetApiBisqPaymentMethodsIdForm)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/bisq/execution/accept", wrapper.AcceptBisqExecution)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/bisq/execution/quote", wrapper.QuoteBisqExecution)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/bisq/payment-account-mappings", wrapper.ListBisqPaymentAccountMappings)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/bisq/payment-account-mappings", wrapper.UpsertBisqPaymentAccountMapping)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/bisq/funding-destination", wrapper.GetBisqFundingDestination)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/bisq/funding-destination", wrapper.SetBisqFundingDestination)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/bisq/wallet/balances", wrapper.GetApiBisqWalletBalances)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/bisq/wallet/addresses", wrapper.GetApiBisqWalletAddresses)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/bisq/wallet/transactions", wrapper.GetApiBisqWalletTransactions)
@@ -2577,6 +2875,304 @@ func (response PostApiAccountsHealthCheckdefaultTextResponse) VisitPostApiAccoun
 	w.WriteHeader(response.StatusCode)
 
 	_, err := w.Write([]byte(fmt.Sprint(response.Body)))
+	return err
+}
+
+type AcceptBisqExecutionRequestObject struct {
+	Body *AcceptBisqExecutionJSONRequestBody
+}
+
+type AcceptBisqExecutionResponseObject interface {
+	VisitAcceptBisqExecutionResponse(w http.ResponseWriter) error
+}
+
+type AcceptBisqExecution202JSONResponse BisqExecutionAccepted
+
+func (response AcceptBisqExecution202JSONResponse) VisitAcceptBisqExecutionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(202)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcceptBisqExecution400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response AcceptBisqExecution400JSONResponse) VisitAcceptBisqExecutionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcceptBisqExecution409JSONResponse struct{ ConflictJSONResponse }
+
+func (response AcceptBisqExecution409JSONResponse) VisitAcceptBisqExecutionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcceptBisqExecution503JSONResponse struct{ UnavailableJSONResponse }
+
+func (response AcceptBisqExecution503JSONResponse) VisitAcceptBisqExecutionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type QuoteBisqExecutionRequestObject struct {
+	Body *QuoteBisqExecutionJSONRequestBody
+}
+
+type QuoteBisqExecutionResponseObject interface {
+	VisitQuoteBisqExecutionResponse(w http.ResponseWriter) error
+}
+
+type QuoteBisqExecution200JSONResponse BisqExecutionQuote
+
+func (response QuoteBisqExecution200JSONResponse) VisitQuoteBisqExecutionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type QuoteBisqExecution400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response QuoteBisqExecution400JSONResponse) VisitQuoteBisqExecutionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type QuoteBisqExecution409JSONResponse struct{ ConflictJSONResponse }
+
+func (response QuoteBisqExecution409JSONResponse) VisitQuoteBisqExecutionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type QuoteBisqExecution503JSONResponse struct{ UnavailableJSONResponse }
+
+func (response QuoteBisqExecution503JSONResponse) VisitQuoteBisqExecutionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetBisqFundingDestinationRequestObject struct {
+}
+
+type GetBisqFundingDestinationResponseObject interface {
+	VisitGetBisqFundingDestinationResponse(w http.ResponseWriter) error
+}
+
+type GetBisqFundingDestination200JSONResponse BisqFundingDestinationEnvelope
+
+func (response GetBisqFundingDestination200JSONResponse) VisitGetBisqFundingDestinationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetBisqFundingDestination503JSONResponse struct{ UnavailableJSONResponse }
+
+func (response GetBisqFundingDestination503JSONResponse) VisitGetBisqFundingDestinationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetBisqFundingDestinationRequestObject struct {
+	Body *SetBisqFundingDestinationJSONRequestBody
+}
+
+type SetBisqFundingDestinationResponseObject interface {
+	VisitSetBisqFundingDestinationResponse(w http.ResponseWriter) error
+}
+
+type SetBisqFundingDestination200JSONResponse BisqFundingDestination
+
+func (response SetBisqFundingDestination200JSONResponse) VisitSetBisqFundingDestinationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetBisqFundingDestination400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response SetBisqFundingDestination400JSONResponse) VisitSetBisqFundingDestinationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetBisqFundingDestination503JSONResponse struct{ UnavailableJSONResponse }
+
+func (response SetBisqFundingDestination503JSONResponse) VisitSetBisqFundingDestinationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListBisqPaymentAccountMappingsRequestObject struct {
+}
+
+type ListBisqPaymentAccountMappingsResponseObject interface {
+	VisitListBisqPaymentAccountMappingsResponse(w http.ResponseWriter) error
+}
+
+type ListBisqPaymentAccountMappings200JSONResponse BisqPaymentAccountMappingList
+
+func (response ListBisqPaymentAccountMappings200JSONResponse) VisitListBisqPaymentAccountMappingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListBisqPaymentAccountMappings503JSONResponse struct{ UnavailableJSONResponse }
+
+func (response ListBisqPaymentAccountMappings503JSONResponse) VisitListBisqPaymentAccountMappingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertBisqPaymentAccountMappingRequestObject struct {
+	Body *UpsertBisqPaymentAccountMappingJSONRequestBody
+}
+
+type UpsertBisqPaymentAccountMappingResponseObject interface {
+	VisitUpsertBisqPaymentAccountMappingResponse(w http.ResponseWriter) error
+}
+
+type UpsertBisqPaymentAccountMapping200JSONResponse BisqPaymentAccountMapping
+
+func (response UpsertBisqPaymentAccountMapping200JSONResponse) VisitUpsertBisqPaymentAccountMappingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertBisqPaymentAccountMapping400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response UpsertBisqPaymentAccountMapping400JSONResponse) VisitUpsertBisqPaymentAccountMappingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpsertBisqPaymentAccountMapping503JSONResponse struct{ UnavailableJSONResponse }
+
+func (response UpsertBisqPaymentAccountMapping503JSONResponse) VisitUpsertBisqPaymentAccountMappingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
 	return err
 }
 
@@ -3409,6 +4005,20 @@ func (response StartCexTradeflow200JSONResponse) VisitStartCexTradeflowResponse(
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartCexTradeflow202JSONResponse = StartCexTradeflow202JSONResponseBody
+
+func (response StartCexTradeflow202JSONResponse) VisitStartCexTradeflowResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.union); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(202)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -5495,6 +6105,24 @@ type StrictServerInterface interface {
 	// PostApiAccountsHealthCheck POST /api/accounts/health_check
 	// (POST /api/accounts/health_check)
 	PostApiAccountsHealthCheck(ctx context.Context, request PostApiAccountsHealthCheckRequestObject) (PostApiAccountsHealthCheckResponseObject, error)
+	// AcceptBisqExecution Accept a stored Bisq quote or recover an earlier acceptance
+	// (POST /api/bisq/execution/accept)
+	AcceptBisqExecution(ctx context.Context, request AcceptBisqExecutionRequestObject) (AcceptBisqExecutionResponseObject, error)
+	// QuoteBisqExecution Quote a Bisq v1 take-offer without reserving the offer
+	// (POST /api/bisq/execution/quote)
+	QuoteBisqExecution(ctx context.Context, request QuoteBisqExecutionRequestObject) (QuoteBisqExecutionResponseObject, error)
+	// GetBisqFundingDestination Get the designated Bisq funding address
+	// (GET /api/bisq/funding-destination)
+	GetBisqFundingDestination(ctx context.Context, request GetBisqFundingDestinationRequestObject) (GetBisqFundingDestinationResponseObject, error)
+	// SetBisqFundingDestination Set the designated Bisq funding address
+	// (PUT /api/bisq/funding-destination)
+	SetBisqFundingDestination(ctx context.Context, request SetBisqFundingDestinationRequestObject) (SetBisqFundingDestinationResponseObject, error)
+	// ListBisqPaymentAccountMappings List local-to-Bisq payment account mappings
+	// (GET /api/bisq/payment-account-mappings)
+	ListBisqPaymentAccountMappings(ctx context.Context, request ListBisqPaymentAccountMappingsRequestObject) (ListBisqPaymentAccountMappingsResponseObject, error)
+	// UpsertBisqPaymentAccountMapping Bind a local receiving account to a Bisq daemon payment account
+	// (PUT /api/bisq/payment-account-mappings)
+	UpsertBisqPaymentAccountMapping(ctx context.Context, request UpsertBisqPaymentAccountMappingRequestObject) (UpsertBisqPaymentAccountMappingResponseObject, error)
 	// GetApiBisqPaymentAccounts GET /api/bisq/payment-accounts
 	// (GET /api/bisq/payment-accounts)
 	GetApiBisqPaymentAccounts(ctx context.Context, request GetApiBisqPaymentAccountsRequestObject) (GetApiBisqPaymentAccountsResponseObject, error)
@@ -5722,6 +6350,178 @@ func (sh *strictHandler) PostApiAccountsHealthCheck(w http.ResponseWriter, r *ht
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(PostApiAccountsHealthCheckResponseObject); ok {
 		if err := validResponse.VisitPostApiAccountsHealthCheckResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AcceptBisqExecution operation middleware
+func (sh *strictHandler) AcceptBisqExecution(w http.ResponseWriter, r *http.Request) {
+	var request AcceptBisqExecutionRequestObject
+
+	var body AcceptBisqExecutionJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AcceptBisqExecution(ctx, request.(AcceptBisqExecutionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AcceptBisqExecution")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AcceptBisqExecutionResponseObject); ok {
+		if err := validResponse.VisitAcceptBisqExecutionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// QuoteBisqExecution operation middleware
+func (sh *strictHandler) QuoteBisqExecution(w http.ResponseWriter, r *http.Request) {
+	var request QuoteBisqExecutionRequestObject
+
+	var body QuoteBisqExecutionJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.QuoteBisqExecution(ctx, request.(QuoteBisqExecutionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "QuoteBisqExecution")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(QuoteBisqExecutionResponseObject); ok {
+		if err := validResponse.VisitQuoteBisqExecutionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetBisqFundingDestination operation middleware
+func (sh *strictHandler) GetBisqFundingDestination(w http.ResponseWriter, r *http.Request) {
+	var request GetBisqFundingDestinationRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetBisqFundingDestination(ctx, request.(GetBisqFundingDestinationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetBisqFundingDestination")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetBisqFundingDestinationResponseObject); ok {
+		if err := validResponse.VisitGetBisqFundingDestinationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SetBisqFundingDestination operation middleware
+func (sh *strictHandler) SetBisqFundingDestination(w http.ResponseWriter, r *http.Request) {
+	var request SetBisqFundingDestinationRequestObject
+
+	var body SetBisqFundingDestinationJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SetBisqFundingDestination(ctx, request.(SetBisqFundingDestinationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetBisqFundingDestination")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SetBisqFundingDestinationResponseObject); ok {
+		if err := validResponse.VisitSetBisqFundingDestinationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListBisqPaymentAccountMappings operation middleware
+func (sh *strictHandler) ListBisqPaymentAccountMappings(w http.ResponseWriter, r *http.Request) {
+	var request ListBisqPaymentAccountMappingsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListBisqPaymentAccountMappings(ctx, request.(ListBisqPaymentAccountMappingsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListBisqPaymentAccountMappings")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListBisqPaymentAccountMappingsResponseObject); ok {
+		if err := validResponse.VisitListBisqPaymentAccountMappingsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpsertBisqPaymentAccountMapping operation middleware
+func (sh *strictHandler) UpsertBisqPaymentAccountMapping(w http.ResponseWriter, r *http.Request) {
+	var request UpsertBisqPaymentAccountMappingRequestObject
+
+	var body UpsertBisqPaymentAccountMappingJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpsertBisqPaymentAccountMapping(ctx, request.(UpsertBisqPaymentAccountMappingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpsertBisqPaymentAccountMapping")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpsertBisqPaymentAccountMappingResponseObject); ok {
+		if err := validResponse.VisitUpsertBisqPaymentAccountMappingResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -7196,84 +7996,102 @@ func (sh *strictHandler) GetReadyz(w http.ResponseWriter, r *http.Request) {
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

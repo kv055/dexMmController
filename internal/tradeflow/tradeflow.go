@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"dexMmController/internal/cexaccount"
 	"dexMmController/internal/db"
 	"dexMmController/internal/dexaccount"
+	"dexMmController/internal/exchangeconnectors/dex/robosats"
 	"dexMmController/internal/metrics"
 	"dexMmController/internal/pretrade"
 	lnd "dexMmController/internal/wallethub"
@@ -72,6 +74,8 @@ type Order struct {
 	TransactionID uint
 	// SelectedOffer is an optional JSON snapshot of the chosen offer from the UI.
 	SelectedOffer []byte
+	// QuoteID is the Unified API execution quote bound to this trade.
+	QuoteID string
 	// PaymentMethod is the canonical offer payment method the operator will use to pay the maker.
 	PaymentMethod string
 	// PaymentMethods is the offer's full accepted-method list; when PaymentMethod
@@ -94,6 +98,9 @@ type Order struct {
 	// inputs used by hedgefull RoboSats preparation.
 	CEXWithdrawalFeeBTC   float64
 	SwapSafetyHeadroomBTC float64
+	// BisqPlan is the accepted Bisq v1 quote used to fund and take without
+	// deriving amounts from CEX fills or wallet totals.
+	BisqPlan *db.BisqExecutionPlan
 }
 
 type ResolvedRoute = db.ResolvedRoute
@@ -196,14 +203,19 @@ type capabilityStore interface {
 
 // TradeFlow orchestrates the CEX trade leg of a DEX arbitrage cycle.
 type TradeFlow struct {
-	svc             Service
-	store           transactionStore
-	directResolver  DirectDestinationResolver
-	hedgelessDEX    hedgelessDEX
-	hedgelessWallet hedgelessWallet
-	chainSource     chainConfirmationSource
-	capabilities    capabilityStore
-	liquidity       liquidityExecutor
+	svc               Service
+	store             transactionStore
+	directResolver    DirectDestinationResolver
+	hedgelessDEX      hedgelessDEX
+	hedgelessWallet   hedgelessWallet
+	chainSource       chainConfirmationSource
+	capabilities      capabilityStore
+	liquidity         liquidityExecutor
+	robo              *robosats.Coordinator
+	roboWorkerEnabled bool
+	roboRelay         func(context.Context, *db.Transaction) error
+	roboChat          func(context.Context, *db.Transaction) error
+	bisqDriver        BisqStepDriver
 }
 
 // WithLiquidityExecutor wires trade-triggered submarine swaps. It is invoked
@@ -252,6 +264,9 @@ func (tf *TradeFlow) WithDirectDestinationResolver(r DirectDestinationResolver) 
 // money flows: hedgefull buys/hedges on the CEX before funding the DEX, while
 // hedgeless funds from existing LND collateral and replenishes it afterward.
 func (tf *TradeFlow) Run(ctx context.Context, order Order) (*Result, error) {
+	if order.BisqPlan != nil && order.BisqPlan.Version >= 2 {
+		return nil, fmt.Errorf("versioned Bisq executions must use the durable step executor")
+	}
 	if err := validate(order); err != nil {
 		return nil, err
 	}
@@ -302,6 +317,22 @@ func (tf *TradeFlow) requireCapabilities(ctx context.Context, order Order) error
 			method = order.PaymentMethods[0]
 		}
 		if err := checker.CheckMostro(ctx, dexaccount.OfferInput{OfferID: order.OfferID, FiatAmount: order.FiatAmount, FiatCurrency: order.FiatCurrency, PaymentMethod: method, VenueNodePubKey: quote.Node, SourceEventID: quote.Event, ProtocolVersion: quote.Protocol, MaxPaymentSat: int64(math.Round((order.RequiredBTCLiquidity - order.SecurityDepositBTC) * 1e8)), MaxBondSat: int64(math.Round(order.SecurityDepositBTC * 1e8)), RoutingFeeSat: order.RoutingFeeAllowanceSat}); err != nil {
+			return err
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(order.Dex), "robosats") {
+		checker, ok := tf.hedgelessDEX.(interface {
+			CheckRoboSats(context.Context, dexaccount.OfferInput) error
+		})
+		if !ok {
+			return fmt.Errorf("RoboSats preflight is not configured")
+		}
+		id := order.TransactionID
+		in := robosatsOfferInput(order, id)
+		if strings.TrimSpace(in.CoordinatorID) == "" {
+			return fmt.Errorf("RoboSats coordinator identity is required; refresh the offer from source")
+		}
+		if err := checker.CheckRoboSats(ctx, in); err != nil {
 			return err
 		}
 	}
@@ -414,6 +445,10 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	if order.ResolvedRoute.UsesLightning() && order.RequiredBTCLiquidity > spotAmountBTC {
 		spotAmountBTC = order.RequiredBTCLiquidity
 	}
+	if order.BisqPlan != nil && order.BisqPlan.TotalToPaySats > 0 {
+		// Bisq needs principal + seller deposit + trading/mining fees in its wallet.
+		spotAmountBTC = dexaccount.SatsToBTC(int64(order.BisqPlan.TotalToPaySats))
+	}
 	if report.SwapRequired {
 		swapOverhead := float64(report.ExpectedLockupSat+report.EstimatedFundingFeeSat-report.SwapShortfallSat) / 1e8
 		spotAmountBTC += swapOverhead + order.SwapSafetyHeadroomBTC
@@ -432,6 +467,9 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 		return nil, fmt.Errorf("tradeflow: spot buy failed: %w", err)
 	}
 	filledBTC := spotAmountBTC
+	if isRoboOrder(order) && (spot == nil || spot.Execution == nil || spot.Execution.FilledBTC <= 0) {
+		return nil, fmt.Errorf("RoboSats spot buy has no confirmed fill; reconcile with CEX")
+	}
 	if spot.Execution != nil {
 		filledBTC = spot.Execution.FilledBTC
 	}
@@ -445,11 +483,23 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 			return nil, fmt.Errorf("tradeflow: persist spot buy (order_id=%s): %w", spot.OrderID, err)
 		}
 	}
+	if isRoboOrder(order) && filledBTC+1e-8 < spotAmountBTC {
+		return nil, fmt.Errorf("RoboSats spot fill is below the prepared liquidity requirement; reconcile with CEX")
+	}
 	if strings.EqualFold(order.Provider, "coinbase") && filledBTC+1e-8 < netWithdrawalBTC+order.CEXWithdrawalFeeBTC {
 		shortFillErr := fmt.Errorf("coinbase fill %.8f BTC is below net target plus withdrawal reserve %.8f BTC; hedge not opened", filledBTC, netWithdrawalBTC+order.CEXWithdrawalFeeBTC)
 		if persist {
 			if perr := markHedgeFailed(tf.store, txID, spot, shortFillErr); perr != nil {
 				return nil, fmt.Errorf("tradeflow: persist Coinbase short-fill review state: %w", perr)
+			}
+		}
+		return nil, fmt.Errorf("tradeflow: %w", shortFillErr)
+	}
+	if order.BisqPlan != nil && filledBTC+1e-8 < netWithdrawalBTC {
+		shortFillErr := fmt.Errorf("CEX fill %.8f BTC is below Bisq funding requirement %.8f BTC; hedge not opened", filledBTC, netWithdrawalBTC)
+		if persist {
+			if perr := markHedgeFailed(tf.store, txID, spot, shortFillErr); perr != nil {
+				return nil, fmt.Errorf("tradeflow: persist Bisq short-fill review state: %w", perr)
 			}
 		}
 		return nil, fmt.Errorf("tradeflow: %w", shortFillErr)
@@ -494,7 +544,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	}
 	wdStart := time.Now()
 	withdrawAmountBTC := filledBTC
-	if strings.EqualFold(order.Provider, "coinbase") {
+	if strings.EqualFold(order.Provider, "coinbase") || order.BisqPlan != nil {
 		withdrawAmountBTC = netWithdrawalBTC
 	}
 	wd, err := tf.svc.WithdrawSpotToLND(ctx, order.Provider, withdrawAmountBTC, target, clientReqID)
@@ -581,6 +631,9 @@ func preTradePassed(report *pretrade.Report, settlement string) (bool, []string)
 // the hub/swap routes.
 func (tf *TradeFlow) resolveWithdrawTarget(ctx context.Context, order Order, settlement string, report *pretrade.Report) (string, error) {
 	if settlement == "onchain_direct" {
+		if order.BisqPlan != nil && strings.TrimSpace(order.BisqPlan.FundingAddress) != "" {
+			return strings.TrimSpace(order.BisqPlan.FundingAddress), nil
+		}
 		if tf.directResolver == nil {
 			return "", fmt.Errorf("tradeflow: direct route (%s) requires a DEX wallet resolver, none configured", order.Dex)
 		}
@@ -606,6 +659,18 @@ func (tf *TradeFlow) resolveWithdrawTarget(ctx context.Context, order Order, set
 // confirmation can make a successful open look like a failure); if so it stops
 // rather than opening a second, doubling-up hedge.
 func (tf *TradeFlow) openHedgeWithRetry(ctx context.Context, order Order) (*cexaccount.HedgeOpenResult, error) {
+	if isRoboOrder(order) {
+		// Without a portable, persisted client-order id, an error may hide a
+		// delayed hedge fill. The durable worker parks this outcome; no retry.
+		hedge, err := tf.svc.OpenHedge(ctx, order.HedgeVenue, order.HedgeSide, order.HedgeNotionalBTC, order.Leverage)
+		if err != nil {
+			return nil, err
+		}
+		if hedge == nil {
+			return nil, fmt.Errorf("RoboSats hedge returned no receipt")
+		}
+		return hedge, nil
+	}
 	side := strings.ToLower(strings.TrimSpace(order.HedgeSide))
 
 	// Baseline: how much is already open on the expected side before we try. A
@@ -746,4 +811,76 @@ func validate(o Order) error {
 		}
 	}
 	return nil
+}
+
+func robosatsOfferInput(order Order, txID uint) dexaccount.OfferInput {
+	var selected struct {
+		Terms *robosats.NativeTerms `json:"native_terms"`
+	}
+	_ = json.Unmarshal(order.SelectedOffer, &selected)
+	method := strings.TrimSpace(order.PaymentMethod)
+	if method == "" && len(order.PaymentMethods) == 1 {
+		method = order.PaymentMethods[0]
+	}
+	maxBond := int64FromOfferJSON(order.SelectedOffer, "max_bond_sat")
+	if maxBond < 0 {
+		maxBond = 0
+	}
+	if maxBond == 0 {
+		maxBond = dexaccount.BTCToSats(order.SecurityDepositBTC)
+	}
+	maxEscrow := int64FromOfferJSON(order.SelectedOffer, "max_escrow_sat")
+	if maxEscrow <= 0 {
+		maxEscrow = dexaccount.BTCToSats(order.RequiredBTCLiquidity - order.SecurityDepositBTC)
+		if maxEscrow <= 0 {
+			maxEscrow = dexaccount.BTCToSats(order.BTCAmount)
+		}
+	}
+	return dexaccount.OfferInput{
+		Exchange:        strings.TrimSpace(order.Dex),
+		OfferID:         strings.TrimSpace(order.OfferID),
+		BTCAmount:       order.BTCAmount,
+		FiatAmount:      order.FiatAmount,
+		RequestID:       uint64(txID),
+		VenueNodePubKey: strings.TrimSpace(stringFromOfferJSON(order.SelectedOffer, "venue_node_pubkey")),
+		ProtocolVersion: int(int64FromOfferJSON(order.SelectedOffer, "protocol_version")),
+		SourceEventID:   strings.TrimSpace(stringFromOfferJSON(order.SelectedOffer, "source_event_id")),
+		FiatCurrency:    order.FiatCurrency,
+		PaymentMethod:   method,
+		MaxPaymentSat:   maxEscrow,
+		MaxBondSat:      maxBond,
+		RoutingFeeSat:   routingFeeLimit(order),
+		CoordinatorID:   strings.TrimSpace(stringFromOfferJSON(order.SelectedOffer, "venue_coordinator_id")),
+		QuoteID:         firstNonEmpty(order.QuoteID, stringFromOfferJSON(order.SelectedOffer, "quote_id")),
+		NativeTerms:     selected.Terms,
+		BondFeeSat:      int64FromOfferJSON(order.SelectedOffer, "bond_fee_sat"),
+		EscrowFeeSat:    int64FromOfferJSON(order.SelectedOffer, "escrow_fee_sat"),
+	}
+}
+
+func int64FromOfferJSON(raw []byte, field string) int64 {
+	var offer map[string]any
+	if json.Unmarshal(raw, &offer) != nil {
+		return 0
+	}
+	switch value := offer[field].(type) {
+	case float64:
+		return int64(value)
+	case json.Number:
+		n, _ := value.Int64()
+		return n
+	case string:
+		n, _ := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		return n
+	}
+	return 0
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
