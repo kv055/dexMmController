@@ -774,8 +774,7 @@ func (c *Client) invoke(ctx context.Context, method string, req, resp *dynamicpb
 
 func (c *Client) connection(ctx context.Context) (*grpc.ClientConn, error) {
 	c.once.Do(func() {
-		c.conn, c.connErr = grpc.DialContext(
-			ctx,
+		c.conn, c.connErr = grpc.NewClient(
 			c.host,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithPerRPCCredentials(bisqCreds{password: c.password}),

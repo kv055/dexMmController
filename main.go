@@ -1046,15 +1046,6 @@ func robosatsAuthTokenFromDB(ctx context.Context, repo exchangeAPIKeyRepo) (stri
 	return "", nil
 }
 
-// mustEnv returns the value of the environment variable key or exits if unset.
-func mustEnv(key string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		log.Fatalf("required environment variable %s is not set", key)
-	}
-	return v
-}
-
 func ensurePrimaryDepositAddress(
 	ctx context.Context,
 	repo *db.TransactionRepository,

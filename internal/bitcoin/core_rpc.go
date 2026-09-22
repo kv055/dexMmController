@@ -31,10 +31,10 @@ func NewCoreRPCClient(endpoint, username, password string) *CoreRPCClient {
 // requests. Bitcoin Core's ping RPC also asks its P2P peers to measure latency.
 func (c *CoreRPCClient) Ping(ctx context.Context) error {
 	if c == nil || c.endpoint == "" {
-		return fmt.Errorf("Bitcoin Core RPC endpoint is not configured")
+		return fmt.Errorf("bitcoin Core RPC endpoint is not configured")
 	}
 	if strings.TrimSpace(c.username) == "" || strings.TrimSpace(c.password) == "" {
-		return fmt.Errorf("Bitcoin Core RPC credentials are not configured")
+		return fmt.Errorf("bitcoin Core RPC credentials are not configured")
 	}
 
 	body, err := json.Marshal(struct {
@@ -54,11 +54,11 @@ func (c *CoreRPCClient) Ping(ctx context.Context) error {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("Bitcoin Core ping request: %w", err)
+		return fmt.Errorf("bitcoin Core ping request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Bitcoin Core ping returned HTTP %d", resp.StatusCode)
+		return fmt.Errorf("bitcoin Core ping returned HTTP %d", resp.StatusCode)
 	}
 	var payload struct {
 		Error *struct {
@@ -69,7 +69,7 @@ func (c *CoreRPCClient) Ping(ctx context.Context) error {
 		return fmt.Errorf("decode Bitcoin Core ping response: %w", err)
 	}
 	if payload.Error != nil {
-		return fmt.Errorf("Bitcoin Core ping: %s", payload.Error.Message)
+		return fmt.Errorf("bitcoin Core ping: %s", payload.Error.Message)
 	}
 	return nil
 }

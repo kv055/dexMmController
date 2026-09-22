@@ -161,7 +161,7 @@ func (r *Releaser) ReturnSecurityDeposit(ctx context.Context, in SecurityDeposit
 			case <-time.After(250 * time.Millisecond):
 			}
 		}
-		return nil, fmt.Errorf("Bisq deposit-return transaction was not observable by memo %q", memo)
+		return nil, fmt.Errorf("bisq deposit-return transaction was not observable by memo %q", memo)
 	case db.DexMostro:
 		if err := r.mostro.Release(ctx, in.RequestID, contractID); err != nil {
 			return nil, err

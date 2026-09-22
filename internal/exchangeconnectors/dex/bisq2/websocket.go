@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"commons/telegram"
-	"nhooyr.io/websocket"
+
+	"github.com/coder/websocket"
 )
 
 type wsEnvelope struct {

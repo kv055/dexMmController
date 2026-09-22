@@ -29,8 +29,7 @@ func (f *fakeProvider) Status(context.Context, string) (RemoteStatus, error) {
 func (f *fakeProvider) Refund(context.Context, string) error { f.refunds++; return nil }
 
 type fakeWallet struct {
-	calls  int
-	amount int64
+	calls int
 }
 
 func (w *fakeWallet) SendOnChain(context.Context, string, int64, int64) (string, error) {

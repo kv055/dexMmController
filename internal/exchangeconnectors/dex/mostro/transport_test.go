@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/nbd-wtf/go-nostr"
-	"nhooyr.io/websocket"
 )
 
 func replayRelay(t *testing.T, history []nostr.Event, gate <-chan struct{}, requested chan<- struct{}, closed bool) string {

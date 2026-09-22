@@ -34,7 +34,7 @@ func (c *HTTPFiatControllerChecker) Check(ctx context.Context, paymentMethod str
 // CheckService verifies that the Fiat Controller HTTP service is reachable.
 func (c *HTTPFiatControllerChecker) CheckService(ctx context.Context) error {
 	if c.baseURL == "" {
-		return fmt.Errorf("Fiat Controller URL is not configured; set it in the Fiat Controller integration settings")
+		return fmt.Errorf("fiat Controller URL is not configured; set it in the Fiat Controller integration settings")
 	}
 	if err := c.get(ctx, "/health", nil); err != nil {
 		return fmt.Errorf("the Fiat Controller service is unreachable: %w; verify the service is running and its URL is configured correctly", err)

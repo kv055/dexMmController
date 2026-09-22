@@ -492,7 +492,7 @@ func waitForBisqFunding(ctx context.Context, resolver directBalanceResolver, exc
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return fmt.Errorf("Bisq wallet funding did not reach %.8f BTC before timeout", wantBTC)
+			return fmt.Errorf("bisq wallet funding did not reach %.8f BTC before timeout", wantBTC)
 		case <-ticker.C:
 		}
 	}

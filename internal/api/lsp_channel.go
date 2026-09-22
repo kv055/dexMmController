@@ -11,7 +11,6 @@ import (
 
 	"dexMmController/internal/db"
 	"dexMmController/internal/lsp"
-	lnd "dexMmController/internal/wallethub"
 )
 
 type lspChannelConfigBackend interface {
@@ -142,9 +141,4 @@ func (s *Server) handleLSPChannelStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, lsp.Inspect(cfg, channels))
-}
-
-// lspStatusFromWallet is retained as a narrow seam for tests and future swap workers.
-func lspStatusFromWallet(cfg lsp.Config, channels []lnd.Channel) lsp.Status {
-	return lsp.Inspect(cfg, channels)
 }

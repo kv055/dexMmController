@@ -115,7 +115,7 @@ func (c *Coordinator) Execute(ctx context.Context, reservationID string, tradeID
 		return Record{}, fmt.Errorf("create Boltz swap: %w", err)
 	}
 	if prepared.ID == "" || prepared.LockupAddress == "" {
-		return Record{}, fmt.Errorf("Boltz returned incomplete swap")
+		return Record{}, fmt.Errorf("boltz returned incomplete swap")
 	}
 	sealed, err := c.Sealer.Seal(prepared.RescueMaterial)
 	if err != nil {
@@ -214,14 +214,14 @@ func (c *Coordinator) wait(ctx context.Context, rec *Record) error {
 						return c.Store.SetState(ctx, rec.ID, StateRefunded)
 					}
 				}
-				return fmt.Errorf("Boltz swap %s failed; refund pending", rec.ID)
+				return fmt.Errorf("boltz swap %s failed; refund pending", rec.ID)
 			}
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return fmt.Errorf("Boltz swap %s settlement timed out", rec.ID)
+			return fmt.Errorf("boltz swap %s settlement timed out", rec.ID)
 		case <-ticker.C:
 		}
 	}

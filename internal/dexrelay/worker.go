@@ -303,7 +303,7 @@ func (w *Worker) relayToDEX(ctx context.Context, tx *db.Transaction) error {
 	paymentSat, routingFeeSat := relayLightningBudget(tx, meta)
 	if meta.ResolvedRoute.UsesLightning() {
 		if w.liquidity == nil {
-			return fmt.Errorf("Lightning liquidity preparation is not configured")
+			return fmt.Errorf("lightning liquidity preparation is not configured")
 		}
 		reservationID := fmt.Sprintf("relay-trade-%d", tx.ID)
 		if err := w.liquidity.PrepareOutbound(ctx, reservationID, tx.ID, paymentSat, routingFeeSat); err != nil {

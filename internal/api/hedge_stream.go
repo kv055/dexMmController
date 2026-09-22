@@ -8,8 +8,8 @@ import (
 
 	"dexMmController/internal/hedgestream"
 
-	"nhooyr.io/websocket"
-	"nhooyr.io/websocket/wsjson"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 // WithHedgeStream attaches the live hedge-position streaming manager to the server.

@@ -96,7 +96,7 @@ func (s *Server) consumeTelegramPairing(text string) bool {
 
 func (s *Server) pairTelegramChat(ctx context.Context, chatID int64) error {
 	if chatID == 0 || s.telegramSettingsRepo == nil {
-		return fmt.Errorf("Telegram pairing is unavailable")
+		return fmt.Errorf("telegram pairing is unavailable")
 	}
 	id := fmt.Sprintf("%d", chatID)
 	updated, err := s.telegramSettingsRepo.Update(ctx, db.TelegramSettingsUpdate{ChatID: &id})

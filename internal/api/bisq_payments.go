@@ -277,13 +277,13 @@ func requestBisqMethodID(req bisqCreatePaymentAccountRequest) (string, error) {
 
 func parseBisqFormTemplate(raw, requestedMethodID string) (map[string]string, error) {
 	if len(raw) == 0 || len(raw) > maxBisqFormBytes || !utf8.ValidString(raw) {
-		return nil, errors.New("Bisq returned an invalid or oversized form")
+		return nil, errors.New("bisq returned an invalid or oversized form")
 	}
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.UseNumber()
 	var form map[string]json.RawMessage
 	if err := decoder.Decode(&form); err != nil || len(form) == 0 || len(form) > maxBisqFormFields {
-		return nil, errors.New("Bisq returned an unsupported form shape")
+		return nil, errors.New("bisq returned an unsupported form shape")
 	}
 	out := make(map[string]string, len(form)-1)
 	for key, value := range form {
@@ -291,23 +291,23 @@ func parseBisqFormTemplate(raw, requestedMethodID string) (map[string]string, er
 			continue
 		}
 		if key == "" || len(key) > 80 {
-			return nil, errors.New("Bisq form contains an invalid field name")
+			return nil, errors.New("bisq form contains an invalid field name")
 		}
 		var fieldValue string
 		if err := json.Unmarshal(value, &fieldValue); err != nil {
-			return nil, fmt.Errorf("Bisq form field %q is not a string", key)
+			return nil, fmt.Errorf("bisq form field %q is not a string", key)
 		}
 		if len(fieldValue) > maxBisqFieldBytes {
-			return nil, fmt.Errorf("Bisq form field %q is oversized", key)
+			return nil, fmt.Errorf("bisq form field %q is oversized", key)
 		}
 		out[key] = fieldValue
 	}
 	templateMethodID, ok := out["paymentMethodId"]
 	if !ok || templateMethodID != requestedMethodID {
-		return nil, errors.New("Bisq form payment method does not match the request")
+		return nil, errors.New("bisq form payment method does not match the request")
 	}
 	if _, ok := out["salt"]; !ok {
-		return nil, errors.New("Bisq form is missing salt")
+		return nil, errors.New("bisq form is missing salt")
 	}
 	return out, nil
 }

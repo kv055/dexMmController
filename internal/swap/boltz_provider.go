@@ -54,7 +54,7 @@ func (p OfficialBoltzProvider) Create(ctx context.Context, q Quote) (Prepared, e
 		return Prepared{}, err
 	}
 	if int64(response.ExpectedAmount) != q.LockupAmountSat {
-		return Prepared{}, fmt.Errorf("Boltz expected lockup changed from quote: quoted %d, actual %d", q.LockupAmountSat, response.ExpectedAmount)
+		return Prepared{}, fmt.Errorf("boltz expected lockup changed from quote: quoted %d, actual %d", q.LockupAmountSat, response.ExpectedAmount)
 	}
 	rescue, err := json.Marshal(struct {
 		PrivateKey     string                `json:"private_key"`

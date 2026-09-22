@@ -11,8 +11,6 @@ import (
 	"gorm.io/gorm"
 )
 
-const lspChannelRowID = 1
-
 var ErrLSPChannelConfigNotFound = errors.New("LSP channel configuration not found")
 
 // LSPChannelConfig is the durable singleton for an operator-acquired channel.

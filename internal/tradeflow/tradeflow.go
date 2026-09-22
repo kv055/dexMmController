@@ -287,7 +287,7 @@ func (tf *TradeFlow) requireCapabilities(ctx context.Context, order Order) error
 			CheckMostro(context.Context, dexaccount.OfferInput) error
 		})
 		if !ok {
-			return fmt.Errorf("Mostro preflight is not configured")
+			return fmt.Errorf("mostro preflight is not configured")
 		}
 		var quote struct {
 			Node     string `json:"venue_node_pubkey"`
@@ -295,7 +295,7 @@ func (tf *TradeFlow) requireCapabilities(ctx context.Context, order Order) error
 			Protocol int    `json:"protocol_version"`
 		}
 		if err := json.Unmarshal(order.SelectedOffer, &quote); err != nil {
-			return fmt.Errorf("Mostro signed quote is required")
+			return fmt.Errorf("mostro signed quote is required")
 		}
 		method := order.PaymentMethod
 		if method == "" && len(order.PaymentMethods) == 1 {
@@ -446,7 +446,7 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 		}
 	}
 	if strings.EqualFold(order.Provider, "coinbase") && filledBTC+1e-8 < netWithdrawalBTC+order.CEXWithdrawalFeeBTC {
-		shortFillErr := fmt.Errorf("Coinbase fill %.8f BTC is below net target plus withdrawal reserve %.8f BTC; hedge not opened", filledBTC, netWithdrawalBTC+order.CEXWithdrawalFeeBTC)
+		shortFillErr := fmt.Errorf("coinbase fill %.8f BTC is below net target plus withdrawal reserve %.8f BTC; hedge not opened", filledBTC, netWithdrawalBTC+order.CEXWithdrawalFeeBTC)
 		if persist {
 			if perr := markHedgeFailed(tf.store, txID, spot, shortFillErr); perr != nil {
 				return nil, fmt.Errorf("tradeflow: persist Coinbase short-fill review state: %w", perr)

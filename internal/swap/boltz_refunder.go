@@ -29,7 +29,7 @@ type LibraryRefunder struct {
 
 func (r LibraryRefunder) Refund(ctx context.Context, id string) error {
 	if r.API == nil || r.Recovery == nil || r.Destination == nil {
-		return fmt.Errorf("Boltz refund recovery is not configured")
+		return fmt.Errorf("boltz refund recovery is not configured")
 	}
 	if err := ctx.Err(); err != nil {
 		return err

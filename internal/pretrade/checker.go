@@ -577,7 +577,7 @@ func (c *BidChecker) checkCommunicationGateway(ctx context.Context) error {
 
 func (c *BidChecker) checkFiatControllerService(ctx context.Context) error {
 	if c.fiatController == nil {
-		return fmt.Errorf("Fiat Controller checker is not configured")
+		return fmt.Errorf("fiat Controller checker is not configured")
 	}
 	if checker, ok := c.fiatController.(FiatControllerHealthChecker); ok {
 		return checker.CheckService(ctx)
@@ -587,7 +587,7 @@ func (c *BidChecker) checkFiatControllerService(ctx context.Context) error {
 
 func (c *BidChecker) checkFiatControllerNotifications(ctx context.Context, paymentMethod string) error {
 	if c.fiatController == nil {
-		return fmt.Errorf("Fiat Controller checker is not configured")
+		return fmt.Errorf("fiat Controller checker is not configured")
 	}
 	if strings.TrimSpace(paymentMethod) == "" {
 		return fmt.Errorf("cannot validate notification channels without a resolved payment method")

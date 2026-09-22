@@ -459,7 +459,7 @@ func (s *Service) PreTradeCheck(ctx context.Context, p PreTradeParams) (*Report,
 	}
 	if strings.EqualFold(strings.TrimSpace(p.Provider), "coinbase") && !strings.EqualFold(strings.TrimSpace(p.MarketSide), "ask") {
 		if _, _, err := s.coinbaseBeneficiary(ctx); err != nil {
-			return nil, fmt.Errorf("Coinbase bid execution beneficiary is not ready: %w", err)
+			return nil, fmt.Errorf("coinbase bid execution beneficiary is not ready: %w", err)
 		}
 	}
 	report := s.preTradeChecker.Run(ctx, p)

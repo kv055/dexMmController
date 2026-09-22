@@ -288,19 +288,6 @@ func (h *HealthChecker) verifyCexCryptoWithdrawalArrived(_ context.Context, _ *d
 	return nil
 }
 
-// dexOfferID extracts the offer_id from DexOfferCreation (execution or selected_offer).
-func dexOfferID(tx *db.Transaction) (string, error) {
-	meta, err := db.ParseDexOfferCreation(tx.DexOfferCreation)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse DexOfferCreation: %w", err)
-	}
-	id := meta.OfferID()
-	if id == "" {
-		return "", fmt.Errorf("DexOfferCreation has no offer_id for tx %d", tx.ID)
-	}
-	return id, nil
-}
-
 // dexContractID extracts contract/trade/position id from DexOfferCreation.execution.
 func dexContractID(tx *db.Transaction) (string, error) {
 	meta, err := db.ParseDexOfferCreation(tx.DexOfferCreation)
@@ -361,25 +348,6 @@ func (h *HealthChecker) notifyAnomaly(ctx context.Context, exchange, tradeID, re
 		return nil
 	}
 	return h.anomaly.NotifyAnomaly(ctx, exchange, tradeID, reason, detail)
-}
-
-func (h *HealthChecker) checkBisqAnomaly(ctx context.Context, tx *db.Transaction) error {
-	if h.bisq == nil || h.anomaly == nil {
-		return nil
-	}
-	tradeID, err := dexContractID(tx)
-	if err != nil || tradeID == "" {
-		return nil
-	}
-	trade, err := h.bisq.GetPosition(ctx, tradeID)
-	if err != nil {
-		return fmt.Errorf("checkBisqAnomaly: %w", err)
-	}
-	if trade == nil {
-		return nil
-	}
-	_, err = h.checkBisqTradeAnomaly(ctx, tx, tradeID, trade)
-	return err
 }
 
 func (h *HealthChecker) checkBisqTradeAnomaly(ctx context.Context, tx *db.Transaction, tradeID string, trade *bisq.Trade) (bool, error) {
