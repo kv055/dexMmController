@@ -20,7 +20,7 @@ func (s *Server) handleTelegramWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var u telegram.Update
-	if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)).Decode(&u); err != nil {
 		w.WriteHeader(http.StatusOK)
 		return
 	}

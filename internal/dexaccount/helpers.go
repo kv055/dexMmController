@@ -6,12 +6,23 @@ import (
 	"strings"
 )
 
-// BTCToSats converts a BTC amount to satoshis.
+// MaxSats is the total possible satoshi supply (21M BTC). No valid amount
+// can exceed it, so conversions clamp there instead of wrapping int64.
+const MaxSats = int64(21_000_000) * 100_000_000
+
+// BTCToSats converts a BTC amount to satoshis. Non-positive and NaN inputs
+// yield 0; infinite or over-supply inputs clamp to MaxSats. The result never
+// wraps, so callers casting to uint64 cannot mint a huge amount from a bad
+// float.
 func BTCToSats(btc float64) int64 {
-	if btc <= 0 {
+	if math.IsNaN(btc) || btc <= 0 {
 		return 0
 	}
-	return int64(math.Round(btc * 1e8))
+	sats := math.Round(btc * 1e8)
+	if math.IsInf(sats, 0) || sats >= float64(MaxSats) {
+		return MaxSats
+	}
+	return int64(sats)
 }
 
 // SatsToBTC converts satoshis to BTC.

@@ -452,7 +452,10 @@ func (c *Client) orderPath(orderID string) string {
 	if path == "" {
 		path = c.takeOfferPath
 	}
-	return fmt.Sprintf(path, orderID)
+	// The order ID comes from coordinator responses and is interpolated into
+	// a URL template ("/api/order/?order_id=%s" by default). Escape it so a
+	// crafted ID cannot smuggle path/query delimiters into the request.
+	return fmt.Sprintf(path, url.QueryEscape(orderID))
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body any, out any) error {
@@ -506,7 +509,7 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 	if out == nil {
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out); err != nil {
 		return permanent("robosats: invalid response: %v", err)
 	}
 	return nil

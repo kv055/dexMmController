@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 )
@@ -61,7 +62,7 @@ func (c *Client) GetChatMessages(ctx context.Context, orderID string) (*ChatThre
 		return nil, err
 	}
 	var raw chatResponse
-	if err := c.request(ctx, http.MethodGet, fmt.Sprintf(c.chatPath, orderID), nil, &raw); err != nil {
+	if err := c.request(ctx, http.MethodGet, fmt.Sprintf(c.chatPath, url.QueryEscape(orderID)), nil, &raw); err != nil {
 		return nil, err
 	}
 
@@ -129,7 +130,7 @@ func (c *Client) SendChatMessage(ctx context.Context, orderID, plaintext string)
 		"order_id":    orderID,
 		"offset":      len(thread.Messages),
 	}
-	return c.request(ctx, http.MethodPost, fmt.Sprintf(c.chatPath, orderID), body, nil)
+	return c.request(ctx, http.MethodPost, fmt.Sprintf(c.chatPath, url.QueryEscape(orderID)), body, nil)
 }
 
 // unlockedSelf returns the robot's PGP entity with its private key decrypted by the token,
