@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/exchangeconnectors/cex"
-	"dexMmController/internal/metrics"
+	"dexTakerController/internal/exchangeconnectors/cex"
+	"dexTakerController/internal/metrics"
 	"github.com/krakenfx/api-go/v2/pkg/callback"
 	"github.com/krakenfx/api-go/v2/pkg/derivatives"
 	krakenapi "github.com/krakenfx/api-go/v2/pkg/kraken"

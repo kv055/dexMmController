@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"dexMmController/internal/exchangeconnectors/dex/bisq"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq"
 )
 
 type fakeBisqPaymentClient struct {

@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"dexMmController/internal/bitcoin"
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
-	"dexMmController/internal/dexnotify"
-	"dexMmController/internal/exchangeconnectors/dex/bisq"
-	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
+	"dexTakerController/internal/bitcoin"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
+	"dexTakerController/internal/dexnotify"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq"
+	"dexTakerController/internal/exchangeconnectors/dex/hodlhodl"
 )
 
 // defaultRecoveryGracePeriod is how long a row must sit in an intermediate tradeflow

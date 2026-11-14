@@ -154,6 +154,6 @@ Signature: `func writeJSON(w http.ResponseWriter, status int, payload any)`
 - `strconv`
 - `strings`
 - `time`
-- `dexMmController/internal/accounthealth`
-- `dexMmController/internal/db`
+- `dexTakerController/internal/accounthealth`
+- `dexTakerController/internal/db`
 

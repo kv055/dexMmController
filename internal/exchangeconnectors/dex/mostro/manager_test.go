@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"commons/credentialcrypto"
-	lnd "dexMmController/internal/wallethub"
+	lnd "dexTakerController/internal/wallethub"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip44"
 )

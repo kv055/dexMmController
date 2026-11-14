@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	lnd "dexMmController/internal/wallethub"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 // Config is the singleton operator configuration for a manually acquired LSP

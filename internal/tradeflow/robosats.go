@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
-	"dexMmController/internal/exchangeconnectors/dex/robosats"
+	"dexTakerController/internal/cexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
 )
 
 type roboJobStore interface {

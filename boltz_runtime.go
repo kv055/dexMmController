@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"dexMmController/internal/swap"
-	lnd "dexMmController/internal/wallethub"
+	"dexTakerController/internal/swap"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 // lndBoltzRuntime exposes only the wallet operations required by the embedded

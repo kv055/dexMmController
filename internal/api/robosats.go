@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"dexMmController/internal/exchangeconnectors/dex/robosats"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
 )
 
 // Authenticated internal endpoint: only coordinator-native, read-only terms are

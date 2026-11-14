@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	lnd "dexMmController/internal/wallethub"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 func validateHoldInvoice(invoice string, d *lnd.DecodedInvoice, capSat int64, now time.Time) (amountSat int64, amountMsat int64, err error) {

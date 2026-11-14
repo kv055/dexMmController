@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
+	"dexTakerController/internal/exchangeconnectors/dex/hodlhodl"
 )
 
 // TestReleaseDispatchErrors covers the venue-dispatch guard rails without touching the

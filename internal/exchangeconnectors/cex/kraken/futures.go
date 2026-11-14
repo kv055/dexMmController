@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/exchangeconnectors/cex"
+	"dexTakerController/internal/exchangeconnectors/cex"
 	"github.com/krakenfx/api-go/v2/pkg/derivatives"
 	krakenapi "github.com/krakenfx/api-go/v2/pkg/kraken"
 )

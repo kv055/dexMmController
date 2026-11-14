@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/db"
-	lnd "dexMmController/internal/wallethub"
+	"dexTakerController/internal/db"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 func mergeLNDInitConfig(fileCfg lnd.InitConfig, mnemonic string) lnd.InitConfig {

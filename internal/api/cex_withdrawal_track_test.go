@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"dexMmController/internal/cexaccount"
+	"dexTakerController/internal/cexaccount"
 )
 
 func TestHandleCexWithdrawalTrackNotConfigured(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	lnd "dexMmController/internal/wallethub"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 // TakeRequest binds coordinator, order, credential and spend ceilings to one transaction.

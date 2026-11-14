@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"commons/telegram"
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
 )
 
 type fakeMostroReconciler struct {

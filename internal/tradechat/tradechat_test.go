@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"commons/telegram"
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 type fakeChat struct {

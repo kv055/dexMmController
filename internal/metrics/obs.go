@@ -1,4 +1,4 @@
-// Package obs holds dexMmController's domain Prometheus instruments.
+// Package obs holds dexTakerController's domain Prometheus instruments.
 //
 // Instruments are package-level so deep call sites (tradeflow, connectors,
 // watchers) can record events without threading a registry through every

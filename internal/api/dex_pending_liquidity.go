@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 type dexPendingLiquidityResponse struct {

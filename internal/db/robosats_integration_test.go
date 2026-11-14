@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/exchangeconnectors/dex/robosats"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
 	"github.com/google/uuid"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"

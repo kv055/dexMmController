@@ -13,15 +13,15 @@ import (
 	"sync"
 	"time"
 
-	internalapi "dexMmController/internal/api/gen/internalapi"
-	publicapi "dexMmController/internal/api/gen/public"
-	"dexMmController/internal/bisqexec"
-	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/db"
-	"dexMmController/internal/hedgestream"
-	"dexMmController/internal/lndhealth"
+	internalapi "dexTakerController/internal/api/gen/internalapi"
+	publicapi "dexTakerController/internal/api/gen/public"
+	"dexTakerController/internal/bisqexec"
+	"dexTakerController/internal/cexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/hedgestream"
+	"dexTakerController/internal/lndhealth"
 
-	"dexMmController/internal/magma"
+	"dexTakerController/internal/magma"
 
 	"commons/metrics"
 	"commons/mmcapabilities"
@@ -286,7 +286,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("starting dexMmController API server on %s", s.addr)
+		log.Printf("starting dexTakerController API server on %s", s.addr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return

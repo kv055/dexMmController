@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/exchangeconnectors/dex/robosats"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
 	"gorm.io/gorm"
 )
 

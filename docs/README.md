@@ -1,4 +1,4 @@
-# dexMmController Documentation
+# dexTakerController Documentation
 
 This documentation mirrors the production Go source tree. Each Markdown file describes the role, runtime behavior, declarations, and dependencies of its matching source file.
 

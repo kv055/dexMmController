@@ -20,7 +20,7 @@ type NetworkDataFetcher struct {
 func NewNetworkDataFetcher() *NetworkDataFetcher {
 	return &NetworkDataFetcher{
 		client:    &http.Client{Timeout: 10 * time.Second},
-		userAgent: "dexMmController/1.0",
+		userAgent: "dexTakerController/1.0",
 	}
 }
 

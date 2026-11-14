@@ -3,7 +3,7 @@ package dexrelay
 import (
 	"context"
 
-	lnd "dexMmController/internal/wallethub"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 // LNDAdapter wraps wallethub.Client for dexaccount.LNDRelay.

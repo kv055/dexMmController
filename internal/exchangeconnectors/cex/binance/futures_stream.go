@@ -10,8 +10,8 @@ import (
 	"time"
 
 	sharedbinance "commons/cexclient/binance"
-	"dexMmController/internal/exchangeconnectors/cex"
-	"dexMmController/internal/metrics"
+	"dexTakerController/internal/exchangeconnectors/cex"
+	"dexTakerController/internal/metrics"
 )
 
 const (

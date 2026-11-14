@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"dexMmController/internal/api"
+	"dexTakerController/internal/api"
 )
 
 func TestGenerateWalletPasswordFormat(t *testing.T) {

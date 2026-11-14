@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"dexMmController/internal/db"
-	"dexMmController/internal/magma"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/magma"
 )
 
 func (s *Server) WithMagmaLSP(coordinator *magma.Coordinator) *Server {

@@ -390,7 +390,7 @@ type SepaAccountParams struct {
 }
 
 // CreateSepaPaymentAccount registers a SEPA payment account in the bisq daemon's profile and
-// returns the created account. It relies on the dexArbTrading bisq source patch: the stock
+// returns the created account. It relies on the dexPendulum bisq source patch: the stock
 // CreatePaymentAccount(json) path cannot round-trip SEPA (its acceptedCountryCodes collection
 // is mishandled by the form parser), so the daemon builds the SepaAccount from these discrete
 // fields instead. Bisq rate-limits this to one call per minute.
@@ -416,7 +416,7 @@ func (c *Client) CreateSepaPaymentAccount(ctx context.Context, params SepaAccoun
 }
 
 // DeletePaymentAccount removes a saved payment account from the bisq daemon's profile by id.
-// It relies on the dexArbTrading bisq source patch (the stock gRPC API has no delete).
+// It relies on the dexPendulum bisq source patch (the stock gRPC API has no delete).
 func (c *Client) DeletePaymentAccount(ctx context.Context, id string) error {
 	if id == "" {
 		return errors.New("bisq: payment account ID is required")
@@ -1248,7 +1248,7 @@ func buildFileDescriptor() *descriptorpb.FileDescriptorProto {
 			message("CreatePaymentAccountReply", []*descriptorpb.FieldDescriptorProto{
 				messageField("payment_account", 1, ".io.bisq.protobuffer.PaymentAccount"),
 			}),
-			// CreateSepaPaymentAccount / DeletePaymentAccount are provided by the dexArbTrading
+			// CreateSepaPaymentAccount / DeletePaymentAccount are provided by the dexPendulum
 			// bisq source patch (bisq-patches/payment-accounts-sepa-delete.patch); the stock
 			// daemon exposes neither.
 			message("CreateSepaPaymentAccountRequest", []*descriptorpb.FieldDescriptorProto{

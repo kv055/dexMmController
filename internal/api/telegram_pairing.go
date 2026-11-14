@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"commons/telegram"
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 const telegramPairingTTL = 5 * time.Minute

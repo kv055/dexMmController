@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"commons/mmcapabilities"
-	"dexMmController/internal/cexaccount"
+	"dexTakerController/internal/cexaccount"
 )
 
 type fakeCapabilityStore map[string]mmcapabilities.ProviderState

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/lsp"
+	"dexTakerController/internal/lsp"
 	"gorm.io/gorm"
 )
 

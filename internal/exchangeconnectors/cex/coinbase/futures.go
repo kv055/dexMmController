@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/exchangeconnectors/cex"
+	"dexTakerController/internal/exchangeconnectors/cex"
 )
 
 const defaultINTXBaseURL = "https://api.international.coinbase.com"

@@ -12,11 +12,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
-	"dexMmController/internal/exchangeconnectors/dex/bisq"
-	"dexMmController/internal/pretrade"
-	"dexMmController/internal/tradeflow"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq"
+	"dexTakerController/internal/pretrade"
+	"dexTakerController/internal/tradeflow"
 )
 
 const (

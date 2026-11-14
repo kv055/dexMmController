@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"dexMmController/internal/db"
-	lnd "dexMmController/internal/wallethub"
+	"dexTakerController/internal/db"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 // Client defines the LND operations required for wallet health checks.

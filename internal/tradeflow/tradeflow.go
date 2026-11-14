@@ -11,13 +11,13 @@ import (
 	"time"
 
 	"commons/mmcapabilities"
-	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
-	"dexMmController/internal/exchangeconnectors/dex/robosats"
-	"dexMmController/internal/metrics"
-	"dexMmController/internal/pretrade"
-	lnd "dexMmController/internal/wallethub"
+	"dexTakerController/internal/cexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
+	"dexTakerController/internal/metrics"
+	"dexTakerController/internal/pretrade"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 // Tunables for the guarded hedge retry. A hedge failure after the spot buy leaves

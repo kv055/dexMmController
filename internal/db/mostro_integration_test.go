@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"commons/credentialcrypto"
-	"dexMmController/internal/exchangeconnectors/dex/mostro"
+	"dexTakerController/internal/exchangeconnectors/dex/mostro"
 	"github.com/google/uuid"
 	"github.com/nbd-wtf/go-nostr"
 	"gorm.io/driver/postgres"

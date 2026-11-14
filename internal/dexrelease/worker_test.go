@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
 )
 
 // fakeStore is an in-memory txStore safe for concurrent use by the

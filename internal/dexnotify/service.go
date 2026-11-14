@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"commons/telegram"
-	"dexMmController/internal/dexaccount"
+	"dexTakerController/internal/dexaccount"
 )
 
 // Service wires trade-chat sessions into the shared Telegram relay.

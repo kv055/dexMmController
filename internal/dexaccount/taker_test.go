@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"dexMmController/internal/exchangeconnectors/dex/bisq2"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq2"
 )
 
 func TestResolveDepositBisqIsImmediateNoOp(t *testing.T) {

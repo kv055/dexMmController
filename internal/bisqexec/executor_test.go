@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/db"
-	"dexMmController/internal/tradeflow"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/tradeflow"
 )
 
 type durableFake struct {

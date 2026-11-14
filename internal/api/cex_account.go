@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"commons/mmcapabilities"
-	"dexMmController/internal/bisqexec"
-	"dexMmController/internal/bitcoin"
-	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/db"
-	"dexMmController/internal/pretrade"
-	"dexMmController/internal/tradeflow"
+	"dexTakerController/internal/bisqexec"
+	"dexTakerController/internal/bitcoin"
+	"dexTakerController/internal/cexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/pretrade"
+	"dexTakerController/internal/tradeflow"
 )
 
 // TradeFlowRunner executes a full bid-side CEX trade cycle.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	lnd "dexMmController/internal/wallethub"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 type fakeLNDWalletClient struct {

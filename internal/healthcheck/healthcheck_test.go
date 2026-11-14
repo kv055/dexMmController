@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/bitcoin"
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
-	"dexMmController/internal/exchangeconnectors/dex/bisq"
-	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
+	"dexTakerController/internal/bitcoin"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq"
+	"dexTakerController/internal/exchangeconnectors/dex/hodlhodl"
 )
 
 // fakeRecoverer records which recovery entrypoint was dispatched.

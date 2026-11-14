@@ -3,7 +3,7 @@ package cexaccount
 import (
 	"testing"
 
-	"dexMmController/internal/exchangeconnectors/cex/coinbase"
+	"dexTakerController/internal/exchangeconnectors/cex/coinbase"
 )
 
 func TestCoinbaseWithdrawalStatusNormalizesConfirmedAndFee(t *testing.T) {

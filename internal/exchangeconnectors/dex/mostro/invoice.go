@@ -1,7 +1,7 @@
 package mostro
 
 import (
-	lnd "dexMmController/internal/wallethub"
+	lnd "dexTakerController/internal/wallethub"
 	"encoding/hex"
 	"fmt"
 	"strconv"

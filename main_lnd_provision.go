@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"dexMmController/internal/api"
+	"dexTakerController/internal/api"
 )
 
 // generateWalletPassword returns a fresh 256-bit secret encoded as URL-safe

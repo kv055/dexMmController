@@ -12,7 +12,7 @@ import (
 	"regexp"
 	"strings"
 
-	"dexMmController/internal/exchangeconnectors/dex/bisq"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq"
 )
 
 const (

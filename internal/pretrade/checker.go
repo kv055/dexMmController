@@ -12,7 +12,7 @@ import (
 
 	"commons/mmcapabilities"
 	"commons/paymentmethods"
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 const (

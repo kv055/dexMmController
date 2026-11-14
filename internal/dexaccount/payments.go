@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"commons/telegram"
-	"dexMmController/internal/db"
-	"dexMmController/internal/exchangeconnectors/dex/bisq"
-	"dexMmController/internal/exchangeconnectors/dex/bisq2"
-	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
-	"dexMmController/internal/exchangeconnectors/dex/robosats"
-	"dexMmController/internal/tradechat"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq2"
+	"dexTakerController/internal/exchangeconnectors/dex/hodlhodl"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
+	"dexTakerController/internal/tradechat"
 )
 
 // paymentStyle classifies how a venue exposes the counterparty's fiat details — the "two taker

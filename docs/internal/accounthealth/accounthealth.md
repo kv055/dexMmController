@@ -126,10 +126,10 @@ Signature: `func ParseInterval(raw string) time.Duration`
 - `log`
 - `strings`
 - `time`
-- `dexMmController/internal/db`
-- `dexMmController/internal/exchanges/cex/binance`
-- `dexMmController/internal/exchanges/cex/coinbase`
-- `dexMmController/internal/exchanges/cex/kraken`
-- `dexMmController/internal/exchanges/dex/hodlhodl`
-- `dexMmController/internal/exchanges/dex/robosats`
+- `dexTakerController/internal/db`
+- `dexTakerController/internal/exchanges/cex/binance`
+- `dexTakerController/internal/exchanges/cex/coinbase`
+- `dexTakerController/internal/exchanges/cex/kraken`
+- `dexTakerController/internal/exchanges/dex/hodlhodl`
+- `dexTakerController/internal/exchanges/dex/robosats`
 

@@ -42,15 +42,15 @@ Example bind mounts in `docker-compose.yml`:
 ```yaml
 # mm-controller:
 #   env_file:
-#     - ./dexMmController/.env
+#     - ./dexTakerController/.env
 #   environment:
 #     - LND_SEED_MNEMONIC_FILE=/run/secrets/lnd_seed_mnemonic
 #     - LND_AEZEED_PASSPHRASE_FILE=/run/secrets/lnd_aezeed_passphrase
 #     - LND_RECOVERY_WINDOW=250
 #   volumes:
 #     - lnd-data:/lnd:ro
-#     - ./dexMmController/secrets/lnd_seed_mnemonic:/run/secrets/lnd_seed_mnemonic:ro
-#     - ./dexMmController/secrets/lnd_aezeed_passphrase:/run/secrets/lnd_aezeed_passphrase:ro
+#     - ./dexTakerController/secrets/lnd_seed_mnemonic:/run/secrets/lnd_seed_mnemonic:ro
+#     - ./dexTakerController/secrets/lnd_aezeed_passphrase:/run/secrets/lnd_aezeed_passphrase:ro
 ```
 
 ## Wallet Password and Aezeed in Postgres

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"commons/telegram"
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 // telegramClientSetter is satisfied by anything that can swap its outbound
@@ -113,7 +113,7 @@ func (s *Server) updateTelegramSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Apply in-process so dexMmController's own client/relay pick up the change
+	// Apply in-process so dexTakerController's own client/relay pick up the change
 	// immediately (the poller would also catch it within ~10s).
 	s.applyTelegramConfig(updated)
 

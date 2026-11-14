@@ -14,7 +14,7 @@ import (
 
 	"commons/paymentmethods"
 
-	"dexMmController/internal/exchangeconnectors/dex/bisq"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq"
 )
 
 const (

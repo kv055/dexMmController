@@ -8,7 +8,7 @@ import (
 	"time"
 
 	sharedbinance "commons/cexclient/binance"
-	"dexMmController/internal/exchangeconnectors/cex"
+	"dexTakerController/internal/exchangeconnectors/cex"
 	futures "github.com/binance/binance-connector-go/clients/derivativestradingusdsfutures"
 	models "github.com/binance/binance-connector-go/clients/derivativestradingusdsfutures/src/restapi/models"
 )

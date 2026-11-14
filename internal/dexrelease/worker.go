@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
 )
 
 const (
