@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
-	"dexMmController/internal/pretrade"
-	lnd "dexMmController/internal/wallethub"
+	"dexTakerController/internal/cexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
+	"dexTakerController/internal/pretrade"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 const (

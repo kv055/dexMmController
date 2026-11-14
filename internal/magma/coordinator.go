@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/lsp"
-	lnd "dexMmController/internal/wallethub"
+	"dexTakerController/internal/lsp"
+	lnd "dexTakerController/internal/wallethub"
 
 	"github.com/google/uuid"
 )

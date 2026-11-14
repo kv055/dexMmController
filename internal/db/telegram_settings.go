@@ -11,7 +11,7 @@ import (
 )
 
 // TelegramSettings is the single-row shared Telegram bot configuration consumed by
-// dexMmController (DEXMM webhook + trade-chat relay + anomaly alerts) and
+// dexTakerController (DEXMM webhook + trade-chat relay + anomaly alerts) and
 // dexFiatController pushpush (PUSHPUSH webhook + fiat-arrival escalation). The
 // schema is created by dexUnifiedApi/db/schema/22_telegram_settings.sql.
 type TelegramSettings struct {

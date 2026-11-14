@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 func TestRelayAlreadyCompleted(t *testing.T) {

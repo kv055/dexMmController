@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/db"
-	"dexMmController/internal/lndhealth"
+	"dexTakerController/internal/cexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/lndhealth"
 )
 
 type fakeAccountHealthChecker struct {

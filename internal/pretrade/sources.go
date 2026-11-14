@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"dexMmController/internal/lsp"
-	"dexMmController/internal/swap"
+	"dexTakerController/internal/lsp"
+	"dexTakerController/internal/swap"
 )
 
 type SwapQuoteSource interface {

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"dexMmController/internal/swap"
+	"dexTakerController/internal/swap"
 )
 
 type submarineSwapHistory interface {

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 // dexReleaseEnqueuer hands a transaction id to the release worker (satisfied by

@@ -66,5 +66,5 @@ Signature: `func (b *BinanceBridge) GetWithdrawHistory(ctx context.Context, para
 ## Key Dependencies
 
 - `context`
-- `dexMmController/internal/exchanges/cex/binance`
+- `dexTakerController/internal/exchanges/cex/binance`
 

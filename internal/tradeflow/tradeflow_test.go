@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/db"
-	"dexMmController/internal/pretrade"
-	lnd "dexMmController/internal/wallethub"
+	"dexTakerController/internal/cexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/pretrade"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 // fakeService is a controllable Service for unit tests.

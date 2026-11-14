@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 func TestLoadLNDInitConfigFromMnemonicFiles(t *testing.T) {

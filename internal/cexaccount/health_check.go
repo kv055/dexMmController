@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"commons/mmcapabilities"
-	"dexMmController/internal/db"
-	"dexMmController/internal/exchangeconnectors/cex/binance"
-	"dexMmController/internal/exchangeconnectors/cex/coinbase"
-	"dexMmController/internal/exchangeconnectors/cex/kraken"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/exchangeconnectors/cex/binance"
+	"dexTakerController/internal/exchangeconnectors/cex/coinbase"
+	"dexTakerController/internal/exchangeconnectors/cex/kraken"
 )
 
 var ErrUnsupportedProvider = errors.New("unsupported account health provider")

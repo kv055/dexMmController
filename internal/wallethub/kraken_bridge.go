@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"dexMmController/internal/exchangeconnectors/cex/kraken"
+	"dexTakerController/internal/exchangeconnectors/cex/kraken"
 )
 
 // KrakenBridge represents a kraken bridge.

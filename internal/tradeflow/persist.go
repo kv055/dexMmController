@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/db"
+	"dexTakerController/internal/cexaccount"
+	"dexTakerController/internal/db"
 )
 
 // applyWithdrawTarget records the CEX withdrawal target on the row (and the hub address

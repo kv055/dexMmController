@@ -3,8 +3,8 @@ package cexaccount
 import (
 	"testing"
 
-	"dexMmController/internal/exchangeconnectors/cex/kraken"
-	lnd "dexMmController/internal/wallethub"
+	"dexTakerController/internal/exchangeconnectors/cex/kraken"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 func TestKrakenWithdrawKeyForAddress(t *testing.T) {

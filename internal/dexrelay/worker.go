@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/bitcoin"
-	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
-	lnd "dexMmController/internal/wallethub"
+	"dexTakerController/internal/bitcoin"
+	"dexTakerController/internal/cexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 // Worker advances bid-side tradeflow part 2: confirm the CEX withdrawal arrived, take

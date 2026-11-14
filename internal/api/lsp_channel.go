@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"dexMmController/internal/db"
-	"dexMmController/internal/lsp"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/lsp"
 )
 
 type lspChannelConfigBackend interface {

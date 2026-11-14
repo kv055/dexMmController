@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"commons/paymentmethods"
-	"dexMmController/internal/lsp"
-	"dexMmController/internal/pretrade"
+	"dexTakerController/internal/lsp"
+	"dexTakerController/internal/pretrade"
 )
 
 // fakePaymentSetup is an in-memory payment_methods catalog plus the rows the

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"dexMmController/internal/exchangeconnectors/dex/bisq"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq"
 )
 
 // DirectResolver resolves the withdrawal destination for direct-routed DEXes, where the

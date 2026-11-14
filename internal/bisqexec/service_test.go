@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/db"
-	"dexMmController/internal/exchangeconnectors/dex/bisq"
-	"dexMmController/internal/tradeflow"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq"
+	"dexTakerController/internal/tradeflow"
 )
 
 type fakeDaemon struct {

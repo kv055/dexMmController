@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/db"
-	"dexMmController/internal/exchangeconnectors/dex/bisq"
-	"dexMmController/internal/exchangeconnectors/dex/bisq2"
-	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
-	"dexMmController/internal/exchangeconnectors/dex/mostro"
-	"dexMmController/internal/exchangeconnectors/dex/robosats"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq"
+	"dexTakerController/internal/exchangeconnectors/dex/bisq2"
+	"dexTakerController/internal/exchangeconnectors/dex/hodlhodl"
+	"dexTakerController/internal/exchangeconnectors/dex/mostro"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
 )
 
 const (

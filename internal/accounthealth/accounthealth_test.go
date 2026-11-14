@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/accounthealth"
-	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/db"
-	"dexMmController/internal/exchangeconnectors/dex/robosats"
+	"dexTakerController/internal/accounthealth"
+	"dexTakerController/internal/cexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
 )
 
 type fakeRepo struct {

@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"commons/telegram"
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 type fakeTelegramSettingsRepo struct {

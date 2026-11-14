@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	lnd "dexMmController/internal/wallethub"
+	lnd "dexTakerController/internal/wallethub"
 	"github.com/nbd-wtf/go-nostr"
 )
 

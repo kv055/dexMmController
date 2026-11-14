@@ -7,10 +7,10 @@ import (
 	"net/url"
 	"strings"
 
-	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/db"
-	"dexMmController/internal/exchangeconnectors/dex/hodlhodl"
-	"dexMmController/internal/exchangeconnectors/dex/robosats"
+	"dexTakerController/internal/cexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/exchangeconnectors/dex/hodlhodl"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
 )
 
 // CheckDEXKey validates a DEX API key by probing the provider's API.

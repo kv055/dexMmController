@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"testing"
 
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
-	"dexMmController/internal/exchangeconnectors/dex/robosats"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
 )
 
 func TestRoboSatsDoesNotRetryAnAmbiguousInitialHedge(t *testing.T) {

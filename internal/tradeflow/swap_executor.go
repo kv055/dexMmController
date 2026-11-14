@@ -7,9 +7,9 @@ import (
 	"math"
 	"time"
 
-	"dexMmController/internal/lsp"
-	"dexMmController/internal/pretrade"
-	"dexMmController/internal/swap"
+	"dexTakerController/internal/lsp"
+	"dexTakerController/internal/pretrade"
+	"dexTakerController/internal/swap"
 )
 
 // LiquidityPreparationError tells the trade lifecycle whether a failed

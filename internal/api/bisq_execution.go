@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"strings"
 
-	"dexMmController/internal/bisqexec"
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
+	"dexTakerController/internal/bisqexec"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
 )
 
 type bisqQuoteRequest struct {

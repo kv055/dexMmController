@@ -1,6 +1,6 @@
-# dexMmController
+# dexTakerController
 
-`dexMmController` is the market-maker controller for dexArbTrading. It records arbitrage transactions, watches premium-offer streams, manages the reusable BTC wallet address used for CEX withdrawals, performs account-health checks, and can immediately take qualifying DEX offers on supported venues.
+`dexTakerController` is the market-maker controller for dexPendulum. It records arbitrage transactions, watches premium-offer streams, manages the reusable BTC wallet address used for CEX withdrawals, performs account-health checks, and can immediately take qualifying DEX offers on supported venues.
 
 It uses the shared Postgres schema owned by `dexUnifiedApi`.
 
@@ -35,7 +35,7 @@ If taking the offer fails, the transaction row is kept and the failure is stored
 ## Directory Layout
 
 ```text
-dexMmController/
+dexTakerController/
 +-- main.go                         # Process wiring and startup flow
 +-- internal/api/                   # REST API for monitor/UI use
 +-- internal/accounthealth/         # Provider account-health checks

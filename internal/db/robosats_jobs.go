@@ -2,7 +2,7 @@ package db
 
 import (
 	"context"
-	"dexMmController/internal/exchangeconnectors/dex/robosats"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
 	"encoding/json"
 	"fmt"
 	"gorm.io/gorm"

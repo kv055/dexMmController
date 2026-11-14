@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/db"
-	"dexMmController/internal/dexaccount"
-	lnd "dexMmController/internal/wallethub"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/dexaccount"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 // fakeStore is a no-op txStore for the relay routing tests.

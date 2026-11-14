@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"dexMmController/internal/cexaccount"
+	"dexTakerController/internal/cexaccount"
 )
 
 func TestCEXProviderRequestReturnsSafeStructuredAccessError(t *testing.T) {

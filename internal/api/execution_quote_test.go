@@ -1,7 +1,7 @@
 package api
 
 import (
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 	"encoding/json"
 	"testing"
 	"time"

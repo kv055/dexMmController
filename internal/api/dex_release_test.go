@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 type stubEnqueuer struct{ enqueued []uint }

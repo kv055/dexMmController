@@ -96,5 +96,5 @@ Signature: `func satsToBTCString(amountSat int64) string`
 - `context`
 - `fmt`
 - `strconv`
-- `dexMmController/internal/exchanges/cex/kraken`
+- `dexTakerController/internal/exchanges/cex/kraken`
 

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/lsp"
-	"dexMmController/internal/swap"
+	"dexTakerController/internal/lsp"
+	"dexTakerController/internal/swap"
 )
 
 func TestLSPBidUsesExistingOutboundThenReportsSwapShortfall(t *testing.T) {

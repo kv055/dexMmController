@@ -1,12 +1,12 @@
 package cexaccount
 
 // Compatibility aliases for callers that still import pre-trade types through
-// cexaccount. New code should import dexMmController/internal/pretrade.
+// cexaccount. New code should import dexTakerController/internal/pretrade.
 
 import (
 	"encoding/json"
 
-	"dexMmController/internal/pretrade"
+	"dexTakerController/internal/pretrade"
 )
 
 type PreTradeParams = pretrade.Params

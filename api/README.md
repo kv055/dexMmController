@@ -12,7 +12,7 @@ The generated strict routers under `internal/api/gen/` own normal JSON route
 registration and request binding. The hedge-stream WebSocket remains a
 handwritten raw transport and is marked accordingly in the internal contract.
 
-From the parent `dexArbTrading` checkout, regenerate all API artifacts with:
+From the parent `dexPendulum` checkout, regenerate all API artifacts with:
 
 ```bash
 make api-generate

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 type fakeTransactionalLiquiditySettingsRepo struct {

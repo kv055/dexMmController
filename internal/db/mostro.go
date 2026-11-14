@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/exchangeconnectors/dex/mostro"
+	"dexTakerController/internal/exchangeconnectors/dex/mostro"
 	"github.com/nbd-wtf/go-nostr"
 	"gorm.io/gorm"
 )

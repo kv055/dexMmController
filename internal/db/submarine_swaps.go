@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"dexMmController/internal/swap"
+	"dexTakerController/internal/swap"
 	"gorm.io/gorm"
 )
 

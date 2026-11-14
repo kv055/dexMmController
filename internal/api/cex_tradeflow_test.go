@@ -8,10 +8,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"dexMmController/internal/cexaccount"
-	"dexMmController/internal/db"
-	"dexMmController/internal/pretrade"
-	"dexMmController/internal/tradeflow"
+	"dexTakerController/internal/cexaccount"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/pretrade"
+	"dexTakerController/internal/tradeflow"
 )
 
 type fakeTradeFlowRunner struct {

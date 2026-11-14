@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"dexMmController/internal/lsp"
-	"dexMmController/internal/magma"
+	"dexTakerController/internal/lsp"
+	"dexTakerController/internal/magma"
 )
 
 // MagmaOrderStore adapts LSPMagmaOrderRepository to magma.OrderStore.

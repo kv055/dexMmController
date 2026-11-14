@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/db"
-	"dexMmController/internal/tradeflow"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/tradeflow"
 	"github.com/google/uuid"
 )
 

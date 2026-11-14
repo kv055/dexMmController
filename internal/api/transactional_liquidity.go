@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 type transactionalLiquiditySettingsBackend interface {

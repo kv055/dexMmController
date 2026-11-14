@@ -12,13 +12,13 @@ import (
 	"strings"
 	"time"
 
-	"dexMmController/internal/db"
-	"dexMmController/internal/exchangeconnectors/cex"
-	"dexMmController/internal/exchangeconnectors/cex/binance"
-	"dexMmController/internal/exchangeconnectors/cex/coinbase"
-	"dexMmController/internal/exchangeconnectors/cex/kraken"
-	"dexMmController/internal/pretrade"
-	lnd "dexMmController/internal/wallethub"
+	"dexTakerController/internal/db"
+	"dexTakerController/internal/exchangeconnectors/cex"
+	"dexTakerController/internal/exchangeconnectors/cex/binance"
+	"dexTakerController/internal/exchangeconnectors/cex/coinbase"
+	"dexTakerController/internal/exchangeconnectors/cex/kraken"
+	"dexTakerController/internal/pretrade"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 // Repository loads account credentials for CEX operations.

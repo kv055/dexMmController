@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"dexMmController/internal/db"
-	lnd "dexMmController/internal/wallethub"
+	"dexTakerController/internal/db"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 func TestMergeLNDInitConfigPrefersDatabaseMnemonic(t *testing.T) {

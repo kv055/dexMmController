@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	internalapi "dexMmController/internal/api/gen/internalapi"
-	"dexMmController/internal/exchangeconnectors/dex/robosats"
-	"dexMmController/internal/tradeflow"
+	internalapi "dexTakerController/internal/api/gen/internalapi"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
+	"dexTakerController/internal/tradeflow"
 )
 
 type quoteOnlyRunner struct{}

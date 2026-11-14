@@ -3,7 +3,7 @@ package lsp
 import (
 	"testing"
 
-	lnd "dexMmController/internal/wallethub"
+	lnd "dexTakerController/internal/wallethub"
 )
 
 func TestInspectRequiresExactSelectedActiveChannelButCountsOtherChannels(t *testing.T) {

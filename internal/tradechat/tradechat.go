@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"commons/telegram"
-	"dexMmController/internal/db"
+	"dexTakerController/internal/db"
 )
 
 // PaymentRequestMarker is included in every automated payment-details request.

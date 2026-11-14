@@ -1,7 +1,7 @@
 package api
 
 import (
-	lnd "dexMmController/internal/wallethub"
+	lnd "dexTakerController/internal/wallethub"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
