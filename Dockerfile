@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM golang:1.25-alpine AS builder
+FROM golang:1.27-alpine AS builder
 ARG GOPROXY=https://goproxy.io,https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
 
@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -o controller .
 
 # Stage 2: Runtime
-FROM alpine:3.21
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates wget
 
