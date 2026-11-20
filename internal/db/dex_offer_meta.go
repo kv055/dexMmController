@@ -304,6 +304,8 @@ func DexPlatformFromSlug(slug string) DexPlatform {
 		return DexPeachBitcoin
 	case "mostro":
 		return DexMostro
+	case "noones":
+		return DexNoones
 	default:
 		return DexPlatform(slug)
 	}
