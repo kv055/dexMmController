@@ -341,14 +341,14 @@ func (c *Client) GetDepositAddress(ctx context.Context, coin, network string) (*
 
 // ApplyWithdraw submits a withdrawal request to Binance.
 func (c *Client) ApplyWithdraw(ctx context.Context, req WithdrawRequest) (*WithdrawResponse, error) {
-	amount, err := strconv.ParseFloat(strings.TrimSpace(req.Amount), 32)
+	amount, err := strconv.ParseFloat(strings.TrimSpace(req.Amount), 64)
 	if err != nil {
 		return nil, fmt.Errorf("binance: withdraw amount: %w", err)
 	}
 	call := c.wallet.RestApi.CapitalAPI.Withdraw(ctx).
 		Coin(req.Coin).
 		Address(req.Address).
-		Amount(float32(amount))
+		Amount(amount)
 	if req.Network != "" {
 		call = call.Network(req.Network)
 	}
@@ -383,7 +383,7 @@ func (c *Client) MarketBuy(ctx context.Context, symbol string, quantityBTC float
 		Symbol(symbol).
 		Side(spotmodels.NewOrderSideParameterBuy).
 		Type(spotmodels.NewOrderTypeParameterMarket).
-		Quantity(float32(quantityBTC)).
+		Quantity(quantityBTC).
 		NewOrderRespType(spotmodels.NewOrderNewOrderRespTypeParameterFull).
 		Execute()
 	if err != nil {

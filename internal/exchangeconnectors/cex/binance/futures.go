@@ -72,7 +72,7 @@ func (c *FuturesClient) PlaceOrder(ctx context.Context, symbol, side string, btc
 		Symbol(symbol).
 		Side(binanceSide).
 		Type(models.PlaceMultipleOrdersBatchOrdersParameterInnerTypeMarket).
-		Quantity(float32(btcQty)).
+		Quantity(btcQty).
 		Execute()
 	if err != nil {
 		return nil, fmt.Errorf("binance futures order: %w", err)
