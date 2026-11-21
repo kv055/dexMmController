@@ -142,8 +142,6 @@ const (
 	DexPeachBitcoin DexPlatform = "peachbitcoin"
 	// DexMostro is the Nostr Lightning P2P venue (snapshot-only, Swap route).
 	DexMostro DexPlatform = "mostro"
-	// DexNoones is the Noones fiat P2P venue (snapshot-only, Hub route).
-	DexNoones DexPlatform = "noones"
 )
 
 // TransactionStatus represents the lifecycle state of a transaction

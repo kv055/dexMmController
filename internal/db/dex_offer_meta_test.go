@@ -17,8 +17,6 @@ func TestDexPlatformFromSlug(t *testing.T) {
 		" PeachBitcoin": DexPeachBitcoin,
 		"mostro":        DexMostro,
 		" Mostro":       DexMostro,
-		"noones":        DexNoones,
-		" Noones":       DexNoones,
 		"BISQ2":         DexBisq2,
 	}
 	for slug, want := range cases {
